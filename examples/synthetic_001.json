@@ -1,0 +1,79 @@
+{
+  "case_id": "synthetic_001",
+  "encounter_type": "inpatient",
+  "hospitalization": {
+    "admission_date": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "discharge_date": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "length_of_stay_days": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "department": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    }
+  },
+  "diagnoses": [],
+  "procedures": [],
+  "medications": [],
+  "costs": {
+    "currency": "CNY",
+    "total_amount": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "insurance_payment": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "self_payment": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "self_pay_ratio": {
+      "value": null,
+      "normalized_value": null,
+      "confidence": null,
+      "status": "not_present_in_document",
+      "evidence": [],
+      "warnings": []
+    },
+    "breakdown": []
+  },
+  "events": [],
+  "quality_flags": []
+}
