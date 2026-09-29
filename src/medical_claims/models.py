@@ -112,6 +112,41 @@ class Medication(StrictModel):
     usage_condition: FieldValue[str] = Field(default_factory=FieldValue[str])
 
 
+class ExaminationCategory(str, Enum):
+    LABORATORY = "laboratory"
+    IMAGING = "imaging"
+    PATHOLOGY = "pathology"
+    FUNCTIONAL = "functional"
+    OTHER = "other"
+
+
+class AbnormalFlag(str, Enum):
+    HIGH = "high"
+    LOW = "low"
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    ABNORMAL = "abnormal"
+    NORMAL = "normal"
+    UNKNOWN = "unknown"
+
+
+class ExaminationResult(StrictModel):
+    item_name: FieldValue[str]
+    value: FieldValue[str]
+    unit: FieldValue[str] = Field(default_factory=FieldValue[str])
+    reference_range: FieldValue[str] = Field(default_factory=FieldValue[str])
+    abnormal_flag: AbnormalFlag = AbnormalFlag.UNKNOWN
+
+
+class Examination(StrictModel):
+    examination_id: str
+    category: ExaminationCategory = ExaminationCategory.OTHER
+    name: FieldValue[str]
+    performed_date: FieldValue[date] = Field(default_factory=FieldValue[date])
+    results: list[ExaminationResult] = Field(default_factory=list)
+    conclusion: FieldValue[str] = Field(default_factory=FieldValue[str])
+
+
 class CostItem(StrictModel):
     category: FieldValue[str]
     amount: FieldValue[Decimal]
@@ -127,6 +162,7 @@ class Costs(StrictModel):
 
 
 class EventType(str, Enum):
+    VISIT = "visit"
     ADMISSION = "admission"
     DIAGNOSIS = "diagnosis"
     TEST = "test"
@@ -169,6 +205,7 @@ class ClaimCase(StrictModel):
     diagnoses: list[Diagnosis] = Field(default_factory=list)
     procedures: list[Procedure] = Field(default_factory=list)
     medications: list[Medication] = Field(default_factory=list)
+    examinations: list[Examination] = Field(default_factory=list)
     costs: Costs = Field(default_factory=Costs)
     events: list[MedicalEvent] = Field(default_factory=list)
     quality_flags: list[QualityFlag] = Field(default_factory=list)

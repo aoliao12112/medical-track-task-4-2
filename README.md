@@ -35,6 +35,7 @@
   "diagnoses": [],
   "procedures": [],
   "medications": [],
+  "examinations": [],
   "costs": {},
   "events": [],
   "quality_flags": []

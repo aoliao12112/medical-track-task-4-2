@@ -15,6 +15,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from medical_claims.json_utils import normalize_json_output
 from medical_claims.models import ClaimCase
 
 
@@ -95,6 +96,10 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         "你是医疗理赔病历结构化引擎。只能提取输入证据中明确出现的事实，禁止补写或猜测。"
         "每个已提取字段必须带 evidence；缺失字段使用 not_present_in_document；"
         "明确无手术等情况使用 not_applicable。日期统一 YYYY-MM-DD，金额单位为人民币元。"
+        "辅助检查必须写入 examinations：检验、影像、病理等分别记录，检验结果逐项提取名称、值、单位、"
+        "参考范围和异常标记；原文没有参考范围时保持缺失，不得用医学常识补写。"
+        "门急诊就诊事件使用 visit，不能写成 admission。输液医嘱中明确出现的溶媒也作为独立药品提取。"
+        "不要为姓名、年龄等不在输出Schema中的脱敏字段创建缺失告警。"
         "字段置信度应综合OCR置信度、文本明确程度和跨文档一致性，低于0.90时使用 review_required。"
     )
     body = {
@@ -122,7 +127,8 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
             json=body,
         )
         response.raise_for_status()
-    result = ClaimCase.model_validate_json(extract_output_text(response.json()))
+    output_text = extract_output_text(response.json())
+    result = ClaimCase.model_validate_json(normalize_json_output(output_text))
     if result.case_id != case_id:
         raise RuntimeError("模型返回的 case_id 与请求不一致")
     return result

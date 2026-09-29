@@ -38,6 +38,7 @@
   "diagnoses": [],
   "procedures": [],
   "medications": [],
+  "examinations": [],
   "costs": {
     "currency": "CNY",
     "total_amount": {

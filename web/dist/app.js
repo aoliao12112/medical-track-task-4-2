@@ -40,6 +40,7 @@ function demoCase() {
     medications: [
       { medication_id: "med-1", name: makeField("酪酸梭菌活菌散", .96, medSrc), dose: makeField("1袋", .91, medSrc), frequency: makeField("每日2次", .96, medSrc), route: makeField("口服", .95, medSrc), duration: makeField(null, null, null, "not_present_in_document"), usage_condition: makeField(null, null, null, "not_present_in_document") }
     ],
+    examinations: [],
     costs: {
       currency: "CNY",
       total_amount: makeField(4749.98, .99, costSrc),
@@ -112,6 +113,7 @@ function emptyCase(caseId) {
     diagnoses: [],
     procedures: [],
     medications: [],
+    examinations: [],
     costs: { currency: "CNY", total_amount: missingField(), insurance_payment: missingField(), self_payment: missingField(), self_pay_ratio: missingField(), breakdown: [] },
     events: [],
     quality_flags: [{ code: "OCR_PENDING", severity: "warning", message: "材料尚未完成OCR识别。连接本地后端或补充OCR文本后继续。", field_path: null, document_id: null }]
@@ -174,6 +176,9 @@ function fieldCount(data) {
     .concat((data.diagnoses || []).flatMap(function(x) { return [x.name, x.code]; }))
     .concat((data.procedures || []).flatMap(function(x) { return [x.name, x.performed_date, x.body_site]; }))
     .concat((data.medications || []).flatMap(function(x) { return [x.name, x.dose, x.frequency, x.route, x.duration, x.usage_condition]; }))
+    .concat((data.examinations || []).flatMap(function(x) {
+      return [x.name, x.performed_date, x.conclusion].concat((x.results || []).flatMap(function(r) { return [r.item_name, r.value, r.unit, r.reference_range]; }));
+    }))
     .concat(Object.values(data.costs || {}).filter(function(x) { return x && typeof x === "object" && "status" in x; }));
   return fields.filter(function(x) { return x && (x.status === "extracted" || x.status === "review_required"); }).length;
 }
@@ -219,7 +224,7 @@ function renderResults() {
       '<div class="section-title"><h3>住院信息</h3><span>跨文档一致性校验</span></div><div class="field-grid">' +
       fieldCard("入院日期", result.hospitalization.admission_date) + fieldCard("出院日期", result.hospitalization.discharge_date) +
       fieldCard("住院天数", result.hospitalization.length_of_stay_days) + fieldCard("科室", result.hospitalization.department) + '</div>' +
-      '<div class="section-title"><h3>核心诊疗信息</h3><span>' + result.diagnoses.length + '项诊断 · ' + result.procedures.length + '项手术 · ' + result.medications.length + '项用药</span></div><div class="field-grid">' +
+      '<div class="section-title"><h3>核心诊疗信息</h3><span>' + result.diagnoses.length + '项诊断 · ' + result.procedures.length + '项手术 · ' + result.medications.length + '项用药 · ' + (result.examinations || []).length + '项检查</span></div><div class="field-grid">' +
       (result.diagnoses.slice(0, 3).map(function(x) { return fieldCard("诊断 · " + labelDiagnosis(x.diagnosis_type), x.name, true); }).join("") || fieldCard("诊断", missingField(), true)) +
       (result.procedures.slice(0, 1).map(function(x) { return fieldCard("手术/操作", x.name, true); }).join("")) +
       (result.medications.slice(0, 2).map(function(x) { return fieldCard("出院用药", x.name, true); }).join("")) + '</div>' +
@@ -237,6 +242,16 @@ function renderResults() {
       (result.medications.length ? '<div class="table-wrap"><table><thead><tr><th>药品</th><th>剂量</th><th>频次</th><th>途径</th><th>疗程</th></tr></thead><tbody>' +
       result.medications.map(function(m) { return '<tr><td>' + escapeHtml(m.name.value || "—") + '</td><td>' + escapeHtml(m.dose.value || "—") + '</td><td>' + escapeHtml(m.frequency.value || "—") + '</td><td>' + escapeHtml(m.route.value || "—") + '</td><td>' + escapeHtml(m.duration.value || "未记录") + '</td></tr>'; }).join("") +
       '</tbody></table></div>' : emptyMessage("尚未提取用药"));
+  } else if (currentTab === "examinations") {
+    const examinations = result.examinations || [];
+    content.innerHTML = '<div class="section-title"><h3>辅助检查</h3><span>' + examinations.length + '项检查 · 检验结果逐项结构化</span></div>' +
+      (examinations.length ? examinations.map(function(exam) {
+        const rows = exam.results || [];
+        return '<section class="exam-block"><div class="section-title compact"><h3>' + escapeHtml(exam.name && exam.name.value ? exam.name.value : "未命名检查") + '</h3><span>' + escapeHtml(({ laboratory: "检验", imaging: "影像", pathology: "病理", functional: "功能检查", other: "其他" })[exam.category] || "其他") + '</span></div>' +
+          (rows.length ? '<div class="table-wrap"><table><thead><tr><th>项目</th><th>结果</th><th>单位</th><th>参考范围</th><th>标记</th><th>置信度</th></tr></thead><tbody>' +
+          rows.map(function(row) { return '<tr><td>' + escapeHtml(row.item_name && row.item_name.value != null ? row.item_name.value : "—") + '</td><td>' + escapeHtml(row.value && row.value.value != null ? row.value.value : "—") + '</td><td>' + escapeHtml(row.unit && row.unit.value != null ? row.unit.value : "—") + '</td><td>' + escapeHtml(row.reference_range && row.reference_range.value != null ? row.reference_range.value : "—") + '</td><td>' + escapeHtml(({ high: "偏高", low: "偏低", positive: "阳性", negative: "阴性", abnormal: "异常", normal: "正常", unknown: "待判断" })[row.abnormal_flag] || "待判断") + '</td><td>' + clampConfidence(row.value ? row.value.confidence : null) + '</td></tr>'; }).join("") +
+          '</tbody></table></div>' : emptyMessage("未提取到检查明细", exam.conclusion && exam.conclusion.value ? exam.conclusion.value : "可查看检查结论和原文证据")) + '</section>';
+      }).join("") : emptyMessage("尚未提取辅助检查", "重新运行后，检验、影像和病理结果会显示在这里"));
   } else {
     content.innerHTML = '<div class="section-title"><h3>费用构成</h3><span>' + result.costs.breakdown.length + '类</span></div><div class="field-grid">' +
       fieldCard("费用总额", moneyField(result.costs.total_amount)) + fieldCard("医保支付", moneyField(result.costs.insurance_payment)) +
@@ -493,7 +508,8 @@ function exportBatch() {
 }
 function normalizeValue(value) {
   if (value == null) return "";
-  return String(value).trim().toLowerCase().replace(/\s+/g, "").replace(/[，,；;。]/g, "");
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, "").replace(/[，,；;。]/g, "");
+  return ({ qd: "1次/日", "每日1次": "1次/日", "一日1次": "1次/日", bid: "2次/日", "每日2次": "2次/日", "一日2次": "2次/日", tid: "3次/日", "每日3次": "3次/日", "一日3次": "3次/日" })[normalized] || normalized;
 }
 function comparableSet(input) {
   const cases = Array.isArray(input) ? input : [input];
@@ -505,7 +521,13 @@ function comparableSet(input) {
     Object.entries(item.hospitalization || {}).forEach(function(entry) { addField("hospitalization." + entry[0], entry[1]); });
     (item.diagnoses || []).forEach(function(x) { addField("diagnoses.name", x.name); addField("diagnoses.code", x.code); });
     (item.procedures || []).forEach(function(x) { addField("procedures.name", x.name); addField("procedures.date", x.performed_date); });
-    (item.medications || []).forEach(function(x) { addField("medications.name", x.name); addField("medications.dose", x.dose); addField("medications.frequency", x.frequency); addField("medications.route", x.route); });
+    (item.medications || []).forEach(function(x) { addField("medications.name", x.name); addField("medications.dose", x.dose); addField("medications.frequency", x.frequency); addField("medications.route", x.route); addField("medications.duration", x.duration); addField("medications.usage_condition", x.usage_condition); });
+    (item.examinations || []).forEach(function(x) {
+      addField("examinations.name", x.name);
+      addField("examinations.date", x.performed_date);
+      addField("examinations.conclusion", x.conclusion);
+      (x.results || []).forEach(function(r) { addField("examinations.result.item", r.item_name); addField("examinations.result.value", r.value); addField("examinations.result.unit", r.unit); addField("examinations.result.reference_range", r.reference_range); });
+    });
     ["total_amount", "insurance_payment", "self_payment", "self_pay_ratio"].forEach(function(key) { addField("costs." + key, item.costs ? item.costs[key] : null); });
   });
   return set;
