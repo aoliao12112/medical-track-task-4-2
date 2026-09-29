@@ -72,4 +72,12 @@ src/medical_claims/pipeline.py    # 端到端编排
 src/medical_claims/validation.py  # 日期、住院天数和费用一致性校验
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
+web/dist/                         # 第一问网页演示与批量评测界面
+web/backend/app.py                # RapidOCR + DeepSeek 本地接口
 ```
+
+## 网页演示
+
+网页包含单病例完整链路、批量病例中心和字段级 F1 评测入口。未连接后端时使用脱敏演示病例或手工 OCR 文本；连接本地后端后，图片由 RapidOCR 在本机识别，DeepSeek 仅接收 OCR 后的文本。
+
+具体启动方式见 `web/backend/README.md`。真实 API Key 只能放在后端环境变量中，禁止写入前端或提交到仓库。

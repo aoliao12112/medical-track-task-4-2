@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="理赔医疗记录结构化、事件重建与批量评测工作台">
+  <title>医护洞察 · 病历结构化工作台</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2307111f'/%3E%3Cpath d='M20 15h24a5 5 0 0 1 5 5v24a5 5 0 0 1-5 5H20a5 5 0 0 1-5-5V20a5 5 0 0 1 5-5Z' fill='%230f9f91'/%3E%3Cpath d='M28 22h8v6h6v8h-6v6h-8v-6h-6v-8h6Z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">十</div>
+        <div><div class="brand-title">医护洞察</div><div class="brand-subtitle">第一问 · 病历结构化与医疗事件重建</div></div>
+      </div>
+      <nav class="view-nav" aria-label="工作台视图">
+        <button class="view-tab active" data-view="case">案件工作台</button>
+        <button class="view-tab" data-view="batch">批量中心</button>
+        <button class="view-tab" data-view="evaluation">效果评测</button>
+      </nav>
+      <div class="top-actions">
+        <button class="provider-chip" id="providerButton" type="button"><span class="provider-dot demo"></span><span id="providerLabel">演示模式</span></button>
+        <button class="btn secondary" id="jsonButton" type="button">查看 JSON</button>
+        <button class="btn primary" id="exportButton" type="button">导出结果</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="view active" id="caseView" data-view-panel="case">
+        <section class="command-bar" aria-label="案件操作">
+          <div class="case-heading">
+            <div class="eyebrow">当前案件</div>
+            <div class="case-line"><input id="caseId" value="DEMO-RESP-001" aria-label="案件编号"><span class="status-pill ready" id="caseStatus">结构化完成</span></div>
+          </div>
+          <div class="command-actions">
+            <button class="btn ghost" id="demoButton" type="button">载入演示案件</button>
+            <label class="btn secondary file-button">添加材料<input id="fileInput" type="file" multiple accept="image/*,.pdf" hidden></label>
+            <button class="btn primary" id="runButton" type="button"><span class="button-icon">✦</span>运行完整流程</button>
+          </div>
+        </section>
+
+        <section class="pipeline-bar" aria-label="处理流程">
+          <div class="pipeline-copy"><span class="eyebrow">处理链路</span><strong id="pipelineSummary">证据已归并，结果等待复核</strong></div>
+          <ol class="pipeline-steps" id="pipelineSteps">
+            <li class="done" data-step="upload"><span>1</span><div><strong>材料接收</strong><small>病例文件</small></div></li>
+            <li class="done" data-step="classify"><span>2</span><div><strong>文档分类</strong><small>类型与页码</small></div></li>
+            <li class="done" data-step="ocr"><span>3</span><div><strong>OCR识别</strong><small>文本与坐标</small></div></li>
+            <li class="done" data-step="structure"><span>4</span><div><strong>字段提取</strong><small>DeepSeek / 规则</small></div></li>
+            <li class="done" data-step="validate"><span>5</span><div><strong>一致性校验</strong><small>日期与费用</small></div></li>
+            <li class="review" data-step="review"><span>6</span><div><strong>人工复核</strong><small>低置信度</small></div></li>
+          </ol>
+        </section>
+
+        <section class="metrics" aria-label="案件概览">
+          <article class="metric-card"><span class="metric-label">医疗材料</span><strong id="metricDocs">5</strong><span class="metric-unit">页</span><small id="metricDocDetail">出院小结 · 费用清单 · 医保结算</small></article>
+          <article class="metric-card"><span class="metric-label">关键字段</span><strong id="metricFields">15</strong><span class="metric-unit">项</span><small id="metricCompleteness">关键字段完整度 83.3%</small></article>
+          <article class="metric-card accent"><span class="metric-label">平均置信度</span><strong id="metricConfidence">94.8</strong><span class="metric-unit">%</span><small>OCR、抽取、一致性与规则综合</small></article>
+          <article class="metric-card warning"><span class="metric-label">待复核</span><strong id="metricFlags">2</strong><span class="metric-unit">项</span><small>低置信度、缺失或冲突</small></article>
+        </section>
+
+        <section class="workspace">
+          <aside class="panel documents-panel">
+            <div class="panel-header"><div><div class="eyebrow">输入与证据</div><h2>案件文档</h2></div><span class="count-badge" id="docCount">5</span></div>
+            <div class="drop-zone" id="dropZone" tabindex="0" role="button" aria-label="拖入医疗材料"><div class="drop-icon">＋</div><div><strong>拖入图片或 PDF</strong><span>一个案件可包含多种材料</span></div></div>
+            <div class="document-list" id="documentList" aria-label="文档列表"></div>
+            <div class="document-inspector">
+              <div class="inspector-head"><strong id="selectedDocName">出院记录 · 第1页</strong><span id="selectedDocType">出院小结</span></div>
+              <div class="preview" id="documentPreview"></div>
+              <details class="ocr-editor"><summary>查看或修正 OCR 文本</summary><textarea id="ocrText" rows="7" placeholder="后端未接入时，可在此粘贴OCR文本进行规则基线演示。"></textarea><button class="btn secondary small" id="saveOcrButton" type="button">保存修正</button></details>
+            </div>
+          </aside>
+
+          <section class="panel results-panel">
+            <div class="panel-header results-head"><div><div class="eyebrow">标准化结果</div><h2>关键字段与证据</h2></div><div class="legend"><span class="dot high"></span>自动通过 <span class="dot review"></span>待复核</div></div>
+            <div class="tabs" role="tablist" aria-label="结构化字段分类">
+              <button class="tab active" data-tab="overview" role="tab">概览</button><button class="tab" data-tab="diagnoses" role="tab">诊断</button><button class="tab" data-tab="procedures" role="tab">手术</button><button class="tab" data-tab="medications" role="tab">用药</button><button class="tab" data-tab="costs" role="tab">费用</button>
+            </div>
+            <div id="resultContent" class="result-content"></div>
+          </section>
+
+          <aside class="right-column">
+            <section class="panel timeline-panel"><div class="panel-header"><div><div class="eyebrow">跨文档归并</div><h2>医疗事件时间线</h2></div></div><div class="timeline" id="timeline"></div></section>
+            <section class="panel quality-panel"><div class="panel-header compact"><div><div class="eyebrow">质量控制</div><h2>复核任务</h2></div></div><div id="qualityFlags" class="quality-list"></div></section>
+          </aside>
+        </section>
+      </section>
+
+      <section class="view" id="batchView" data-view-panel="batch">
+        <div class="page-heading"><div><div class="eyebrow">现场验收准备</div><h1>批量病例处理中心</h1><p>按病例文件夹导入，逐例运行OCR、结构化和质量校验；单例失败不会中断整批任务。</p></div><div class="command-actions"><label class="btn secondary file-button">选择病例文件夹<input id="folderInput" type="file" multiple webkitdirectory directory hidden></label><button class="btn primary" id="runBatchButton">开始批量处理</button></div></div>
+        <section class="batch-summary">
+          <article><span>病例总数</span><strong id="batchTotal">6</strong><small>验收目标：30例</small></article><article><span>已完成</span><strong id="batchCompleted">4</strong><small>结果可独立导出</small></article><article><span>待复核</span><strong id="batchReview">1</strong><small>不会阻断其他病例</small></article><article><span>失败</span><strong id="batchFailed">0</strong><small>支持单例重试</small></article>
+        </section>
+        <section class="panel batch-panel">
+          <div class="batch-toolbar"><div><strong id="batchTitle">演示批次 BATCH-DEMO-01</strong><span id="batchProgressText">4 / 6 已完成</span></div><div class="progress-track"><span id="batchProgressBar" style="width:66.7%"></span></div><button class="btn secondary small" id="exportBatchButton">导出全部 JSON</button></div>
+          <div class="table-wrap flat"><table class="batch-table"><thead><tr><th>案件编号</th><th>材料</th><th>当前阶段</th><th>字段完整度</th><th>平均置信度</th><th>复核</th><th>状态</th></tr></thead><tbody id="batchRows"></tbody></table></div>
+        </section>
+      </section>
+
+      <section class="view" id="evaluationView" data-view-panel="evaluation">
+        <div class="page-heading"><div><div class="eyebrow">验收指标</div><h1>结构化效果评测</h1><p>导入系统结果和专家金标准，计算字段级精确率、召回率、F1与关键字段缺失率。</p></div></div>
+        <section class="evaluation-grid">
+          <article class="panel upload-card"><div class="upload-number">01</div><h2>系统预测结果</h2><p>支持单个案件JSON或批量JSON数组。</p><label class="btn secondary file-button">选择预测 JSON<input id="predictionInput" type="file" accept=".json,application/json" hidden></label><span id="predictionName">尚未导入</span></article>
+          <article class="panel upload-card"><div class="upload-number">02</div><h2>专家金标准</h2><p>字段路径应与ClaimCase Schema保持一致。</p><label class="btn secondary file-button">选择标注 JSON<input id="goldInput" type="file" accept=".json,application/json" hidden></label><span id="goldName">尚未导入</span></article>
+          <article class="panel evaluation-action"><div><div class="eyebrow">评测口径</div><h2>规范化后精确匹配</h2><p>日期、金额和文本先进行格式统一；不适用字段不计入缺失。</p></div><button class="btn primary" id="evaluateButton">运行评测</button></article>
+        </section>
+        <section class="metrics evaluation-metrics"><article class="metric-card"><span class="metric-label">Precision</span><strong id="evalPrecision">—</strong><span class="metric-unit">%</span><small>正确提取 ÷ 系统提取</small></article><article class="metric-card"><span class="metric-label">Recall</span><strong id="evalRecall">—</strong><span class="metric-unit">%</span><small>正确提取 ÷ 专家标注</small></article><article class="metric-card accent"><span class="metric-label">F1</span><strong id="evalF1">—</strong><span class="metric-unit">%</span><small>目标 ≥ 90%</small></article><article class="metric-card warning"><span class="metric-label">关键字段缺失率</span><strong id="evalMissing">—</strong><span class="metric-unit">%</span><small>目标 &lt; 5%</small></article></section>
+        <section class="panel evaluation-note"><h2>当前评测边界</h2><p>官方专家标注尚未提供前，可由医学生先标注5–10例形成开发集。演示案件的置信度不能替代F1，页面也不会把模拟值当作正式成绩。</p></section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="jsonDialog"><div class="dialog-head"><div><div class="eyebrow">标准输出</div><h2>ClaimCase JSON</h2></div><button class="icon-button" id="closeDialog" aria-label="关闭">×</button></div><pre id="jsonOutput"></pre><div class="dialog-actions"><button class="btn secondary" id="copyJsonButton">复制 JSON</button><button class="btn primary" id="downloadJsonButton">下载文件</button></div></dialog>
+
+  <dialog id="providerDialog" class="provider-dialog"><div class="dialog-head"><div><div class="eyebrow">能力接入</div><h2>OCR与结构化服务</h2></div><button class="icon-button" id="closeProviderDialog" aria-label="关闭">×</button></div><div class="provider-body">
+    <section class="provider-card recommended"><div class="provider-title"><span class="provider-logo">OCR</span><div><strong>RapidOCR 本地识别</strong><small>开源 · 中文 · CPU可运行</small></div><span class="status-tag local">推荐</span></div><p>病历图片留在本机，输出文字、坐标和OCR置信度。后续可替换为PaddleOCR或官方OCR。</p></section>
+    <section class="provider-card"><div class="provider-title"><span class="provider-logo llm">DS</span><div><strong>DeepSeek 结构化</strong><small>JSON Schema输出 · 需要API Key</small></div><span class="status-tag">后端接入</span></div><p>只发送脱敏后的OCR文本。API Key必须存放在后端环境变量，禁止写入网页或提交GitHub。</p></section>
+    <label class="endpoint-label" for="backendUrl">本地后端地址</label><div class="endpoint-row"><input id="backendUrl" placeholder="例如 http://127.0.0.1:8000" inputmode="url"><button class="btn secondary" id="checkBackendButton">检测连接</button></div><div class="connection-status" id="connectionStatus"><span class="provider-dot demo"></span><div><strong>当前使用演示模式</strong><small>仍可运行内置案例和手工OCR文本基线</small></div></div>
+    <div class="security-note"><strong>数据边界</strong><span>真实医疗材料不上传到本网页部署；本地OCR后，只允许脱敏文本进入大模型接口。</span></div>
+  </div><div class="dialog-actions"><button class="btn secondary" id="clearBackendButton">清除配置</button><button class="btn primary" id="saveBackendButton">保存配置</button></div></dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -17,3 +17,11 @@ venv/
 node_modules/
 dist/
 build/
+
+# Local research, browser profiles, rendered previews and scratch artifacts
+work/
+outputs/
+
+# The first-question demo is intentionally committed as deployable static files
+!web/dist/
+!web/dist/**
