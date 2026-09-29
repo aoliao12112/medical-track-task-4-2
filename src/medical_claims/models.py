@@ -18,6 +18,7 @@ class StrictModel(BaseModel):
 
 class FieldStatus(str, Enum):
     EXTRACTED = "extracted"
+    DERIVED = "derived"
     NOT_APPLICABLE = "not_applicable"
     NOT_PRESENT = "not_present_in_document"
     CONFLICT = "conflict"
@@ -43,6 +44,7 @@ class FieldValue(StrictModel, Generic[ValueT]):
     status: FieldStatus = FieldStatus.NOT_PRESENT
     evidence: list[Evidence] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    derivation: str | None = None
 
     @model_validator(mode="after")
     def validate_extracted_value(self) -> "FieldValue[ValueT]":
@@ -53,6 +55,11 @@ class FieldValue(StrictModel, Generic[ValueT]):
                 raise ValueError("status=extracted 时必须提供字段置信度")
             if not self.evidence:
                 raise ValueError("status=extracted 时必须提供原文证据")
+        if self.status == FieldStatus.DERIVED:
+            if self.value is None:
+                raise ValueError("status=derived 时 value 不能为空")
+            if not self.derivation:
+                raise ValueError("status=derived 时必须说明计算过程")
         return self
 
 
@@ -152,13 +159,66 @@ class CostItem(StrictModel):
     amount: FieldValue[Decimal]
 
 
+class FundPayments(StrictModel):
+    """由医保基金、救助或商业保险等第三方承担的金额。"""
+
+    basic_pool_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    major_illness_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    medical_assistance_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    civil_servant_subsidy: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    supplementary_insurance_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    commercial_insurance_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    other_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    total_fund_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+
+
+class PersonalBurden(StrictModel):
+    """费用责任属性：医保目录内自付与目录外自费不得合并。"""
+
+    within_policy_self_pay: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    outside_policy_self_expense: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    total_personal_burden: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+
+
+class PaymentChannels(StrictModel):
+    """实际付款渠道，不等同于费用责任属性。"""
+
+    personal_account_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    family_account_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    cash_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+
+
+class CostRatios(StrictModel):
+    within_policy_self_pay_ratio: FieldValue[float] = Field(default_factory=FieldValue[float])
+    outside_policy_self_expense_ratio: FieldValue[float] = Field(default_factory=FieldValue[float])
+    total_personal_burden_ratio: FieldValue[float] = Field(default_factory=FieldValue[float])
+
+
+class ReconciliationStatus(str, Enum):
+    NOT_CHECKED = "not_checked"
+    PASSED = "passed"
+    WARNING = "warning"
+    FAILED = "failed"
+
+
+class CostReconciliation(StrictModel):
+    status: ReconciliationStatus = ReconciliationStatus.NOT_CHECKED
+    checked_equations: list[str] = Field(default_factory=list)
+    difference: Decimal | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class Costs(StrictModel):
     currency: str = "CNY"
     total_amount: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
-    insurance_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
-    self_payment: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
-    self_pay_ratio: FieldValue[float] = Field(default_factory=FieldValue[float])
+    policy_scope_amount: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    outside_policy_amount: FieldValue[Decimal] = Field(default_factory=FieldValue[Decimal])
+    fund_payments: FundPayments = Field(default_factory=FundPayments)
+    personal_burden: PersonalBurden = Field(default_factory=PersonalBurden)
+    payment_channels: PaymentChannels = Field(default_factory=PaymentChannels)
+    ratios: CostRatios = Field(default_factory=CostRatios)
     breakdown: list[CostItem] = Field(default_factory=list)
+    reconciliation: CostReconciliation = Field(default_factory=CostReconciliation)
 
 
 class EventType(str, Enum):

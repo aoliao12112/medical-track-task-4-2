@@ -49,7 +49,7 @@
       "evidence": [],
       "warnings": []
     },
-    "insurance_payment": {
+    "policy_scope_amount": {
       "value": null,
       "normalized_value": null,
       "confidence": null,
@@ -57,7 +57,7 @@
       "evidence": [],
       "warnings": []
     },
-    "self_payment": {
+    "outside_policy_amount": {
       "value": null,
       "normalized_value": null,
       "confidence": null,
@@ -65,15 +65,17 @@
       "evidence": [],
       "warnings": []
     },
-    "self_pay_ratio": {
-      "value": null,
-      "normalized_value": null,
-      "confidence": null,
-      "status": "not_present_in_document",
-      "evidence": [],
+    "fund_payments": {},
+    "personal_burden": {},
+    "payment_channels": {},
+    "ratios": {},
+    "breakdown": [],
+    "reconciliation": {
+      "status": "not_checked",
+      "checked_equations": [],
+      "difference": null,
       "warnings": []
-    },
-    "breakdown": []
+    }
   },
   "events": [],
   "quality_flags": []

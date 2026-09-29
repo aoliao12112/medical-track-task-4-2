@@ -16,11 +16,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from medical_claims.json_utils import normalize_json_output
-from medical_claims.models import ClaimCase
+from medical_claims.models import ClaimCase, Costs
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.1.0")
-BACKEND_REVISION = "2026-09-29-examinations-v1"
+BACKEND_REVISION = "2026-09-29-cost-semantics-v1"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -100,6 +100,13 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         "辅助检查必须写入 examinations：检验、影像、病理等分别记录，检验结果逐项提取名称、值、单位、"
         "参考范围和异常标记；原文没有参考范围时保持缺失，不得用医学常识补写。"
         "门急诊就诊事件使用 visit，不能写成 admission。输液医嘱中明确出现的溶媒也作为独立药品提取。"
+        "费用字段必须区分三个层级：费用口径、责任属性、付款渠道。个人自付是医保目录内由个人承担的金额，"
+        "个人自费是医保目录外由个人全额承担的金额，两者严禁合并成个人支付；个人账户与现金属于付款渠道，"
+        "不得当作个人自付或个人自费。基金支付来源也必须分别提取。只有原文明确出现的值才能标记 extracted；"
+        "计算结果标记 derived 并在 derivation 中写明算式，缺少任一计算项时不得把缺失项当成0。"
+        "本任务只做忠实结构化与证据一致性检查，不得判断医生诊断不合理、医生错误或治疗不当。"
+        "若不同文档中的诊断或证据确有冲突，只能添加 DIAGNOSIS_DOCUMENT_CONFLICT 或 "
+        "DIAGNOSIS_EVIDENCE_REVIEW 质量标记并提示医学复核，不得给出临床责任结论。"
         "不要为姓名、年龄等不在输出Schema中的脱敏字段创建缺失告警。"
         "字段置信度应综合OCR置信度、文本明确程度和跨文档一致性，低于0.90时使用 review_required。"
     )
@@ -149,6 +156,7 @@ def health() -> dict[str, str | bool]:
         "llm": llm,
         "revision": BACKEND_REVISION,
         "examinations_schema": "examinations" in ClaimCase.model_fields,
+        "cost_semantics_schema": "personal_burden" in Costs.model_fields,
     }
 
 

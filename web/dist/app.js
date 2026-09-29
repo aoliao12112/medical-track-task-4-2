@@ -1,11 +1,12 @@
-const makeField = function(value, confidence, source, status, normalized) {
+const makeField = function(value, confidence, source, status, normalized, derivation) {
   return {
     value: value,
     normalized_value: normalized == null ? null : normalized,
     confidence: confidence,
     status: status || "extracted",
     evidence: source ? [{ document_id: source.doc, page: source.page, text: source.text, bbox: source.bbox || null }] : [],
-    warnings: []
+    warnings: [],
+    derivation: derivation || null
   };
 };
 
@@ -44,14 +45,18 @@ function demoCase() {
     costs: {
       currency: "CNY",
       total_amount: makeField(4749.98, .99, costSrc),
-      insurance_payment: makeField(2044.08, .99, costSrc),
-      self_payment: makeField(2705.90, .99, costSrc),
-      self_pay_ratio: makeField(.5697, .98, costSrc),
+      policy_scope_amount: missingField(),
+      outside_policy_amount: missingField(),
+      fund_payments: Object.assign({}, emptyFundPayments(), { total_fund_payment: makeField(2044.08, .99, costSrc) }),
+      personal_burden: emptyPersonalBurden(),
+      payment_channels: Object.assign({}, emptyPaymentChannels(), { cash_payment: makeField(2705.90, .99, costSrc) }),
+      ratios: emptyCostRatios(),
       breakdown: [
         { category: makeField("床位与护理", .92, { doc: "cost-1", page: 1, text: "床位费、护理费" }), amount: makeField(780, .86, { doc: "cost-1", page: 1, text: "床位与护理相关费用" }) },
         { category: makeField("检查与检验", .93, { doc: "cost-1", page: 1, text: "检查费、检验费" }), amount: makeField(1746, .83, { doc: "cost-1", page: 1, text: "检查与检验项目" }) },
         { category: makeField("药品", .96, { doc: "cost-2", page: 2, text: "药品费小计" }), amount: makeField(317.17, .96, { doc: "cost-2", page: 2, text: "药品费小计317.17" }) }
-      ]
+      ],
+      reconciliation: { status: "not_checked", checked_equations: [], difference: null, warnings: ["材料未拆分个人自付与个人自费"] }
     },
     events: [
       { event_id: "evt-1", event_type: "admission", event_time: "2025-12-24", description: "因发热、咳嗽入院", confidence: .98, evidence: [src1], related_entity_ids: [] },
@@ -105,6 +110,21 @@ function confidenceClass(n) {
 function missingField() {
   return makeField(null, null, null, "not_present_in_document");
 }
+function emptyFundPayments() {
+  return { basic_pool_payment: missingField(), major_illness_payment: missingField(), medical_assistance_payment: missingField(), civil_servant_subsidy: missingField(), supplementary_insurance_payment: missingField(), commercial_insurance_payment: missingField(), other_payment: missingField(), total_fund_payment: missingField() };
+}
+function emptyPersonalBurden() {
+  return { within_policy_self_pay: missingField(), outside_policy_self_expense: missingField(), total_personal_burden: missingField() };
+}
+function emptyPaymentChannels() {
+  return { personal_account_payment: missingField(), family_account_payment: missingField(), cash_payment: missingField() };
+}
+function emptyCostRatios() {
+  return { within_policy_self_pay_ratio: missingField(), outside_policy_self_expense_ratio: missingField(), total_personal_burden_ratio: missingField() };
+}
+function emptyCosts() {
+  return { currency: "CNY", total_amount: missingField(), policy_scope_amount: missingField(), outside_policy_amount: missingField(), fund_payments: emptyFundPayments(), personal_burden: emptyPersonalBurden(), payment_channels: emptyPaymentChannels(), ratios: emptyCostRatios(), breakdown: [], reconciliation: { status: "not_checked", checked_equations: [], difference: null, warnings: [] } };
+}
 function emptyCase(caseId) {
   return {
     case_id: caseId,
@@ -114,7 +134,7 @@ function emptyCase(caseId) {
     procedures: [],
     medications: [],
     examinations: [],
-    costs: { currency: "CNY", total_amount: missingField(), insurance_payment: missingField(), self_payment: missingField(), self_pay_ratio: missingField(), breakdown: [] },
+    costs: emptyCosts(),
     events: [],
     quality_flags: [{ code: "OCR_PENDING", severity: "warning", message: "材料尚未完成OCR识别。连接本地后端或补充OCR文本后继续。", field_path: null, document_id: null }]
   };
@@ -171,6 +191,7 @@ function setPipelineState(activeIndex, failed) {
   $("pipelineSummary").textContent = activeIndex >= 0 && activeIndex < labels.length ? labels[activeIndex] : (activeIndex >= items.length ? "处理完成，结果已形成可追溯JSON" : "材料已就绪，等待运行");
 }
 function fieldCount(data) {
+  const costs = data.costs || {};
   const fields = []
     .concat(Object.values(data.hospitalization || {}))
     .concat((data.diagnoses || []).flatMap(function(x) { return [x.name, x.code]; }))
@@ -179,8 +200,12 @@ function fieldCount(data) {
     .concat((data.examinations || []).flatMap(function(x) {
       return [x.name, x.performed_date, x.conclusion].concat((x.results || []).flatMap(function(r) { return [r.item_name, r.value, r.unit, r.reference_range]; }));
     }))
-    .concat(Object.values(data.costs || {}).filter(function(x) { return x && typeof x === "object" && "status" in x; }));
-  return fields.filter(function(x) { return x && (x.status === "extracted" || x.status === "review_required"); }).length;
+    .concat([costs.total_amount, costs.policy_scope_amount, costs.outside_policy_amount])
+    .concat(Object.values(costs.fund_payments || {}))
+    .concat(Object.values(costs.personal_burden || {}))
+    .concat(Object.values(costs.payment_channels || {}))
+    .concat(Object.values(costs.ratios || {}));
+  return fields.filter(function(x) { return x && (x.status === "extracted" || x.status === "derived" || x.status === "review_required"); }).length;
 }
 function collectConfidences(data) {
   const found = [];
@@ -219,6 +244,7 @@ function labelCertainty(v) {
 }
 function renderResults() {
   const content = $("resultContent");
+  const costs = result.costs || emptyCosts();
   if (currentTab === "overview") {
     content.innerHTML =
       '<div class="section-title"><h3>住院信息</h3><span>跨文档一致性校验</span></div><div class="field-grid">' +
@@ -229,8 +255,8 @@ function renderResults() {
       (result.procedures.slice(0, 1).map(function(x) { return fieldCard("手术/操作", x.name, true); }).join("")) +
       (result.medications.slice(0, 2).map(function(x) { return fieldCard("出院用药", x.name, true); }).join("")) + '</div>' +
       '<div class="section-title"><h3>费用摘要</h3><span>CNY · 自动对平</span></div><div class="field-grid">' +
-      fieldCard("费用总额", moneyField(result.costs.total_amount)) + fieldCard("医保支付", moneyField(result.costs.insurance_payment)) +
-      fieldCard("个人支付", moneyField(result.costs.self_payment)) + fieldCard("自付比例", percentField(result.costs.self_pay_ratio)) + '</div>';
+      fieldCard("费用总额", moneyField(costs.total_amount)) + fieldCard("基金支付合计", moneyField(costs.fund_payments.total_fund_payment)) +
+      fieldCard("个人自付（目录内）", moneyField(costs.personal_burden.within_policy_self_pay)) + fieldCard("个人自费（目录外）", moneyField(costs.personal_burden.outside_policy_self_expense)) + '</div>';
   } else if (currentTab === "diagnoses") {
     content.innerHTML = '<div class="section-title"><h3>诊断列表</h3><span>' + result.diagnoses.length + '项</span></div><div class="field-grid">' +
       (result.diagnoses.map(function(x) { return fieldCard(labelDiagnosis(x.diagnosis_type) + " · " + labelCertainty(x.certainty), x.name, true); }).join("") || emptyMessage("尚未提取诊断")) + '</div>';
@@ -253,12 +279,22 @@ function renderResults() {
           '</tbody></table></div>' : emptyMessage("未提取到检查明细", exam.conclusion && exam.conclusion.value ? exam.conclusion.value : "可查看检查结论和原文证据")) + '</section>';
       }).join("") : emptyMessage("尚未提取辅助检查", "重新运行后，检验、影像和病理结果会显示在这里"));
   } else {
-    content.innerHTML = '<div class="section-title"><h3>费用构成</h3><span>' + result.costs.breakdown.length + '类</span></div><div class="field-grid">' +
-      fieldCard("费用总额", moneyField(result.costs.total_amount)) + fieldCard("医保支付", moneyField(result.costs.insurance_payment)) +
-      fieldCard("个人支付", moneyField(result.costs.self_payment)) + fieldCard("自付比例", percentField(result.costs.self_pay_ratio)) + '</div>' +
+    content.innerHTML = '<div class="section-title"><h3>费用口径</h3><span>金额责任与支付渠道分层展示</span></div><div class="field-grid">' +
+      fieldCard("费用总额", moneyField(costs.total_amount)) + fieldCard("医保目录内费用", moneyField(costs.policy_scope_amount)) +
+      fieldCard("医保目录外费用", moneyField(costs.outside_policy_amount)) + '</div>' +
+      '<div class="section-title"><h3>基金及第三方支付</h3><span>不同支付来源不得混填</span></div><div class="field-grid">' +
+      fieldCard("基本医保统筹", moneyField(costs.fund_payments.basic_pool_payment)) + fieldCard("大病保险", moneyField(costs.fund_payments.major_illness_payment)) +
+      fieldCard("医疗救助", moneyField(costs.fund_payments.medical_assistance_payment)) + fieldCard("补充医疗保险", moneyField(costs.fund_payments.supplementary_insurance_payment)) +
+      fieldCard("商业保险", moneyField(costs.fund_payments.commercial_insurance_payment)) + fieldCard("基金支付合计", moneyField(costs.fund_payments.total_fund_payment)) + '</div>' +
+      '<div class="section-title"><h3>个人负担属性</h3><span>自付与自费必须分开</span></div><div class="field-grid">' +
+      fieldCard("个人自付（目录内）", moneyField(costs.personal_burden.within_policy_self_pay)) + fieldCard("个人自费（目录外）", moneyField(costs.personal_burden.outside_policy_self_expense)) +
+      fieldCard("个人负担合计", moneyField(costs.personal_burden.total_personal_burden)) + fieldCard("个人负担比例", percentField(costs.ratios.total_personal_burden_ratio)) + '</div>' +
+      '<div class="section-title"><h3>实际付款渠道</h3><span>不等同于自付/自费属性</span></div><div class="field-grid">' +
+      fieldCard("个人账户支付", moneyField(costs.payment_channels.personal_account_payment)) + fieldCard("家庭共济账户", moneyField(costs.payment_channels.family_account_payment)) +
+      fieldCard("现金支付", moneyField(costs.payment_channels.cash_payment)) + '</div>' +
       '<div class="section-title"><h3>分类费用</h3><span>来自费用清单</span></div>' +
-      (result.costs.breakdown.length ? '<div class="table-wrap"><table><thead><tr><th>分类</th><th>金额</th><th>置信度</th></tr></thead><tbody>' +
-      result.costs.breakdown.map(function(x) { return '<tr><td>' + escapeHtml(x.category.value) + '</td><td>¥ ' + Number(x.amount.value).toFixed(2) + '</td><td>' + clampConfidence(x.amount.confidence) + '</td></tr>'; }).join("") +
+      (costs.breakdown.length ? '<div class="table-wrap"><table><thead><tr><th>分类</th><th>金额</th><th>置信度</th></tr></thead><tbody>' +
+      costs.breakdown.map(function(x) { return '<tr><td>' + escapeHtml(x.category.value) + '</td><td>¥ ' + Number(x.amount.value).toFixed(2) + '</td><td>' + clampConfidence(x.amount.confidence) + '</td></tr>'; }).join("") +
       '</tbody></table></div>' : emptyMessage("尚未提取费用明细"));
   }
   content.querySelectorAll(".field-row").forEach(function(row) {
@@ -342,8 +378,11 @@ function parseLocalText() {
   const los = fullText.match(/(?:实际)?住院天数[：:\s]*(\d+)\s*天?/);
   const diagnosis = Array.from(fullText.matchAll(/(?:出院诊断|诊断)[：:]\s*([^\n。]+)/g)).flatMap(function(m) { return m[1].split(/[、，,；;]/); }).map(function(x) { return x.trim(); }).filter(Boolean).slice(0, 8);
   const total = fullText.match(/(?:费用总额|合计金额|总费用)[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const insurance = fullText.match(/(?:医保(?:综合)?支付)[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const self = fullText.match(/(?:个人(?:现金)?支付|个人自付)[：:\s]*(\d+(?:\.\d{1,2})?)/);
+  const insurance = fullText.match(/(?:医保(?:综合)?支付|基金支付合计)[：:\s]*(\d+(?:\.\d{1,2})?)/);
+  const withinSelfPay = fullText.match(/个人自付[：:\s]*(\d+(?:\.\d{1,2})?)/);
+  const outsideSelfExpense = fullText.match(/个人自费[：:\s]*(\d+(?:\.\d{1,2})?)/);
+  const personalAccount = fullText.match(/个人账户(?:支付)?[：:\s]*(\d+(?:\.\d{1,2})?)/);
+  const cashPayment = fullText.match(/(?:个人)?现金支付[：:\s]*(\d+(?:\.\d{1,2})?)/);
   if (admission) parsed.hospitalization.admission_date = makeField(parseDateMatch(admission), .84, evidence(admission[0]));
   if (discharge) parsed.hospitalization.discharge_date = makeField(parseDateMatch(discharge), .84, evidence(discharge[0]));
   if (los) parsed.hospitalization.length_of_stay_days = makeField(Number(los[1]), .9, evidence(los[0]));
@@ -351,9 +390,13 @@ function parseLocalText() {
     return { diagnosis_id: "local-dx-" + (index + 1), name: makeField(name, .76, evidence(name), "review_required"), code: missingField(), diagnosis_type: "discharge", certainty: "confirmed" };
   });
   if (total) parsed.costs.total_amount = makeField(Number(total[1]), .88, evidence(total[0]));
-  if (insurance) parsed.costs.insurance_payment = makeField(Number(insurance[1]), .88, evidence(insurance[0]));
-  if (self) parsed.costs.self_payment = makeField(Number(self[1]), .88, evidence(self[0]));
-  if (total && self) parsed.costs.self_pay_ratio = makeField(Number(self[1]) / Number(total[1]), .86, evidence(self[0] + " / " + total[0]));
+  if (insurance) parsed.costs.fund_payments.total_fund_payment = makeField(Number(insurance[1]), .88, evidence(insurance[0]));
+  if (withinSelfPay) parsed.costs.personal_burden.within_policy_self_pay = makeField(Number(withinSelfPay[1]), .88, evidence(withinSelfPay[0]));
+  if (outsideSelfExpense) parsed.costs.personal_burden.outside_policy_self_expense = makeField(Number(outsideSelfExpense[1]), .88, evidence(outsideSelfExpense[0]));
+  if (personalAccount) parsed.costs.payment_channels.personal_account_payment = makeField(Number(personalAccount[1]), .88, evidence(personalAccount[0]));
+  if (cashPayment) parsed.costs.payment_channels.cash_payment = makeField(Number(cashPayment[1]), .88, evidence(cashPayment[0]));
+  if (withinSelfPay && outsideSelfExpense) parsed.costs.personal_burden.total_personal_burden = makeField(Number(withinSelfPay[1]) + Number(outsideSelfExpense[1]), null, null, "derived", null, "within_policy_self_pay + outside_policy_self_expense");
+  if (total && withinSelfPay && outsideSelfExpense) parsed.costs.ratios.total_personal_burden_ratio = makeField((Number(withinSelfPay[1]) + Number(outsideSelfExpense[1])) / Number(total[1]), null, null, "derived", null, "total_personal_burden / total_amount");
   parsed.quality_flags = [{ code: "LOCAL_RULE_BASELINE", severity: "info", message: "当前结果来自手工OCR文本与本地规则；接入RapidOCR和DeepSeek后将替换该步骤。", field_path: null, document_id: null }];
   if (!diagnosis.length) parsed.quality_flags.push({ code: "DIAGNOSIS_MISSING", severity: "warning", message: "未从现有文本中识别到诊断。", field_path: "diagnoses", document_id: srcDoc.id });
   if (admission) parsed.events.push({ event_id: "local-admission", event_type: "admission", event_time: parseDateMatch(admission), description: "患者入院", confidence: .84, evidence: [], related_entity_ids: [] });
@@ -528,7 +571,12 @@ function comparableSet(input) {
       addField("examinations.conclusion", x.conclusion);
       (x.results || []).forEach(function(r) { addField("examinations.result.item", r.item_name); addField("examinations.result.value", r.value); addField("examinations.result.unit", r.unit); addField("examinations.result.reference_range", r.reference_range); });
     });
-    ["total_amount", "insurance_payment", "self_payment", "self_pay_ratio"].forEach(function(key) { addField("costs." + key, item.costs ? item.costs[key] : null); });
+    const costs = item.costs || {};
+    ["total_amount", "policy_scope_amount", "outside_policy_amount"].forEach(function(key) { addField("costs." + key, costs[key]); });
+    Object.entries(costs.fund_payments || {}).forEach(function(entry) { addField("costs.fund_payments." + entry[0], entry[1]); });
+    Object.entries(costs.personal_burden || {}).forEach(function(entry) { addField("costs.personal_burden." + entry[0], entry[1]); });
+    Object.entries(costs.payment_channels || {}).forEach(function(entry) { addField("costs.payment_channels." + entry[0], entry[1]); });
+    Object.entries(costs.ratios || {}).forEach(function(entry) { addField("costs.ratios." + entry[0], entry[1]); });
   });
   return set;
 }
@@ -583,7 +631,7 @@ async function checkBackend() {
     const response = await fetch(candidate + "/api/health");
     if (!response.ok) throw new Error("HTTP " + response.status);
     const data = await response.json();
-    if (data.examinations_schema !== true) {
+    if (data.examinations_schema !== true || data.cost_semantics_schema !== true) {
       updateProviderUi(false, "后端版本过旧：请停止旧进程并重启服务");
       return false;
     }
