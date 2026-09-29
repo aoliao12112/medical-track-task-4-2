@@ -20,6 +20,7 @@ from medical_claims.models import ClaimCase
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.1.0")
+BACKEND_REVISION = "2026-09-29-examinations-v1"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -135,14 +136,20 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
 
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, str | bool]:
     try:
         import rapidocr  # noqa: F401
         ocr = "rapidocr-ready"
     except ImportError:
         ocr = "rapidocr-missing"
     llm = "deepseek-ready" if os.getenv("DEEPSEEK_API_KEY") else "deepseek-key-missing"
-    return {"status": "ok", "ocr": ocr, "llm": llm}
+    return {
+        "status": "ok",
+        "ocr": ocr,
+        "llm": llm,
+        "revision": BACKEND_REVISION,
+        "examinations_schema": "examinations" in ClaimCase.model_fields,
+    }
 
 
 @app.post("/api/cases/process", response_model=ClaimCase)

@@ -583,7 +583,11 @@ async function checkBackend() {
     const response = await fetch(candidate + "/api/health");
     if (!response.ok) throw new Error("HTTP " + response.status);
     const data = await response.json();
-    updateProviderUi(true, "OCR：" + (data.ocr || "ready") + " · LLM：" + (data.llm || "ready"));
+    if (data.examinations_schema !== true) {
+      updateProviderUi(false, "后端版本过旧：请停止旧进程并重启服务");
+      return false;
+    }
+    updateProviderUi(true, "OCR：" + (data.ocr || "ready") + " · LLM：" + (data.llm || "ready") + " · 版本：" + (data.revision || "unknown"));
     return true;
   } catch (error) {
     updateProviderUi(false, "连接失败：" + error.message);
