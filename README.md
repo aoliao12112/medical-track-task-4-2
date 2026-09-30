@@ -111,3 +111,16 @@ python -m medical_claims.evaluation outputs/prediction.json outputs/gold.json
 ```
 
 评测前会统一空白、常见中文标点及 `qd/bid/tid` 等频次表达，但不会使用模糊语义匹配。
+
+病例材料建议统一按以下结构保存，避免原始材料、预测结果和金标准混放：
+
+```text
+outputs/<case_id>/
+├─ source/       # 原始脱敏材料
+├─ prediction/   # raw 与 normalized 预测
+├─ gold/         # draft 与 final 专家标注
+├─ preview/      # OCR和页面预览
+└─ evaluation/   # F1评测报告
+```
+
+只有已独立复核、状态为 `reviewed` 的 `gold.final.json` 才用于对外报告正式 F1。
