@@ -117,6 +117,8 @@ class Medication(StrictModel):
     route: FieldValue[str] = Field(default_factory=FieldValue[str])
     duration: FieldValue[str] = Field(default_factory=FieldValue[str])
     usage_condition: FieldValue[str] = Field(default_factory=FieldValue[str])
+    max_daily_dose: FieldValue[str] = Field(default_factory=FieldValue[str])
+    additional_instructions: FieldValue[str] = Field(default_factory=FieldValue[str])
 
 
 class ExaminationCategory(str, Enum):

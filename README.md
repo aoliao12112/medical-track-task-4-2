@@ -100,3 +100,14 @@ web/backend/app.py                # RapidOCR + DeepSeek 本地接口
 网页包含单病例完整链路、批量病例中心和字段级 F1 评测入口。未连接后端时使用脱敏演示病例或手工 OCR 文本；连接本地后端后，图片由 RapidOCR 在本机识别，DeepSeek 仅接收 OCR 后的文本。
 
 具体启动方式见 `web/backend/README.md`。真实 API Key 只能放在后端环境变量中，禁止写入前端或提交到仓库。
+
+## 正式字段级 F1 评测
+
+预测结果和专家金标准必须分别标注，禁止把预测结果复制为金标准。网页评测采用保留重复字段的
+微平均精确匹配；命令行可运行：
+
+```powershell
+python -m medical_claims.evaluation outputs/prediction.json outputs/gold.json
+```
+
+评测前会统一空白、常见中文标点及 `qd/bid/tid` 等频次表达，但不会使用模糊语义匹配。

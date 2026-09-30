@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .models import ClaimCase
+from .normalization import normalize_case
 from .providers import DocumentInput, LlmProvider, MedicalNlpProvider, OcrProvider
 from .validation import validate_case
 
@@ -38,6 +39,7 @@ class ClaimPipeline:
         if result.case_id != case_id:
             raise ValueError("模型返回的 case_id 与请求不一致")
 
+        result = normalize_case(result)
         result.quality_flags.extend(validate_case(result))
         result.events.sort(
             key=lambda event: (

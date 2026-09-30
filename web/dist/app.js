@@ -39,7 +39,7 @@ function demoCase() {
     ],
     procedures: [],
     medications: [
-      { medication_id: "med-1", name: makeField("酪酸梭菌活菌散", .96, medSrc), dose: makeField("1袋", .91, medSrc), frequency: makeField("每日2次", .96, medSrc), route: makeField("口服", .95, medSrc), duration: makeField(null, null, null, "not_present_in_document"), usage_condition: makeField(null, null, null, "not_present_in_document") }
+      { medication_id: "med-1", name: makeField("酪酸梭菌活菌散", .96, medSrc), dose: makeField("1袋", .91, medSrc), frequency: makeField("每日2次", .96, medSrc), route: makeField("口服", .95, medSrc), duration: makeField(null, null, null, "not_present_in_document"), usage_condition: makeField(null, null, null, "not_present_in_document"), max_daily_dose: makeField(null, null, null, "not_present_in_document"), additional_instructions: makeField(null, null, null, "not_present_in_document") }
     ],
     examinations: [],
     costs: {
@@ -196,7 +196,7 @@ function fieldCount(data) {
     .concat(Object.values(data.hospitalization || {}))
     .concat((data.diagnoses || []).flatMap(function(x) { return [x.name, x.code]; }))
     .concat((data.procedures || []).flatMap(function(x) { return [x.name, x.performed_date, x.body_site]; }))
-    .concat((data.medications || []).flatMap(function(x) { return [x.name, x.dose, x.frequency, x.route, x.duration, x.usage_condition]; }))
+    .concat((data.medications || []).flatMap(function(x) { return [x.name, x.dose, x.frequency, x.route, x.duration, x.usage_condition, x.max_daily_dose, x.additional_instructions]; }))
     .concat((data.examinations || []).flatMap(function(x) {
       return [x.name, x.performed_date, x.conclusion].concat((x.results || []).flatMap(function(r) { return [r.item_name, r.value, r.unit, r.reference_range]; }));
     }))
@@ -265,8 +265,8 @@ function renderResults() {
       (result.procedures.map(function(x) { return fieldCard("手术/操作名称", x.name, true) + fieldCard("实施日期", x.performed_date) + fieldCard("部位", x.body_site); }).join("") || emptyMessage("当前材料未记录手术", "无手术不等于提取失败；正式结果应区分不适用和材料缺失")) + '</div>';
   } else if (currentTab === "medications") {
     content.innerHTML = '<div class="section-title"><h3>用药明细</h3><span>' + result.medications.length + '项</span></div>' +
-      (result.medications.length ? '<div class="table-wrap"><table><thead><tr><th>药品</th><th>剂量</th><th>频次</th><th>途径</th><th>疗程</th></tr></thead><tbody>' +
-      result.medications.map(function(m) { return '<tr><td>' + escapeHtml(m.name.value || "—") + '</td><td>' + escapeHtml(m.dose.value || "—") + '</td><td>' + escapeHtml(m.frequency.value || "—") + '</td><td>' + escapeHtml(m.route.value || "—") + '</td><td>' + escapeHtml(m.duration.value || "未记录") + '</td></tr>'; }).join("") +
+      (result.medications.length ? '<div class="table-wrap"><table><thead><tr><th>药品</th><th>剂量</th><th>频次</th><th>规范频次</th><th>途径</th><th>疗程</th><th>最大日剂量</th></tr></thead><tbody>' +
+      result.medications.map(function(m) { return '<tr><td>' + escapeHtml(m.name.value || "—") + '</td><td>' + escapeHtml(m.dose.value || "—") + '</td><td>' + escapeHtml(m.frequency.value || "—") + '</td><td>' + escapeHtml(m.frequency.normalized_value || "—") + '</td><td>' + escapeHtml(m.route.value || "—") + '</td><td>' + escapeHtml(m.duration.value || "未记录") + '</td><td>' + escapeHtml(m.max_daily_dose && (m.max_daily_dose.normalized_value || m.max_daily_dose.value) || "—") + '</td></tr>'; }).join("") +
       '</tbody></table></div>' : emptyMessage("尚未提取用药"));
   } else if (currentTab === "examinations") {
     const examinations = result.examinations || [];
@@ -554,17 +554,17 @@ function normalizeValue(value) {
   const normalized = String(value).trim().toLowerCase().replace(/\s+/g, "").replace(/[，,；;。]/g, "");
   return ({ qd: "1次/日", "每日1次": "1次/日", "一日1次": "1次/日", bid: "2次/日", "每日2次": "2次/日", "一日2次": "2次/日", tid: "3次/日", "每日3次": "3次/日", "一日3次": "3次/日" })[normalized] || normalized;
 }
-function comparableSet(input) {
+function comparableItems(input) {
   const cases = Array.isArray(input) ? input : [input];
-  const set = new Set();
+  const items = [];
   cases.forEach(function(item) {
     const addField = function(path, field) {
-      if (field && field.value != null && field.status !== "not_applicable") set.add(path + ":" + normalizeValue(field.normalized_value != null ? field.normalized_value : field.value));
+      if (field && field.value != null && field.status !== "not_applicable") items.push(path + ":" + normalizeValue(field.normalized_value != null ? field.normalized_value : field.value));
     };
     Object.entries(item.hospitalization || {}).forEach(function(entry) { addField("hospitalization." + entry[0], entry[1]); });
     (item.diagnoses || []).forEach(function(x) { addField("diagnoses.name", x.name); addField("diagnoses.code", x.code); });
     (item.procedures || []).forEach(function(x) { addField("procedures.name", x.name); addField("procedures.date", x.performed_date); });
-    (item.medications || []).forEach(function(x) { addField("medications.name", x.name); addField("medications.dose", x.dose); addField("medications.frequency", x.frequency); addField("medications.route", x.route); addField("medications.duration", x.duration); addField("medications.usage_condition", x.usage_condition); });
+    (item.medications || []).forEach(function(x) { addField("medications.name", x.name); addField("medications.dose", x.dose); addField("medications.frequency", x.frequency); addField("medications.route", x.route); addField("medications.duration", x.duration); addField("medications.usage_condition", x.usage_condition); addField("medications.max_daily_dose", x.max_daily_dose); addField("medications.additional_instructions", x.additional_instructions); });
     (item.examinations || []).forEach(function(x) {
       addField("examinations.name", x.name);
       addField("examinations.date", x.performed_date);
@@ -578,21 +578,26 @@ function comparableSet(input) {
     Object.entries(costs.payment_channels || {}).forEach(function(entry) { addField("costs.payment_channels." + entry[0], entry[1]); });
     Object.entries(costs.ratios || {}).forEach(function(entry) { addField("costs.ratios." + entry[0], entry[1]); });
   });
-  return set;
+  return items;
 }
 function runEvaluation() {
   if (!predictionData || !goldData) {
     showToast("请先导入预测结果和专家金标准");
     return;
   }
-  const predicted = comparableSet(predictionData);
-  const gold = comparableSet(goldData);
+  const predicted = comparableItems(predictionData);
+  const gold = comparableItems(goldData);
+  const goldCounts = new Map();
+  gold.forEach(function(value) { goldCounts.set(value, (goldCounts.get(value) || 0) + 1); });
   let correct = 0;
-  predicted.forEach(function(value) { if (gold.has(value)) correct += 1; });
-  const precision = predicted.size ? correct / predicted.size : 0;
-  const recall = gold.size ? correct / gold.size : 0;
+  predicted.forEach(function(value) {
+    const remaining = goldCounts.get(value) || 0;
+    if (remaining > 0) { correct += 1; goldCounts.set(value, remaining - 1); }
+  });
+  const precision = predicted.length ? correct / predicted.length : 0;
+  const recall = gold.length ? correct / gold.length : 0;
   const f1 = precision + recall ? 2 * precision * recall / (precision + recall) : 0;
-  const missing = gold.size ? Math.max(0, gold.size - correct) / gold.size : 0;
+  const missing = gold.length ? Math.max(0, gold.length - correct) / gold.length : 0;
   $("evalPrecision").textContent = (precision * 100).toFixed(1);
   $("evalRecall").textContent = (recall * 100).toFixed(1);
   $("evalF1").textContent = (f1 * 100).toFixed(1);
@@ -631,7 +636,7 @@ async function checkBackend() {
     const response = await fetch(candidate + "/api/health");
     if (!response.ok) throw new Error("HTTP " + response.status);
     const data = await response.json();
-    if (data.examinations_schema !== true || data.cost_semantics_schema !== true) {
+    if (data.examinations_schema !== true || data.cost_semantics_schema !== true || data.medication_instruction_schema !== true) {
       updateProviderUi(false, "后端版本过旧：请停止旧进程并重启服务");
       return false;
     }
