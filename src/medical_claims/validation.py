@@ -82,6 +82,17 @@ def validate_case(case: ClaimCase) -> list[QualityFlag]:
                 )
             )
 
+    if burden_total is not None and (within_self_pay is None or outside_self_expense is None):
+        if case.costs.personal_burden.total_personal_burden.status == FieldStatus.DERIVED:
+            cost_flags.append(
+                QualityFlag(
+                    code="PERSONAL_BURDEN_BASIS_INCOMPLETE",
+                    severity=FlagSeverity.WARNING,
+                    message="个人负担合计缺少个人自付或个人自费依据，不得仅按付款渠道反推",
+                    field_path="costs.personal_burden.total_personal_burden",
+                )
+            )
+
     outside_policy = case.costs.outside_policy_amount.value
     if outside_policy is not None and outside_self_expense is not None:
         difference = outside_policy - outside_self_expense

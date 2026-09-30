@@ -19,10 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from medical_claims.json_utils import normalize_json_output
 from medical_claims.models import ClaimCase, Costs, Medication
 from medical_claims.normalization import normalize_case
+from medical_claims.validation import validate_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.1.0")
-BACKEND_REVISION = "2026-09-30-long-output-v2"
+BACKEND_REVISION = "2026-09-30-real-case-v3"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -103,12 +104,15 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         "辅助检查必须写入 examinations：检验、影像、病理等分别记录，检验结果逐项提取名称、值、单位、"
         "参考范围和异常标记；结果数值不得重复包含单位，例如40%必须拆成value=40、unit=%。"
         "原文没有参考范围时保持缺失，不得用医学常识补写。"
+        "MRI、CT、超声、检验等检查及检查申请只能写入examinations，不得同时写入procedures；"
+        "费用清单或缴费记录中的缴费日期不等于检查实施日期，除非原文明确写明检查日期，否则performed_date保持缺失。"
         "门急诊就诊事件使用 visit，不能写成 admission。输液医嘱中明确出现的溶媒也作为独立药品提取。"
         "用药频次的value保留原文缩写，normalized_value将qd/bid/tid/qid分别规范为每日1/2/3/4次；"
         "最大日剂量写入max_daily_dose，其他重复用药限制写入additional_instructions。"
         "费用字段必须区分三个层级：费用口径、责任属性、付款渠道。个人自付是医保目录内由个人承担的金额，"
         "个人自费是医保目录外由个人全额承担的金额，两者严禁合并成个人支付；个人账户与现金属于付款渠道，"
         "不得当作个人自付或个人自费。基金支付来源也必须分别提取。只有原文明确出现的值才能标记 extracted；"
+        "不得用个人账户支付、现金支付等付款渠道反推个人自付或个人自费；原文未拆分责任属性时保持缺失。"
         "计算结果标记 derived 并在 derivation 中写明算式，缺少任一计算项时不得把缺失项当成0。"
         "本任务只做忠实结构化与证据一致性检查，不得判断医生诊断不合理、医生错误或治疗不当。"
         "若不同文档中的诊断或证据确有冲突，只能添加 DIAGNOSIS_DOCUMENT_CONFLICT 或 "
@@ -146,9 +150,13 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
     output_text = extract_output_text(response.json())
     result = ClaimCase.model_validate_json(normalize_json_output(output_text))
     result = normalize_case(result)
+    existing_flag_codes = {flag.code for flag in result.quality_flags}
+    result.quality_flags.extend(
+        flag for flag in validate_case(result) if flag.code not in existing_flag_codes
+    )
     if result.case_id != case_id:
         raise RuntimeError("模型返回的 case_id 与请求不一致")
-    return result
+    return ClaimCase.model_validate(result.model_dump())
 
 
 @app.get("/api/health")

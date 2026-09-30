@@ -48,6 +48,14 @@ class CostSemanticsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             FieldValue[Decimal](value=Decimal("1"), status=FieldStatus.DERIVED)
 
+    def test_personal_burden_cannot_be_derived_from_payment_channels_only(self) -> None:
+        case = ClaimCase(case_id="cost-002")
+        case.costs.personal_burden.total_personal_burden = derived(
+            "452", "personal_account_payment + cash_payment"
+        )
+        flags = validate_case(case)
+        self.assertIn("PERSONAL_BURDEN_BASIS_INCOMPLETE", {flag.code for flag in flags})
+
 
 if __name__ == "__main__":
     unittest.main()
