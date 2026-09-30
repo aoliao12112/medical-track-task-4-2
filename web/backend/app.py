@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -21,7 +22,8 @@ from medical_claims.normalization import normalize_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.1.0")
-BACKEND_REVISION = "2026-09-30-normalization-f1-v1"
+BACKEND_REVISION = "2026-09-30-long-output-v2"
+logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -113,6 +115,8 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         "DIAGNOSIS_EVIDENCE_REVIEW 质量标记并提示医学复核，不得给出临床责任结论。"
         "不要为姓名、年龄等不在输出Schema中的脱敏字段创建缺失告警。"
         "字段置信度应综合OCR置信度、文本明确程度和跨文档一致性，低于0.90时使用 review_required。"
+        "为控制输出长度，每个字段的evidence最多保留1条最直接、最短且足以证明该字段的证据；"
+        "不要在多个字段中复制整段病历，只截取包含目标值的最小原文片段。"
     )
     body = {
         "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
@@ -123,7 +127,7 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         ),
         "reasoning": {"effort": "none"},
         "temperature": 0,
-        "max_output_tokens": 12000,
+        "max_output_tokens": int(os.getenv("DEEPSEEK_MAX_OUTPUT_TOKENS", "30000")),
         "text": {
             "format": {
                 "type": "json_schema",
@@ -132,7 +136,7 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
             }
         },
     }
-    with httpx.Client(timeout=180) as client:
+    with httpx.Client(timeout=float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "360"))) as client:
         response = client.post(
             "https://api.deepseek.com/responses",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -186,6 +190,11 @@ async def process_case(
                 documents.append(recognize_image(target, upload.filename or target.name, page))
             return structure_with_deepseek(case_id, documents)
     except httpx.HTTPStatusError as exc:
+        logger.exception("DeepSeek API returned an HTTP error")
         raise HTTPException(status_code=502, detail=f"DeepSeek API 调用失败：{exc.response.status_code}") from exc
+    except httpx.TimeoutException as exc:
+        logger.exception("DeepSeek API timed out")
+        raise HTTPException(status_code=504, detail="DeepSeek处理超时，请减少页面或稍后重试") from exc
     except Exception as exc:
+        logger.exception("Case processing failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

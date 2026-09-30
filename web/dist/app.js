@@ -412,8 +412,15 @@ async function processWithBackend() {
   form.append("case_id", $("caseId").value || "LOCAL-CASE");
   documents.forEach(function(doc) { if (doc.file) form.append("files", doc.file, doc.name); });
   const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/process", { method: "POST", body: form });
-  if (!response.ok) throw new Error("后端返回 " + response.status);
-  return response.json();
+  const text = await response.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+  if (!response.ok) {
+    const detail = payload && payload.detail ? payload.detail : (text || "无错误详情");
+    throw new Error("后端 " + response.status + "：" + detail);
+  }
+  if (!payload) throw new Error("后端返回了空响应或非JSON内容");
+  return payload;
 }
 async function runPipeline() {
   const button = $("runButton");
@@ -441,7 +448,7 @@ async function runPipeline() {
     renderAll();
     showToast(backendUrl ? "完整流程已运行" : "已完成演示流程；连接本地后端后可运行真实OCR");
   } catch (error) {
-    setPipelineState(2, true);
+    setPipelineState(3, true);
     setCaseStatus("处理失败", "error");
     result.quality_flags = [{ code: "PROVIDER_ERROR", severity: "error", message: error.message || "服务调用失败", field_path: null, document_id: null }];
     renderAll();
