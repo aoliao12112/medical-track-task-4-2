@@ -21,7 +21,12 @@ FREQUENCY_NORMALIZATION = {
 
 def _normalized_frequency(value: str) -> str | None:
     key = re.sub(r"\s+", "", value).lower()
-    return FREQUENCY_NORMALIZATION.get(key)
+    if key in FREQUENCY_NORMALIZATION:
+        return FREQUENCY_NORMALIZATION[key]
+    as_needed = re.fullmatch(r"必要时(?:每)?(\d+(?:-\d+)?)小时可重复(?:用药)?", key)
+    if as_needed:
+        return f"必要时每{as_needed.group(1)}小时可重复"
+    return None
 
 
 def _normalize_medications(case: ClaimCase) -> None:
@@ -31,8 +36,11 @@ def _normalize_medications(case: ClaimCase) -> None:
             if normalized:
                 medication.frequency.normalized_value = normalized
 
-        if medication.max_daily_dose.value is not None:
-            continue
+        if medication.usage_condition.value:
+            condition = re.sub(r"\s+", "", medication.usage_condition.value)
+            fever = re.fullmatch(r"(?:发热)?体温([≥>]\s*\d+(?:\.\d+)?℃)时", condition)
+            if fever:
+                medication.usage_condition.normalized_value = f"体温{fever.group(1).replace(' ', '')}时使用"
 
         source_fields = [
             medication.name,
@@ -42,6 +50,61 @@ def _normalize_medications(case: ClaimCase) -> None:
             medication.duration,
             medication.usage_condition,
         ]
+
+        if (
+            medication.usage_condition.value is None
+            and medication.name.value
+            and "氯化钠注射液" in medication.name.value
+        ):
+            infusion_evidence = next(
+                (
+                    item
+                    for field in source_fields
+                    for item in field.evidence
+                    if "+" in item.text and "注射液" in item.text
+                ),
+                None,
+            )
+            if infusion_evidence:
+                paired = re.search(r"\+\s*([^，,；;]+?注射液)", infusion_evidence.text)
+                paired_name = paired.group(1).strip() if paired else "其他注射药物"
+                medication.usage_condition = FieldValue[str](
+                    value=f"与{paired_name}配伍",
+                    normalized_value="作为静脉输注溶媒",
+                    confidence=0.95,
+                    status=FieldStatus.EXTRACTED,
+                    evidence=[infusion_evidence],
+                )
+
+        instruction_evidence = next(
+            (
+                item
+                for field in source_fields
+                for item in field.evidence
+                if re.search(r"必要时.*?\d+\s*-\s*\d+\s*小时.*?重复", item.text)
+            ),
+            None,
+        )
+        if medication.additional_instructions.value is None and instruction_evidence:
+            repeat = re.search(r"必要时\s*(\d+)\s*-\s*(\d+)\s*小时.*?重复(?:用药)?", instruction_evidence.text)
+            limit = re.search(r"(?:24\s*(?:小时|小)|每日|一天).*?不超过\s*([0-9]+(?:\.[0-9]+)?\s*(?:mg|g|ml|mL))", instruction_evidence.text, flags=re.IGNORECASE)
+            if repeat:
+                repeat_text = f"必要时{repeat.group(1)}-{repeat.group(2)}小时可重复用药"
+                normalized_repeat = f"必要时每{repeat.group(1)}-{repeat.group(2)}小时可重复"
+                if limit:
+                    amount = re.sub(r"\s+", "", limit.group(1))
+                    repeat_text += f"，24小时内不超过{amount}"
+                    normalized_repeat += f"；24小时内不超过{amount}"
+                medication.additional_instructions = FieldValue[str](
+                    value=repeat_text,
+                    normalized_value=normalized_repeat,
+                    confidence=0.90,
+                    status=FieldStatus.EXTRACTED,
+                    evidence=[instruction_evidence],
+                )
+
+        if medication.max_daily_dose.value is not None:
+            continue
         evidence = next(
             (
                 item

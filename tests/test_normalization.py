@@ -26,7 +26,7 @@ def extracted(value: str, text: str) -> FieldValue[str]:
 
 class NormalizationTest(unittest.TestCase):
     def test_frequency_result_unit_and_daily_limit_are_normalized(self) -> None:
-        medication_text = "对乙酰氨基酚片0.5g，必要时服用，24小内不超过2g"
+        medication_text = "对乙酰氨基酚片0.5g，必要时4-6小时可重复用药，24小内不超过2g"
         case = ClaimCase(
             case_id="normalize-001",
             medications=[
@@ -34,7 +34,13 @@ class NormalizationTest(unittest.TestCase):
                     medication_id="med-1",
                     name=extracted("对乙酰氨基酚片", medication_text),
                     frequency=extracted("bid", medication_text),
-                )
+                    usage_condition=extracted("发热体温≥38.5℃时", medication_text),
+                ),
+                Medication(
+                    medication_id="med-2",
+                    name=extracted("0.9%氯化钠注射液", "0.9%氯化钠注射液250ml + 热毒宁注射液20ml"),
+                    dose=extracted("250ml", "0.9%氯化钠注射液250ml + 热毒宁注射液20ml"),
+                ),
             ],
             examinations=[
                 Examination(
@@ -54,9 +60,15 @@ class NormalizationTest(unittest.TestCase):
         normalized = normalize_case(case)
 
         self.assertEqual(normalized.medications[0].frequency.normalized_value, "每日2次")
+        self.assertEqual(
+            normalized.medications[0].additional_instructions.normalized_value,
+            "必要时每4-6小时可重复；24小时内不超过2g",
+        )
         self.assertEqual(normalized.medications[0].max_daily_dose.value, "2g")
         self.assertEqual(normalized.medications[0].max_daily_dose.normalized_value, "2g/24h")
         self.assertEqual(normalized.medications[0].max_daily_dose.status, FieldStatus.REVIEW_REQUIRED)
+        self.assertEqual(normalized.medications[0].usage_condition.normalized_value, "体温≥38.5℃时使用")
+        self.assertEqual(normalized.medications[1].usage_condition.normalized_value, "作为静脉输注溶媒")
         result = normalized.examinations[0].results[0]
         self.assertEqual(result.value.value, "4.5")
         self.assertEqual(result.unit.value, "×10*/L")
