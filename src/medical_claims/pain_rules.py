@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
@@ -29,7 +30,7 @@ from .pain_models import (
 )
 
 
-RULE_VERSION = "pain-rules-v2"
+RULE_VERSION = "pain-rules-v3"
 MIN_RULE_CONFIDENCE = 0.72
 
 PATIENT_INSTRUCTION_MARKERS = {
@@ -198,7 +199,19 @@ def _cost_ratio_points(case) -> Iterable[PainPoint]:
         burden_field.status == FieldStatus.DERIVED
         and (within_value is None or outside_value is None)
     )
-    if burden is not None and not invalid_derived_burden:
+    burden_evidence_text = " ".join(item.text for item in burden_field.evidence)
+    channel_only_burden = (
+        burden_field.status == FieldStatus.EXTRACTED
+        and any(
+            marker in burden_evidence_text
+            for marker in ("现金支付", "个人账户支付", "家庭账户支付", "共济账户支付")
+        )
+        and not any(
+            marker in burden_evidence_text
+            for marker in ("个人负担", "个人自付", "个人自费", "个人承担")
+        )
+    )
+    if burden is not None and not invalid_derived_burden and not channel_only_burden:
         burden_sources = [burden_field]
     else:
         burden = None
@@ -383,7 +396,10 @@ LAB_GROUPS = (
     ("肾功能", {"肌酐", "尿素", "尿酸", "肾小球滤过", "egfr"}),
     ("电解质", {"钠", "钾", "氯", "钙", "镁", "磷", "碳酸氢"}),
     ("凝血功能", {"凝血", "凝血酶", "纤维蛋白", "d-二聚体", "inr", "aptt", "pt"}),
-    ("感染与炎症", {"c反应蛋白", "降钙素原", "抗原", "培养", "病毒", "细菌", "炎症"}),
+    ("肿瘤标志物", {"糖类抗原", "ca19-9", "癌胚抗原", "cea", "甲胎蛋白", "afp", "细胞角蛋白", "scc"}),
+    ("感染相关检查", {"c反应蛋白", "降钙素原", "病原抗原", "培养", "病毒", "细菌", "炎症"}),
+    ("血气与酸碱", {"二氧化碳分压", "二氧化碳总量", "碱剩余", "剩余碱", "超碱", "血气"}),
+    ("尿液检查", {"尿常规", "管型", "尿蛋白", "尿潜血", "尿白细胞", "尿红细胞"}),
     ("心肌相关", {"肌钙蛋白", "肌酸激酶", "乳酸脱氢酶", "bnp", "心肌"}),
 )
 
@@ -402,6 +418,57 @@ def _examination_group(examination, result) -> str:
     return "其他检验"
 
 
+def _first_number(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+    return _decimal(match.group(0)) if match else None
+
+
+def _numeric_reference_range(value: object) -> tuple[Decimal, Decimal] | None:
+    if value is None:
+        return None
+    match = re.fullmatch(
+        r"\s*(-?\d+(?:\.\d+)?)\s*(?:-|~|—|–|至)\s*(-?\d+(?:\.\d+)?)\s*",
+        str(value).replace(",", ""),
+    )
+    if not match:
+        return None
+    lower = _decimal(match.group(1))
+    upper = _decimal(match.group(2))
+    if lower is None or upper is None or lower > upper:
+        return None
+    return lower, upper
+
+
+def _is_verified_abnormal(examination, result) -> bool:
+    """复核模型的异常标签，避免把正常数值或预测值表误报为临床痛点。"""
+
+    if examination.category == ExaminationCategory.IMAGING:
+        return True
+    value = _first_number(result.value.normalized_value or result.value.value)
+    reference = _numeric_reference_range(
+        result.reference_range.normalized_value or result.reference_range.value
+    )
+    if value is not None and reference is not None:
+        lower, upper = reference
+        if result.abnormal_flag == AbnormalFlag.HIGH:
+            return value > upper
+        if result.abnormal_flag == AbnormalFlag.LOW:
+            return value < lower
+        return value < lower or value > upper
+
+    source_text = " ".join(
+        item.text
+        for field in (result.item_name, result.value, result.reference_range)
+        for item in field.evidence
+    )
+    if result.abnormal_flag == AbnormalFlag.POSITIVE:
+        return bool(re.search(r"阳性|\+", source_text, flags=re.IGNORECASE))
+    # 没有可计算参考范围时，只接受原文明确写出的异常或升降标记。
+    return bool(re.search(r"异常|↑|↓|(?:^|\s)[HL](?:\s|$)", source_text, flags=re.IGNORECASE))
+
+
 def _abnormal_examinations(case) -> Iterable[PainPoint]:
     """将逐项异常归并为临床主题，避免几十个检验值淹没真正行动建议。"""
 
@@ -415,6 +482,15 @@ def _abnormal_examinations(case) -> Iterable[PainPoint]:
     for examination_index, examination in enumerate(case.examinations):
         for result_index, result in enumerate(examination.results):
             if result.abnormal_flag not in relevant:
+                continue
+            item_name = str(result.item_name.normalized_value or result.item_name.value or "")
+            if (
+                examination.category == ExaminationCategory.PATHOLOGY
+                and item_name.strip() in {"大体描述", "肉眼所见", "镜下描述", "病理所见"}
+            ):
+                # 这些是报告章节标题，不是“异常”本身；应依据病理诊断/结论判断。
+                continue
+            if not _is_verified_abnormal(examination, result):
                 continue
             confidence = _confidence(result.item_name, result.value, reliability=0.97)
             if confidence < MIN_RULE_CONFIDENCE:
@@ -508,6 +584,28 @@ JARGON_MARKERS = {
 }
 
 
+def _collapse_near_duplicate_terms(values: list[str]) -> list[str]:
+    """合并只差一个字符的同长术语，优先保留在病历中重复更多的写法。
+
+    这可避免单页 OCR 错字（如一个解剖部位字误识别）进入用户可见说明，同时
+    不会把“肺结节”和“肺下叶结节”这类长度不同、含义不同的术语强行合并。
+    """
+
+    counts = Counter(values)
+    order = {value: index for index, value in enumerate(values)}
+    ranked = sorted(counts, key=lambda value: (-counts[value], order[value]))
+    retained: list[str] = []
+    for value in ranked:
+        if any(
+            len(value) == len(existing)
+            and sum(left != right for left, right in zip(value, existing)) <= 1
+            for existing in retained
+        ):
+            continue
+        retained.append(value)
+    return sorted(retained, key=lambda value: order[value])
+
+
 def _jargon_points(case) -> Iterable[PainPoint]:
     groups: dict[str, list[tuple[int, object, str, list[str]]]] = {}
     for index, diagnosis in enumerate(case.diagnoses):
@@ -526,7 +624,7 @@ def _jargon_points(case) -> Iterable[PainPoint]:
         evidence = _evidence(*fields)
         if not evidence:
             continue
-        names = list(dict.fromkeys(entry[2] for entry in entries))
+        names = _collapse_near_duplicate_terms([entry[2] for entry in entries])
         markers = sorted({marker for entry in entries for marker in entry[3]})
         reason = "、".join(markers) if markers else "较长的专业诊断术语"
         examples = "、".join(f"“{name}”" for name in names[:3])

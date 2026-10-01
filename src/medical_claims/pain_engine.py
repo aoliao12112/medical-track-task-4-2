@@ -19,7 +19,7 @@ from .pain_models import (
 from .pain_rules import detect_rule_pain_points
 
 
-ENGINE_VERSION = "pain-engine-v2"
+ENGINE_VERSION = "pain-engine-v3"
 SEMANTIC_TYPES = {
     PainPointType.MEDICATION_DIAGNOSIS_REVIEW,
     PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,

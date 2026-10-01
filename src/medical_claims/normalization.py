@@ -155,6 +155,75 @@ def _normalize_examinations(case: ClaimCase) -> None:
                     result.unit.warnings.append(warning)
 
 
+def _repair_document_id(value: str) -> str:
+    """修复压缩包文件名被按 GBK 误解码后的常见乱码。"""
+
+    try:
+        # Windows CP936 会把单字节 0x80 显示为“€”，而 Python 的 gbk
+        # 编码器不能直接把该字符编码回去，因此显式恢复该字节。
+        source = b"".join(
+            bytes([0x80]) if character == "€" else character.encode("gbk")
+            for character in value
+        )
+        candidate = source.decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+    markers = {"住院", "费用", "清单", "检查", "报告", "出院", "记录", "医保", "结算", "门诊", "其它"}
+    return candidate if any(marker in candidate for marker in markers) else value
+
+
+def _normalize_evidence_document_ids(case: ClaimCase) -> None:
+    """缓存中的旧分块结果也必须在最终输出阶段修复文件名。"""
+
+    def visit(node: object) -> None:
+        if isinstance(node, FieldValue):
+            for item in node.evidence:
+                item.document_id = _repair_document_id(item.document_id)
+            return
+        if hasattr(node, "__class__") and hasattr(node.__class__, "model_fields"):
+            for name in node.__class__.model_fields:
+                visit(getattr(node, name))
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(case)
+
+
+def _normalize_cost_semantics(case: ClaimCase) -> None:
+    """阻止模型把付款渠道误填为费用责任属性。
+
+    “个人现金支付/个人账户支付”说明钱从哪里付，不等同于医保目录内自付、
+    目录外自费或二者合计。若个人负担合计唯一依据只是付款渠道，就撤销该值，
+    保留警告供人工复核。
+    """
+
+    field = case.costs.personal_burden.total_personal_burden
+    evidence_text = " ".join(item.text for item in field.evidence)
+    responsibility_markers = ("个人负担", "个人自付", "个人自费", "个人承担")
+    payment_channel_markers = ("现金支付", "个人账户支付", "家庭账户支付", "共济账户支付")
+    is_channel_only = (
+        field.value is not None
+        and any(marker in evidence_text for marker in payment_channel_markers)
+        and not any(marker in evidence_text for marker in responsibility_markers)
+    )
+    if not is_channel_only:
+        return
+
+    case.costs.personal_burden.total_personal_burden = FieldValue(
+        status=FieldStatus.NOT_PRESENT,
+        evidence=list(field.evidence),
+        warnings=["原文仅说明付款渠道，不能据此认定个人自付与个人自费合计"],
+    )
+    ratio = case.costs.ratios.total_personal_burden_ratio
+    if ratio.value is not None:
+        case.costs.ratios.total_personal_burden_ratio = FieldValue(
+            status=FieldStatus.NOT_PRESENT,
+            evidence=list(ratio.evidence),
+            warnings=["个人负担口径依据不足，比例不予计算"],
+        )
+
+
 def _reclassify_examination_only_procedures(case: ClaimCase) -> None:
     """纠正模型把纯检查项目误放入手术操作的情况，保留CT引导穿刺等真实操作。"""
 
@@ -199,4 +268,6 @@ def normalize_case(case: ClaimCase) -> ClaimCase:
     _normalize_medications(case)
     _reclassify_examination_only_procedures(case)
     _normalize_examinations(case)
+    _normalize_cost_semantics(case)
+    _normalize_evidence_document_ids(case)
     return ClaimCase.model_validate(case.model_dump())

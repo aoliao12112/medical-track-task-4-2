@@ -25,6 +25,7 @@ from medical_claims.pain_models import (
     PainPointType,
     PainSeverity,
 )
+from medical_claims.normalization import normalize_case
 
 
 def extracted(value, text: str, confidence: float = 0.95, document_id: str = "doc-1"):
@@ -105,6 +106,40 @@ class PainRulesTest(unittest.TestCase):
             {point.type for point in report.pain_points},
         )
 
+    def test_cash_payment_misfiled_as_total_burden_is_removed(self) -> None:
+        case = ClaimCase(case_id="pain-cash-semantic-conflict")
+        case.costs.total_amount = extracted(Decimal("1000"), "医疗总费用1000元")
+        case.costs.personal_burden.total_personal_burden = extracted(
+            Decimal("900"), "个人现金支付：900元"
+        )
+        normalized = normalize_case(case)
+        self.assertIsNone(normalized.costs.personal_burden.total_personal_burden.value)
+        report = analyze_pain_points(normalized)
+        self.assertNotIn(
+            PainPointType.HIGH_PERSONAL_BURDEN_RATIO,
+            {point.type for point in report.pain_points},
+        )
+
+    def test_cached_mojibake_document_id_is_repaired(self) -> None:
+        case = ClaimCase(
+            case_id="pain-document-id",
+            diagnoses=[
+                Diagnosis(
+                    diagnosis_id="dx-1",
+                    name=extracted(
+                        "肺结节",
+                        "诊断：肺结节",
+                        document_id="妫€鏌ユ姤鍛婂崟_1.jpg",
+                    ),
+                )
+            ],
+        )
+        normalized = normalize_case(case)
+        self.assertEqual(
+            normalized.diagnoses[0].name.evidence[0].document_id,
+            "检查报告单_1.jpg",
+        )
+
     def test_prn_medication_with_safety_limit_does_not_require_fixed_duration(self) -> None:
         case = ClaimCase(
             case_id="pain-prn",
@@ -157,7 +192,8 @@ class PainRulesTest(unittest.TestCase):
         results = [
             ExaminationResult(
                 item_name=extracted(f"白细胞指标{i}", f"白细胞指标{i}", 0.95),
-                value=extracted(str(i), f"结果{i}", 0.95),
+                value=extracted(str(10 + i), f"结果{10 + i}", 0.95),
+                reference_range=extracted("0-5", "参考范围0-5", 0.95),
                 abnormal_flag=AbnormalFlag.HIGH,
             )
             for i in range(8)
@@ -188,6 +224,81 @@ class PainRulesTest(unittest.TestCase):
         self.assertEqual(len(abnormal), 1)
         self.assertIn("共8项", abnormal[0].description)
         self.assertNotIn("8432", " ".join(item.text for item in abnormal[0].evidence))
+
+    def test_pathology_section_heading_is_not_an_abnormal_result(self) -> None:
+        case = ClaimCase(
+            case_id="pain-pathology-heading",
+            examinations=[
+                Examination(
+                    examination_id="exam-pathology",
+                    category="pathology",
+                    name=extracted("病理检查", "病理检查"),
+                    results=[
+                        ExaminationResult(
+                            item_name=extracted("大体描述", "大体描述"),
+                            value=extracted("灰黑色结节", "可见一灰黑色结节"),
+                            abnormal_flag=AbnormalFlag.ABNORMAL,
+                        )
+                    ],
+                )
+            ],
+        )
+        report = analyze_pain_points(case)
+        self.assertNotIn(
+            PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
+            {point.type for point in report.pain_points},
+        )
+
+    def test_tumor_marker_is_not_classified_as_infection(self) -> None:
+        case = ClaimCase(
+            case_id="pain-tumor-marker",
+            examinations=[
+                Examination(
+                    examination_id="exam-marker",
+                    name=extracted("肿瘤标志物", "肿瘤标志物"),
+                    results=[
+                        ExaminationResult(
+                            item_name=extracted("糖类抗原(CA19-9)", "CA19-9"),
+                            value=extracted("40", "40↑"),
+                            reference_range=extracted("0-25", "参考范围0-25"),
+                            abnormal_flag=AbnormalFlag.HIGH,
+                        )
+                    ],
+                )
+            ],
+        )
+        report = analyze_pain_points(case)
+        abnormal = next(
+            point
+            for point in report.pain_points
+            if point.type == PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP
+        )
+        self.assertIn("肿瘤标志物", abnormal.title)
+        self.assertNotIn("感染", abnormal.title)
+
+    def test_in_range_value_is_not_trusted_as_low(self) -> None:
+        case = ClaimCase(
+            case_id="pain-false-low",
+            examinations=[
+                Examination(
+                    examination_id="exam-blood",
+                    name=extracted("血常规", "血常规"),
+                    results=[
+                        ExaminationResult(
+                            item_name=extracted("红细胞", "红细胞"),
+                            value=extracted("3.87", "3.87"),
+                            reference_range=extracted("3.8-5.1", "3.8-5.1"),
+                            abnormal_flag=AbnormalFlag.LOW,
+                        )
+                    ],
+                )
+            ],
+        )
+        report = analyze_pain_points(case)
+        self.assertNotIn(
+            PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
+            {point.type for point in report.pain_points},
+        )
 
     def test_repeated_jargon_is_merged_into_one_user_pain_point(self) -> None:
         case = ClaimCase(

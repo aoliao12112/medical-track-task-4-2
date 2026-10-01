@@ -34,7 +34,7 @@ from medical_claims.validation import validate_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
-BACKEND_REVISION = "2026-10-01-long-case-pain-v3"
+BACKEND_REVISION = "2026-10-01-long-case-pain-v4"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -54,7 +54,11 @@ def normalize_document_id(value: str) -> str:
     """修复压缩包中常见的 UTF-8 文件名被按 GBK 解码后的乱码。"""
 
     try:
-        candidate = value.encode("gbk").decode("utf-8")
+        source = b"".join(
+            bytes([0x80]) if character == "€" else character.encode("gbk")
+            for character in value
+        )
+        candidate = source.decode("utf-8")
     except (UnicodeEncodeError, UnicodeDecodeError):
         return value
     medical_markers = {
