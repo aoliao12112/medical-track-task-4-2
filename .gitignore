@@ -22,6 +22,7 @@ build/
 work/
 outputs/
 artifacts/
+/基于理赔医护记录的“医护洞察与温度指引”引擎.zip
 
 # The first-question demo is intentionally committed as deployable static files
 !web/dist/
