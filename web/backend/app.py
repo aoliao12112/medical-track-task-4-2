@@ -34,7 +34,7 @@ from medical_claims.validation import validate_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
-BACKEND_REVISION = "2026-10-01-long-case-pain-v4"
+BACKEND_REVISION = "2026-10-01-long-case-pain-v5"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -511,11 +511,14 @@ async def process_case(
 def analyze_case_pain_points(request: PainAnalysisRequest) -> PainPointReport:
     """对第一问的 ClaimCase 执行第二问多维痛点识别。"""
 
+    # 兼容浏览器中仍保留的旧版第一问结果：分析前重新执行确定性规范化，
+    # 修正费用语义、证据文件名等问题，且不会重新 OCR 或调用结构化模型。
+    case = normalize_case(request.case.model_copy(deep=True))
     semantic_points = []
     warnings: list[str] = []
     if request.use_llm:
         try:
-            semantic_points = semantic_pain_points_with_deepseek(request.case).pain_points
+            semantic_points = semantic_pain_points_with_deepseek(case).pain_points
         except Exception as exc:
             logger.exception("Semantic pain-point analysis failed; returning rule-only result")
             warnings.append(
@@ -523,4 +526,4 @@ def analyze_case_pain_points(request: PainAnalysisRequest) -> PainPointReport:
             )
     else:
         warnings.append("本次请求关闭了DeepSeek语义分析，仅运行确定性规则。")
-    return analyze_pain_points(request.case, semantic_points, warnings)
+    return analyze_pain_points(case, semantic_points, warnings)
