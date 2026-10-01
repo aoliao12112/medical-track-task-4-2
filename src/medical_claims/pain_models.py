@@ -74,7 +74,7 @@ class PainPointReport(StrictModel):
     case_id: str
     summary: PainPointSummary
     pain_points: list[PainPoint] = Field(default_factory=list)
-    engine_version: str = "pain-engine-v1"
+    engine_version: str = "pain-engine-v2"
     analysis_warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -104,4 +104,3 @@ class SemanticPainPointBatch(StrictModel):
 class PainAnalysisRequest(StrictModel):
     case: ClaimCase
     use_llm: bool = True
-

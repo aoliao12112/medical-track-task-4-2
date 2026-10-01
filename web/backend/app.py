@@ -34,7 +34,7 @@ from medical_claims.validation import validate_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
-BACKEND_REVISION = "2026-10-01-long-case-v2"
+BACKEND_REVISION = "2026-10-01-long-case-pain-v3"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +48,29 @@ app.add_middleware(
 )
 
 _ocr_engine: Any | None = None
+
+
+def normalize_document_id(value: str) -> str:
+    """修复压缩包中常见的 UTF-8 文件名被按 GBK 解码后的乱码。"""
+
+    try:
+        candidate = value.encode("gbk").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+    medical_markers = {
+        "住院",
+        "费用",
+        "清单",
+        "检查",
+        "报告",
+        "出院",
+        "记录",
+        "医保",
+        "结算",
+        "门诊",
+        "其它",
+    }
+    return candidate if any(marker in candidate for marker in medical_markers) else value
 
 
 def get_ocr_engine() -> Any:
@@ -376,6 +399,12 @@ def semantic_pain_points_with_deepseek(case: ClaimCase) -> SemanticPainPointBatc
         "DIAGNOSIS_TERM_HARD_TO_UNDERSTAND、CARE_GUIDANCE_INCOMPLETE。"
         "不得输出费用类、检查异常类或重复用药类标签，这些由本地确定性规则处理。"
         "用药与诊断只能表述为对应关系需要医学复核，不能声称医生用药错误、不合理或存在医疗事故。"
+        "不得仅因为药品数量多、存在常见围手术期麻醉镇痛药或抗凝药就输出用药与诊断不匹配。"
+        "MEDICATION_DIAGNOSIS_REVIEW必须定位到一个具体medications[数字]和一个具体diagnoses[数字]，"
+        "related_fields必须写出这两个索引路径，并至少引用药品与诊断两条不同证据；否则不要输出。"
+        "费用清单中的药品项目不是面向患者的用药医嘱，不能因其缺少频次、途径或疗程而判断指导不完整。"
+        "CARE_GUIDANCE_INCOMPLETE只有在材料明确出现笼统随访要求、但缺少时间或行动信息时才能输出；"
+        "不能仅根据ClaimCase没有某字段就推断医生未告知。"
         "缺少充分证据时不输出；没有痛点时返回空数组。"
         "每条evidence必须逐字复制输入中已有evidence的最短原文，document_id和page必须一致。"
         "严重程度最高只能为high；confidence不得高于0.90；所有候选review_required必须为true。"
@@ -442,7 +471,9 @@ async def process_case(
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
             tmp_path = Path(tmp)
             documents: list[dict[str, Any]] = []
-            filenames = [upload.filename or "image.jpg" for upload in files]
+            filenames = [
+                normalize_document_id(upload.filename or "image.jpg") for upload in files
+            ]
             filename_counts = Counter(filenames)
             for page, upload in enumerate(files, start=1):
                 suffix = Path(upload.filename or "image.jpg").suffix.lower()
@@ -450,7 +481,7 @@ async def process_case(
                     raise ValueError(f"当前OCR后端暂不处理 {suffix or '未知格式'}，请先转为图片")
                 target = tmp_path / f"{page:04d}{suffix}"
                 target.write_bytes(await upload.read())
-                original_name = upload.filename or target.name
+                original_name = normalize_document_id(upload.filename or target.name)
                 document_id = (
                     original_name
                     if filename_counts[original_name] == 1

@@ -11,7 +11,14 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Iterable
 
-from .models import AbnormalFlag, Evidence, FieldValue, ReconciliationStatus
+from .models import (
+    AbnormalFlag,
+    Evidence,
+    ExaminationCategory,
+    FieldStatus,
+    FieldValue,
+    ReconciliationStatus,
+)
 from .pain_models import (
     DetectorInfo,
     DetectorMethod,
@@ -22,7 +29,22 @@ from .pain_models import (
 )
 
 
-RULE_VERSION = "pain-rules-v1"
+RULE_VERSION = "pain-rules-v2"
+MIN_RULE_CONFIDENCE = 0.72
+
+PATIENT_INSTRUCTION_MARKERS = {
+    "出院",
+    "带药",
+    "医嘱",
+    "处方",
+    "门诊病历",
+    "用法用量",
+    # 常见 UTF-8/GBK 文件名乱码片段，兼容历史样本。
+    "鍑洪櫌",
+    "闂ㄨ瘖",
+    "澶勬柟",
+}
+NON_MEDICATION_MARKERS = {"敷料", "材料", "导管", "缝线", "引流器", "固定器"}
 
 
 def _stable_id(point_type: PainPointType, identity: str) -> str:
@@ -46,6 +68,43 @@ def _confidence(*fields: FieldValue[object], reliability: float = 0.95) -> float
     source = [field.confidence for field in fields if field.confidence is not None]
     upstream = min(source) if source else 0.8
     return round(min(1.0, upstream * reliability), 4)
+
+
+def _field_text(*fields: FieldValue[object]) -> str:
+    parts: list[str] = []
+    for field in fields:
+        if field.value is not None:
+            parts.append(str(field.value))
+        for item in field.evidence:
+            parts.extend([item.document_id, item.text])
+    return " ".join(parts)
+
+
+def _medication_fields(medication) -> list[FieldValue[object]]:
+    return [
+        medication.name,
+        medication.dose,
+        medication.frequency,
+        medication.route,
+        medication.duration,
+        medication.usage_condition,
+        medication.max_daily_dose,
+        medication.additional_instructions,
+    ]
+
+
+def _is_patient_instruction_medication(medication) -> bool:
+    """只对处方、出院带药或明确医嘱检查用户可执行的用药说明。
+
+    费用清单中的药品项目不是医嘱，天然不会包含完整频次和疗程；把它们逐条
+    判为说明缺失会制造大量误报。
+    """
+
+    name = str(medication.name.normalized_value or medication.name.value or "")
+    if any(marker in name for marker in NON_MEDICATION_MARKERS):
+        return False
+    context = _field_text(*_medication_fields(medication))
+    return any(marker in context for marker in PATIENT_INSTRUCTION_MARKERS)
 
 
 def _decimal(value: object) -> Decimal | None:
@@ -133,13 +192,18 @@ def _cost_ratio_points(case) -> Iterable[PainPoint]:
     burden_field = costs.personal_burden.total_personal_burden
     burden_sources: list[FieldValue[object]] = []
     burden = _decimal(burden_field.value)
-    if burden is not None:
+    within_value = _decimal(costs.personal_burden.within_policy_self_pay.value)
+    outside_value = _decimal(costs.personal_burden.outside_policy_self_expense.value)
+    invalid_derived_burden = (
+        burden_field.status == FieldStatus.DERIVED
+        and (within_value is None or outside_value is None)
+    )
+    if burden is not None and not invalid_derived_burden:
         burden_sources = [burden_field]
     else:
-        within = _decimal(costs.personal_burden.within_policy_self_pay.value)
-        outside = _decimal(costs.personal_burden.outside_policy_self_expense.value)
-        if within is not None and outside is not None:
-            burden = within + outside
+        burden = None
+        if within_value is not None and outside_value is not None:
+            burden = within_value + outside_value
             burden_sources = [
                 costs.personal_burden.within_policy_self_pay,
                 costs.personal_burden.outside_policy_self_expense,
@@ -186,7 +250,7 @@ def _reconciliation_point(case) -> PainPoint | None:
     abnormal = reconciliation.status in {
         ReconciliationStatus.WARNING,
         ReconciliationStatus.FAILED,
-    } or (difference is not None and abs(difference) > Decimal("1"))
+    }
     if not abnormal:
         return None
     cost_fields: list[FieldValue[object]] = [
@@ -229,6 +293,8 @@ def _missing_medication_instructions(case) -> Iterable[PainPoint]:
     fields = ("dose", "frequency", "route", "duration")
     labels = {"dose": "剂量", "frequency": "频次", "route": "途径", "duration": "疗程"}
     for index, medication in enumerate(case.medications):
+        if not _is_patient_instruction_medication(medication):
+            continue
         missing = [name for name in fields if getattr(medication, name).value is None]
         # 按需使用且已给出使用条件/日剂量上限的药品，不强行要求固定疗程。
         if (
@@ -254,7 +320,7 @@ def _missing_medication_instructions(case) -> Iterable[PainPoint]:
             severity_score=score,
             confidence=_confidence(medication.name, reliability=0.98),
             description="当前材料中未发现明确的" + "、".join(labels[item] for item in missing) + "。",
-            evidence=_evidence(medication.name),
+            evidence=_evidence(*_medication_fields(medication)),
             related_fields=[f"medications[{index}].{item}" for item in missing],
             recommended_action="下次用药或复诊前向医生或药师确认，不能自行补全剂量和疗程。",
             review_required=True,
@@ -276,7 +342,7 @@ def _duplicate_medications(case) -> Iterable[PainPoint]:
     groups: dict[str, list[tuple[int, object]]] = {}
     for index, medication in enumerate(case.medications):
         name = medication.name.normalized_value or medication.name.value
-        if not name:
+        if not name or not _is_patient_instruction_medication(medication):
             continue
         groups.setdefault(_normalized_medication_name(name), []).append((index, medication))
     for normalized, entries in groups.items():
@@ -311,46 +377,118 @@ def _duplicate_medications(case) -> Iterable[PainPoint]:
         )
 
 
+LAB_GROUPS = (
+    ("血常规", {"白细胞", "红细胞", "血红蛋白", "血小板", "中性粒", "淋巴细胞", "单核细胞", "嗜酸", "嗜碱"}),
+    ("肝功能", {"丙氨酸", "天门冬氨酸", "转氨酶", "胆红素", "白蛋白", "球蛋白", "碱性磷酸酶", "谷氨酰"}),
+    ("肾功能", {"肌酐", "尿素", "尿酸", "肾小球滤过", "egfr"}),
+    ("电解质", {"钠", "钾", "氯", "钙", "镁", "磷", "碳酸氢"}),
+    ("凝血功能", {"凝血", "凝血酶", "纤维蛋白", "d-二聚体", "inr", "aptt", "pt"}),
+    ("感染与炎症", {"c反应蛋白", "降钙素原", "抗原", "培养", "病毒", "细菌", "炎症"}),
+    ("心肌相关", {"肌钙蛋白", "肌酸激酶", "乳酸脱氢酶", "bnp", "心肌"}),
+)
+
+
+def _examination_group(examination, result) -> str:
+    if examination.category == ExaminationCategory.IMAGING:
+        return "影像检查"
+    if examination.category == ExaminationCategory.PATHOLOGY:
+        return "病理检查"
+    item = str(result.item_name.normalized_value or result.item_name.value or "").lower()
+    examination_name = str(examination.name.normalized_value or examination.name.value or "").lower()
+    text = f"{examination_name} {item}"
+    for group, markers in LAB_GROUPS:
+        if any(marker in text for marker in markers):
+            return group
+    return "其他检验"
+
+
 def _abnormal_examinations(case) -> Iterable[PainPoint]:
+    """将逐项异常归并为临床主题，避免几十个检验值淹没真正行动建议。"""
+
     relevant = {
         AbnormalFlag.HIGH,
         AbnormalFlag.LOW,
         AbnormalFlag.POSITIVE,
         AbnormalFlag.ABNORMAL,
     }
+    groups: dict[str, list[tuple[int, int, object]]] = {}
     for examination_index, examination in enumerate(case.examinations):
         for result_index, result in enumerate(examination.results):
             if result.abnormal_flag not in relevant:
                 continue
-            evidence = _evidence(result.item_name, result.value)
-            if not evidence:
+            confidence = _confidence(result.item_name, result.value, reliability=0.97)
+            if confidence < MIN_RULE_CONFIDENCE:
                 continue
-            item = result.item_name.normalized_value or result.item_name.value or examination.name.value or "检查结果"
-            high_attention = result.abnormal_flag in {AbnormalFlag.POSITIVE, AbnormalFlag.ABNORMAL}
-            yield PainPoint(
-                pain_point_id=_stable_id(
-                    PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
-                    f"{case.case_id}:{examination.examination_id}:{result_index}",
-                ),
-                dimension=PainDimension.CLINICAL,
-                type=PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
-                title=f"{item}存在异常标记",
-                severity=PainSeverity.MEDIUM if high_attention else PainSeverity.LOW,
-                severity_score=65 if high_attention else 42,
-                confidence=_confidence(result.item_name, result.value, reliability=0.97),
-                description="报告原文将该结果标记为异常；仅凭理赔材料不能确定临床意义。",
-                evidence=evidence,
-                related_fields=[
-                    f"examinations[{examination_index}].results[{result_index}]"
-                ],
-                recommended_action="结合症状和医生意见确认是否需要复查或随访。",
-                review_required=True,
-                detector=DetectorInfo(
-                    method=DetectorMethod.RULE,
-                    version=RULE_VERSION,
-                    rule_id="CLINICAL-ABNORMAL-EXAM-001",
-                ),
+            if not _evidence(result.item_name, result.value):
+                continue
+            groups.setdefault(_examination_group(examination, result), []).append(
+                (examination_index, result_index, result)
             )
+
+    for group, entries in groups.items():
+        ranked = sorted(
+            entries,
+            key=lambda entry: (
+                entry[2].abnormal_flag
+                not in {AbnormalFlag.POSITIVE, AbnormalFlag.ABNORMAL},
+                -_confidence(entry[2].item_name, entry[2].value, reliability=0.97),
+            ),
+        )
+        selected = ranked[:6]
+        evidence: list[Evidence] = []
+        seen_evidence: set[tuple[str, int | None, str]] = set()
+        item_names: list[str] = []
+        confidences: list[float] = []
+        for _, _, result in selected:
+            name = str(result.item_name.normalized_value or result.item_name.value or "异常指标")
+            if name not in item_names:
+                item_names.append(name)
+            confidences.append(_confidence(result.item_name, result.value, reliability=0.97))
+            for item in _evidence(result.item_name, result.value):
+                key = (item.document_id, item.page, item.text)
+                if key not in seen_evidence and len(evidence) < 4:
+                    seen_evidence.add(key)
+                    evidence.append(item)
+        high_attention = any(
+            result.abnormal_flag in {AbnormalFlag.POSITIVE, AbnormalFlag.ABNORMAL}
+            for _, _, result in entries
+        )
+        extra = len(entries) - len(item_names)
+        item_text = "、".join(item_names[:5])
+        if extra > 0:
+            item_text += f"等共{len(entries)}项"
+        title = {
+            "影像检查": "影像检查发现需要结合临床随访",
+            "病理检查": "病理检查结果需要医学复核",
+        }.get(group, f"{group}存在异常指标")
+        yield PainPoint(
+            pain_point_id=_stable_id(
+                PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
+                f"{case.case_id}:{group}",
+            ),
+            dimension=PainDimension.CLINICAL,
+            type=PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
+            title=title,
+            severity=PainSeverity.MEDIUM if high_attention else PainSeverity.LOW,
+            severity_score=65 if high_attention else 42,
+            confidence=round(sum(confidences) / len(confidences), 4),
+            description=(
+                f"当前材料在{group}中标记了{item_text}。系统已将同类结果归并；"
+                "仅凭理赔材料不能确定临床意义。"
+            ),
+            evidence=evidence,
+            related_fields=[
+                f"examinations[{examination_index}].results[{result_index}]"
+                for examination_index, result_index, _ in entries[:12]
+            ],
+            recommended_action="请结合症状和经治医生意见，确认是否需要复查、随访或进一步解释。",
+            review_required=True,
+            detector=DetectorInfo(
+                method=DetectorMethod.RULE,
+                version=RULE_VERSION,
+                rule_id=f"CLINICAL-ABNORMAL-{group}-V2",
+            ),
+        )
 
 
 JARGON_MARKERS = {
@@ -371,6 +509,7 @@ JARGON_MARKERS = {
 
 
 def _jargon_points(case) -> Iterable[PainPoint]:
+    groups: dict[str, list[tuple[int, object, str, list[str]]]] = {}
     for index, diagnosis in enumerate(case.diagnoses):
         name = diagnosis.name.normalized_value or diagnosis.name.value
         if not name or not diagnosis.name.evidence:
@@ -378,21 +517,35 @@ def _jargon_points(case) -> Iterable[PainPoint]:
         matched = sorted(marker for marker in JARGON_MARKERS if marker in name)
         if not matched and len(name) < 12:
             continue
-        reason = "、".join(matched) if matched else "较长的专业诊断术语"
+        # 相同概念即使来自多张检查单，也只形成一个用户痛点。
+        group = matched[0] if matched else "复杂术语"
+        groups.setdefault(group, []).append((index, diagnosis, str(name), matched))
+
+    for group, entries in groups.items():
+        fields = [entry[1].name for entry in entries]
+        evidence = _evidence(*fields)
+        if not evidence:
+            continue
+        names = list(dict.fromkeys(entry[2] for entry in entries))
+        markers = sorted({marker for entry in entries for marker in entry[3]})
+        reason = "、".join(markers) if markers else "较长的专业诊断术语"
+        examples = "、".join(f"“{name}”" for name in names[:3])
+        if len(names) > 3:
+            examples += f"等{len(names)}种表述"
         yield PainPoint(
             pain_point_id=_stable_id(
                 PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
-                f"{case.case_id}:{diagnosis.diagnosis_id}",
+                f"{case.case_id}:{group}",
             ),
             dimension=PainDimension.EXPERIENCE,
             type=PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
-            title="诊断术语可能不易理解",
+            title=f"{group}相关诊断术语可能不易理解",
             severity=PainSeverity.LOW,
             severity_score=30,
-            confidence=_confidence(diagnosis.name, reliability=0.85),
-            description=f"诊断“{name}”包含{reason}，普通用户可能需要通俗解释。",
-            evidence=_evidence(diagnosis.name),
-            related_fields=[f"diagnoses[{index}].name"],
+            confidence=_confidence(*fields, reliability=0.85),
+            description=f"当前材料出现{examples}，包含{reason}，普通用户可能需要通俗解释。",
+            evidence=evidence,
+            related_fields=[f"diagnoses[{index}].name" for index, *_ in entries[:12]],
             recommended_action="在温度指引中提供不夸大、不替代医生诊断的通俗解释。",
             review_required=False,
             detector=DetectorInfo(

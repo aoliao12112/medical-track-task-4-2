@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 
 from .models import ClaimCase, Evidence
@@ -18,7 +19,7 @@ from .pain_models import (
 from .pain_rules import detect_rule_pain_points
 
 
-ENGINE_VERSION = "pain-engine-v1"
+ENGINE_VERSION = "pain-engine-v2"
 SEMANTIC_TYPES = {
     PainPointType.MEDICATION_DIAGNOSIS_REVIEW,
     PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
@@ -35,6 +36,15 @@ SEVERITY_RANK = {
     PainSeverity.HIGH: 3,
     PainSeverity.CRITICAL: 4,
 }
+TYPE_LIMITS = {
+    PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP: 5,
+    PainPointType.MEDICATION_INSTRUCTION_INCOMPLETE: 3,
+    PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND: 1,
+    PainPointType.DUPLICATE_MEDICATION_REVIEW: 1,
+    PainPointType.MEDICATION_DIAGNOSIS_REVIEW: 1,
+    PainPointType.CARE_GUIDANCE_INCOMPLETE: 2,
+}
+TOTAL_POINT_LIMIT = 12
 
 
 def _source_evidence(case: ClaimCase) -> list[Evidence]:
@@ -97,6 +107,19 @@ def _sanitize_semantic_points(case: ClaimCase, points: list[PainPoint]) -> tuple
         if not verified:
             warnings.append(f"已忽略缺少可溯源证据的LLM痛点：{point.type.value}")
             continue
+        if point.confidence < 0.65:
+            warnings.append(f"已忽略低置信度LLM痛点：{point.type.value}")
+            continue
+        if point.type == PainPointType.MEDICATION_DIAGNOSIS_REVIEW:
+            has_medication = any(
+                re.search(r"medications\[\d+\]", path) for path in point.related_fields
+            )
+            has_diagnosis = any(
+                re.search(r"diagnoses\[\d+\]", path) for path in point.related_fields
+            )
+            if not (has_medication and has_diagnosis and len(verified) >= 2):
+                warnings.append("已忽略未定位到具体药品和诊断的宽泛用药复核候选")
+                continue
         cleaned = point.model_copy(deep=True)
         cleaned.evidence = verified[:4]
         cleaned.dimension = SEMANTIC_DIMENSIONS[cleaned.type]
@@ -115,6 +138,12 @@ def _sanitize_semantic_points(case: ClaimCase, points: list[PainPoint]) -> tuple
 
 
 def _dedupe_key(point: PainPoint) -> tuple[str, tuple[str, ...]]:
+    if point.type in {
+        PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
+        PainPointType.CARE_GUIDANCE_INCOMPLETE,
+        PainPointType.MEDICATION_DIAGNOSIS_REVIEW,
+    }:
+        return point.type.value, ()
     related = tuple(sorted(point.related_fields))
     if not related:
         related = tuple(
@@ -162,6 +191,43 @@ def merge_pain_points(rule_points: list[PainPoint], semantic_points: list[PainPo
     )
 
 
+def _limit_points(points: list[PainPoint]) -> tuple[list[PainPoint], list[str]]:
+    """按类型和总量限制输出，保留严重程度与置信度最高的可行动结果。"""
+
+    by_type: dict[PainPointType, list[PainPoint]] = {}
+    for point in points:
+        by_type.setdefault(point.type, []).append(point)
+    kept: list[PainPoint] = []
+    dropped = 0
+    for point_type, candidates in by_type.items():
+        candidates.sort(
+            key=lambda point: (
+                -SEVERITY_RANK[point.severity],
+                -point.severity_score,
+                -point.confidence,
+            )
+        )
+        limit = TYPE_LIMITS.get(point_type, 2)
+        kept.extend(candidates[:limit])
+        dropped += max(0, len(candidates) - limit)
+    kept.sort(
+        key=lambda point: (
+            -SEVERITY_RANK[point.severity],
+            -point.severity_score,
+            -point.confidence,
+            point.dimension.value,
+            point.type.value,
+        )
+    )
+    if len(kept) > TOTAL_POINT_LIMIT:
+        dropped += len(kept) - TOTAL_POINT_LIMIT
+        kept = kept[:TOTAL_POINT_LIMIT]
+    warnings = []
+    if dropped:
+        warnings.append(f"已归并或隐藏{dropped}条重复、低优先级候选，仅展示最可行动结果。")
+    return kept, warnings
+
+
 def build_report(
     case_id: str,
     points: list[PainPoint],
@@ -194,5 +260,10 @@ def analyze_pain_points(
 
     rule_points = detect_rule_pain_points(case)
     accepted, evidence_warnings = _sanitize_semantic_points(case, semantic_points or [])
-    points = merge_pain_points(rule_points, accepted)
-    return build_report(case.case_id, points, [*(warnings or []), *evidence_warnings])
+    merged = merge_pain_points(rule_points, accepted)
+    points, limit_warnings = _limit_points(merged)
+    return build_report(
+        case.case_id,
+        points,
+        [*(warnings or []), *evidence_warnings, *limit_warnings],
+    )

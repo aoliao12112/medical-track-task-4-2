@@ -27,12 +27,12 @@ from medical_claims.pain_models import (
 )
 
 
-def extracted(value, text: str, confidence: float = 0.95):
+def extracted(value, text: str, confidence: float = 0.95, document_id: str = "doc-1"):
     return FieldValue(
         value=value,
         confidence=confidence,
         status=FieldStatus.EXTRACTED,
-        evidence=[Evidence(document_id="doc-1", page=1, text=text)],
+        evidence=[Evidence(document_id=document_id, page=1, text=text)],
     )
 
 
@@ -51,7 +51,7 @@ class PainRulesTest(unittest.TestCase):
         case.medications = [
             Medication(
                 medication_id="med-1",
-                name=extracted("某药片", "某药片"),
+                name=extracted("某药片", "出院带药：某药片"),
             )
         ]
         case.diagnoses = [
@@ -126,6 +126,102 @@ class PainRulesTest(unittest.TestCase):
             {point.type for point in report.pain_points},
         )
 
+    def test_fee_list_medication_is_not_treated_as_patient_instruction(self) -> None:
+        case = ClaimCase(
+            case_id="pain-fee-med",
+            medications=[
+                Medication(
+                    medication_id="fee-med-1",
+                    name=extracted(
+                        "0.9%氯化钠注射液",
+                        "0.9%氯化钠注射液100ml",
+                        document_id="住院费用清单-1.jpg",
+                    ),
+                ),
+                Medication(
+                    medication_id="fee-material-1",
+                    name=extracted(
+                        "功能性敷料",
+                        "功能性敷料1个",
+                        document_id="住院费用清单-2.jpg",
+                    ),
+                ),
+            ],
+        )
+        report = analyze_pain_points(case)
+        types = {point.type for point in report.pain_points}
+        self.assertNotIn(PainPointType.MEDICATION_INSTRUCTION_INCOMPLETE, types)
+        self.assertNotIn(PainPointType.DUPLICATE_MEDICATION_REVIEW, types)
+
+    def test_abnormal_results_are_grouped_and_low_confidence_is_ignored(self) -> None:
+        results = [
+            ExaminationResult(
+                item_name=extracted(f"白细胞指标{i}", f"白细胞指标{i}", 0.95),
+                value=extracted(str(i), f"结果{i}", 0.95),
+                abnormal_flag=AbnormalFlag.HIGH,
+            )
+            for i in range(8)
+        ]
+        results.append(
+            ExaminationResult(
+                item_name=extracted("疑似OCR错误指标", "疑似OCR错误指标", 0.5),
+                value=extracted("8432", "8432", 0.5),
+                abnormal_flag=AbnormalFlag.HIGH,
+            )
+        )
+        case = ClaimCase(
+            case_id="pain-grouped-lab",
+            examinations=[
+                Examination(
+                    examination_id="exam-lab",
+                    name=extracted("血常规", "血常规"),
+                    results=results,
+                )
+            ],
+        )
+        report = analyze_pain_points(case)
+        abnormal = [
+            point
+            for point in report.pain_points
+            if point.type == PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP
+        ]
+        self.assertEqual(len(abnormal), 1)
+        self.assertIn("共8项", abnormal[0].description)
+        self.assertNotIn("8432", " ".join(item.text for item in abnormal[0].evidence))
+
+    def test_repeated_jargon_is_merged_into_one_user_pain_point(self) -> None:
+        case = ClaimCase(
+            case_id="pain-jargon",
+            diagnoses=[
+                Diagnosis(diagnosis_id=f"dx-{index}", name=extracted(name, name))
+                for index, name in enumerate(
+                    ["双肺结节", "双肺下叶结节", "两肺多发微小结节"]
+                )
+            ],
+        )
+        report = analyze_pain_points(case)
+        jargon = [
+            point
+            for point in report.pain_points
+            if point.type == PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND
+        ]
+        self.assertEqual(len(jargon), 1)
+        self.assertGreaterEqual(len(jargon[0].evidence), 1)
+
+    def test_derived_burden_without_self_pay_split_does_not_create_cost_pain(self) -> None:
+        case = ClaimCase(case_id="pain-invalid-derived-cost")
+        case.costs.total_amount = extracted(Decimal("452"), "总费用452元")
+        case.costs.personal_burden.total_personal_burden = FieldValue(
+            value=Decimal("452"),
+            status=FieldStatus.DERIVED,
+            derivation="personal_account_payment + cash_payment",
+        )
+        report = analyze_pain_points(case)
+        self.assertNotIn(
+            PainPointType.HIGH_PERSONAL_BURDEN_RATIO,
+            {point.type for point in report.pain_points},
+        )
+
     def test_llm_point_without_source_evidence_is_rejected(self) -> None:
         case = ClaimCase(
             case_id="pain-003",
@@ -153,6 +249,46 @@ class PainRulesTest(unittest.TestCase):
         report = analyze_pain_points(case, [hallucinated])
         self.assertFalse(report.pain_points)
         self.assertTrue(any("缺少可溯源证据" in warning for warning in report.analysis_warnings))
+
+    def test_broad_medication_diagnosis_candidate_without_indexes_is_rejected(self) -> None:
+        case = ClaimCase(
+            case_id="pain-broad-med-review",
+            diagnoses=[
+                Diagnosis(
+                    diagnosis_id="dx-1",
+                    name=extracted("双肺结节", "诊断：双肺结节"),
+                )
+            ],
+            medications=[
+                Medication(
+                    medication_id="med-1",
+                    name=extracted("舒芬太尼注射液", "舒芬太尼注射液"),
+                )
+            ],
+        )
+        candidate = PainPoint(
+            pain_point_id="PP-LLM-BROAD",
+            dimension=PainDimension.CLINICAL,
+            type=PainPointType.MEDICATION_DIAGNOSIS_REVIEW,
+            title="多种围术期药物与诊断关系需复核",
+            severity=PainSeverity.HIGH,
+            severity_score=70,
+            confidence=0.85,
+            description="仅因围术期药品较多而生成的宽泛候选。",
+            evidence=[
+                Evidence(document_id="doc-1", page=1, text="诊断：双肺结节"),
+                Evidence(document_id="doc-1", page=1, text="舒芬太尼注射液"),
+            ],
+            related_fields=["medications", "diagnoses", "procedures"],
+            recommended_action="医学复核",
+            detector=DetectorInfo(method=DetectorMethod.LLM, version="test"),
+        )
+        report = analyze_pain_points(case, [candidate])
+        self.assertNotIn(
+            PainPointType.MEDICATION_DIAGNOSIS_REVIEW,
+            {point.type for point in report.pain_points},
+        )
+        self.assertTrue(any("宽泛用药复核候选" in warning for warning in report.analysis_warnings))
 
     def test_pain_evaluation_reports_expert_agreement(self) -> None:
         case = ClaimCase(
