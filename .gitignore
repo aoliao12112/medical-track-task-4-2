@@ -17,6 +17,7 @@ venv/
 node_modules/
 dist/
 build/
+*.egg-info/
 
 # Local research, browser profiles, rendered previews and scratch artifacts
 work/
