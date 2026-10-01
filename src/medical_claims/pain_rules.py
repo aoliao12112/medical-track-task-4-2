@@ -1,0 +1,418 @@
+"""第二问的确定性痛点规则。
+
+规则只使用第一问已经结构化且带证据的字段。它们输出风险提示，不输出
+"医生错误"、"不合理诊疗"等责任性结论。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from decimal import Decimal, InvalidOperation
+from typing import Iterable
+
+from .models import AbnormalFlag, Evidence, FieldValue, ReconciliationStatus
+from .pain_models import (
+    DetectorInfo,
+    DetectorMethod,
+    PainDimension,
+    PainPoint,
+    PainPointType,
+    PainSeverity,
+)
+
+
+RULE_VERSION = "pain-rules-v1"
+
+
+def _stable_id(point_type: PainPointType, identity: str) -> str:
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
+    return f"PP-{point_type.value}-{digest}"
+
+
+def _evidence(*fields: FieldValue[object]) -> list[Evidence]:
+    result: list[Evidence] = []
+    seen: set[tuple[str, int | None, str]] = set()
+    for field in fields:
+        for item in field.evidence:
+            key = (item.document_id, item.page, item.text)
+            if item.text and key not in seen:
+                seen.add(key)
+                result.append(item)
+    return result[:4]
+
+
+def _confidence(*fields: FieldValue[object], reliability: float = 0.95) -> float:
+    source = [field.confidence for field in fields if field.confidence is not None]
+    upstream = min(source) if source else 0.8
+    return round(min(1.0, upstream * reliability), 4)
+
+
+def _decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _ratio(
+    ratio_field: FieldValue[float],
+    numerator_field: FieldValue[object],
+    total_field: FieldValue[object],
+) -> tuple[Decimal | None, list[FieldValue[object]]]:
+    explicit = _decimal(ratio_field.value)
+    if explicit is not None:
+        # 兼容 0.25 与 25 两种常见百分比存储方式。
+        sources: list[FieldValue[object]] = [ratio_field]
+        if not ratio_field.evidence:
+            sources.extend([numerator_field, total_field])
+        return (explicit / 100 if explicit > 1 else explicit), sources
+    numerator = _decimal(numerator_field.value)
+    total = _decimal(total_field.value)
+    if numerator is None or total is None or total <= 0:
+        return None, []
+    return numerator / total, [numerator_field, total_field]
+
+
+def _severity_for_ratio(
+    ratio: Decimal,
+    medium_at: Decimal,
+    high_at: Decimal,
+) -> tuple[PainSeverity, int]:
+    if ratio >= high_at:
+        return PainSeverity.HIGH, 85
+    if ratio >= medium_at:
+        return PainSeverity.MEDIUM, 62
+    return PainSeverity.LOW, 38
+
+
+def _cost_ratio_points(case) -> Iterable[PainPoint]:
+    costs = case.costs
+    outside_ratio, outside_fields = _ratio(
+        costs.ratios.outside_policy_self_expense_ratio,
+        costs.personal_burden.outside_policy_self_expense,
+        costs.total_amount,
+    )
+    if outside_ratio is not None and outside_ratio >= Decimal("0.10"):
+        evidence = _evidence(*outside_fields)
+        if evidence:
+            severity, score = _severity_for_ratio(
+                outside_ratio, Decimal("0.20"), Decimal("0.40")
+            )
+            percent = float(outside_ratio * 100)
+            yield PainPoint(
+                pain_point_id=_stable_id(
+                    PainPointType.HIGH_OUTSIDE_POLICY_RATIO, case.case_id
+                ),
+                dimension=PainDimension.COST,
+                type=PainPointType.HIGH_OUTSIDE_POLICY_RATIO,
+                title="目录外个人自费比例偏高",
+                severity=severity,
+                severity_score=score,
+                confidence=_confidence(*outside_fields),
+                description=(
+                    f"根据当前材料计算，目录外个人自费约占总费用的{percent:.1f}%。"
+                    "该阈值用于原型筛查，后续应使用官方数据分位数校准。"
+                ),
+                evidence=evidence,
+                related_fields=[
+                    "costs.personal_burden.outside_policy_self_expense",
+                    "costs.total_amount",
+                ],
+                recommended_action="核对目录外项目明细，并在下次就医前询问可替代的医保目录内方案。",
+                review_required=True,
+                detector=DetectorInfo(
+                    method=DetectorMethod.RULE,
+                    version=RULE_VERSION,
+                    rule_id="COST-OUTSIDE-RATIO-001",
+                ),
+            )
+
+    burden_field = costs.personal_burden.total_personal_burden
+    burden_sources: list[FieldValue[object]] = []
+    burden = _decimal(burden_field.value)
+    if burden is not None:
+        burden_sources = [burden_field]
+    else:
+        within = _decimal(costs.personal_burden.within_policy_self_pay.value)
+        outside = _decimal(costs.personal_burden.outside_policy_self_expense.value)
+        if within is not None and outside is not None:
+            burden = within + outside
+            burden_sources = [
+                costs.personal_burden.within_policy_self_pay,
+                costs.personal_burden.outside_policy_self_expense,
+            ]
+    total = _decimal(costs.total_amount.value)
+    burden_ratio = burden / total if burden is not None and total and total > 0 else None
+    burden_sources.append(costs.total_amount)
+    if burden_ratio is not None and burden_ratio >= Decimal("0.20"):
+        evidence = _evidence(*burden_sources)
+        if evidence:
+            severity, score = _severity_for_ratio(
+                burden_ratio, Decimal("0.35"), Decimal("0.50")
+            )
+            percent = float(burden_ratio * 100)
+            yield PainPoint(
+                pain_point_id=_stable_id(
+                    PainPointType.HIGH_PERSONAL_BURDEN_RATIO, case.case_id
+                ),
+                dimension=PainDimension.COST,
+                type=PainPointType.HIGH_PERSONAL_BURDEN_RATIO,
+                title="个人医疗费用负担比例偏高",
+                severity=severity,
+                severity_score=score,
+                confidence=_confidence(*burden_sources),
+                description=f"个人自付与个人自费合计约占总费用的{percent:.1f}%。",
+                evidence=evidence,
+                related_fields=[
+                    "costs.personal_burden",
+                    "costs.total_amount",
+                ],
+                recommended_action="核对医保结算口径，并了解复诊、用药和检查项目的报销范围。",
+                review_required=True,
+                detector=DetectorInfo(
+                    method=DetectorMethod.RULE,
+                    version=RULE_VERSION,
+                    rule_id="COST-BURDEN-RATIO-001",
+                ),
+            )
+
+
+def _reconciliation_point(case) -> PainPoint | None:
+    reconciliation = case.costs.reconciliation
+    difference = _decimal(reconciliation.difference)
+    abnormal = reconciliation.status in {
+        ReconciliationStatus.WARNING,
+        ReconciliationStatus.FAILED,
+    } or (difference is not None and abs(difference) > Decimal("1"))
+    if not abnormal:
+        return None
+    cost_fields: list[FieldValue[object]] = [
+        case.costs.total_amount,
+        case.costs.fund_payments.total_fund_payment,
+        case.costs.personal_burden.within_policy_self_pay,
+        case.costs.personal_burden.outside_policy_self_expense,
+    ]
+    evidence = _evidence(*cost_fields)
+    if not evidence:
+        return None
+    absolute = abs(difference) if difference is not None else None
+    severity = PainSeverity.HIGH if absolute is not None and absolute > 100 else PainSeverity.MEDIUM
+    score = 78 if severity == PainSeverity.HIGH else 58
+    difference_text = f"，当前差额为{absolute}元" if absolute is not None else ""
+    return PainPoint(
+        pain_point_id=_stable_id(
+            PainPointType.COST_RECONCILIATION_ANOMALY, case.case_id
+        ),
+        dimension=PainDimension.COST,
+        type=PainPointType.COST_RECONCILIATION_ANOMALY,
+        title="费用构成存在勾稽差异",
+        severity=severity,
+        severity_score=score,
+        confidence=_confidence(*cost_fields, reliability=0.98),
+        description=f"总费用与基金支付、个人自付及个人自费暂未完全对应{difference_text}。",
+        evidence=evidence,
+        related_fields=["costs.reconciliation"],
+        recommended_action="核对结算单各支付项目和费用口径；在确认前不要据此判断收费错误。",
+        review_required=True,
+        detector=DetectorInfo(
+            method=DetectorMethod.RULE,
+            version=RULE_VERSION,
+            rule_id="COST-RECONCILIATION-001",
+        ),
+    )
+
+
+def _missing_medication_instructions(case) -> Iterable[PainPoint]:
+    fields = ("dose", "frequency", "route", "duration")
+    labels = {"dose": "剂量", "frequency": "频次", "route": "途径", "duration": "疗程"}
+    for index, medication in enumerate(case.medications):
+        missing = [name for name in fields if getattr(medication, name).value is None]
+        # 按需使用且已给出使用条件/日剂量上限的药品，不强行要求固定疗程。
+        if (
+            "duration" in missing
+            and medication.usage_condition.value is not None
+            and medication.max_daily_dose.value is not None
+        ):
+            missing.remove("duration")
+        if not missing or not medication.name.evidence:
+            continue
+        drug_name = medication.name.normalized_value or medication.name.value or "该药品"
+        score = 62 if len(missing) >= 2 else 38
+        severity = PainSeverity.MEDIUM if len(missing) >= 2 else PainSeverity.LOW
+        yield PainPoint(
+            pain_point_id=_stable_id(
+                PainPointType.MEDICATION_INSTRUCTION_INCOMPLETE,
+                f"{case.case_id}:{medication.medication_id}",
+            ),
+            dimension=PainDimension.EXPERIENCE,
+            type=PainPointType.MEDICATION_INSTRUCTION_INCOMPLETE,
+            title=f"{drug_name}的用药说明不完整",
+            severity=severity,
+            severity_score=score,
+            confidence=_confidence(medication.name, reliability=0.98),
+            description="当前材料中未发现明确的" + "、".join(labels[item] for item in missing) + "。",
+            evidence=_evidence(medication.name),
+            related_fields=[f"medications[{index}].{item}" for item in missing],
+            recommended_action="下次用药或复诊前向医生或药师确认，不能自行补全剂量和疗程。",
+            review_required=True,
+            detector=DetectorInfo(
+                method=DetectorMethod.RULE,
+                version=RULE_VERSION,
+                rule_id="EXP-MED-INSTRUCTION-001",
+            ),
+        )
+
+
+def _normalized_medication_name(value: str) -> str:
+    value = value.lower().replace(" ", "")
+    value = re.sub(r"\d+(?:\.\d+)?\s*(?:mg|g|ml|mL|片|粒|支|袋)", "", value, flags=re.I)
+    return re.sub(r"[（）()，,、]", "", value)
+
+
+def _duplicate_medications(case) -> Iterable[PainPoint]:
+    groups: dict[str, list[tuple[int, object]]] = {}
+    for index, medication in enumerate(case.medications):
+        name = medication.name.normalized_value or medication.name.value
+        if not name:
+            continue
+        groups.setdefault(_normalized_medication_name(name), []).append((index, medication))
+    for normalized, entries in groups.items():
+        if not normalized or len(entries) < 2:
+            continue
+        fields = [medication.name for _, medication in entries]
+        evidence = _evidence(*fields)
+        if not evidence:
+            continue
+        display = fields[0].normalized_value or fields[0].value or "同名药品"
+        yield PainPoint(
+            pain_point_id=_stable_id(
+                PainPointType.DUPLICATE_MEDICATION_REVIEW,
+                f"{case.case_id}:{normalized}",
+            ),
+            dimension=PainDimension.CLINICAL,
+            type=PainPointType.DUPLICATE_MEDICATION_REVIEW,
+            title=f"发现重复记录的药品：{display}",
+            severity=PainSeverity.MEDIUM,
+            severity_score=55,
+            confidence=_confidence(*fields, reliability=0.92),
+            description="同一药品在当前材料中出现多次，可能是分次医嘱、重复记录或重复用药，需要结合时间和医嘱目的复核。",
+            evidence=evidence,
+            related_fields=[f"medications[{index}]" for index, _ in entries],
+            recommended_action="由医疗人员核对用药时间、剂量和目的，不要自行停药。",
+            review_required=True,
+            detector=DetectorInfo(
+                method=DetectorMethod.RULE,
+                version=RULE_VERSION,
+                rule_id="CLINICAL-DUPLICATE-MED-001",
+            ),
+        )
+
+
+def _abnormal_examinations(case) -> Iterable[PainPoint]:
+    relevant = {
+        AbnormalFlag.HIGH,
+        AbnormalFlag.LOW,
+        AbnormalFlag.POSITIVE,
+        AbnormalFlag.ABNORMAL,
+    }
+    for examination_index, examination in enumerate(case.examinations):
+        for result_index, result in enumerate(examination.results):
+            if result.abnormal_flag not in relevant:
+                continue
+            evidence = _evidence(result.item_name, result.value)
+            if not evidence:
+                continue
+            item = result.item_name.normalized_value or result.item_name.value or examination.name.value or "检查结果"
+            high_attention = result.abnormal_flag in {AbnormalFlag.POSITIVE, AbnormalFlag.ABNORMAL}
+            yield PainPoint(
+                pain_point_id=_stable_id(
+                    PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
+                    f"{case.case_id}:{examination.examination_id}:{result_index}",
+                ),
+                dimension=PainDimension.CLINICAL,
+                type=PainPointType.ABNORMAL_EXAMINATION_FOLLOWUP,
+                title=f"{item}存在异常标记",
+                severity=PainSeverity.MEDIUM if high_attention else PainSeverity.LOW,
+                severity_score=65 if high_attention else 42,
+                confidence=_confidence(result.item_name, result.value, reliability=0.97),
+                description="报告原文将该结果标记为异常；仅凭理赔材料不能确定临床意义。",
+                evidence=evidence,
+                related_fields=[
+                    f"examinations[{examination_index}].results[{result_index}]"
+                ],
+                recommended_action="结合症状和医生意见确认是否需要复查或随访。",
+                review_required=True,
+                detector=DetectorInfo(
+                    method=DetectorMethod.RULE,
+                    version=RULE_VERSION,
+                    rule_id="CLINICAL-ABNORMAL-EXAM-001",
+                ),
+            )
+
+
+JARGON_MARKERS = {
+    "动脉粥样硬化",
+    "椎间盘突出",
+    "纤维化",
+    "浸润",
+    "占位",
+    "结节",
+    "增生",
+    "静脉曲张",
+    "代偿",
+    "梗死",
+    "病灶",
+    "综合征",
+    "功能不全",
+}
+
+
+def _jargon_points(case) -> Iterable[PainPoint]:
+    for index, diagnosis in enumerate(case.diagnoses):
+        name = diagnosis.name.normalized_value or diagnosis.name.value
+        if not name or not diagnosis.name.evidence:
+            continue
+        matched = sorted(marker for marker in JARGON_MARKERS if marker in name)
+        if not matched and len(name) < 12:
+            continue
+        reason = "、".join(matched) if matched else "较长的专业诊断术语"
+        yield PainPoint(
+            pain_point_id=_stable_id(
+                PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
+                f"{case.case_id}:{diagnosis.diagnosis_id}",
+            ),
+            dimension=PainDimension.EXPERIENCE,
+            type=PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
+            title="诊断术语可能不易理解",
+            severity=PainSeverity.LOW,
+            severity_score=30,
+            confidence=_confidence(diagnosis.name, reliability=0.85),
+            description=f"诊断“{name}”包含{reason}，普通用户可能需要通俗解释。",
+            evidence=_evidence(diagnosis.name),
+            related_fields=[f"diagnoses[{index}].name"],
+            recommended_action="在温度指引中提供不夸大、不替代医生诊断的通俗解释。",
+            review_required=False,
+            detector=DetectorInfo(
+                method=DetectorMethod.RULE,
+                version=RULE_VERSION,
+                rule_id="EXP-JARGON-001",
+            ),
+        )
+
+
+def detect_rule_pain_points(case) -> list[PainPoint]:
+    """执行所有确定性规则并返回稳定顺序的痛点列表。"""
+
+    points: list[PainPoint] = []
+    points.extend(_cost_ratio_points(case))
+    reconciliation = _reconciliation_point(case)
+    if reconciliation:
+        points.append(reconciliation)
+    points.extend(_missing_medication_instructions(case))
+    points.extend(_duplicate_medications(case))
+    points.extend(_abnormal_examinations(case))
+    points.extend(_jargon_points(case))
+    return sorted(points, key=lambda point: (point.dimension.value, point.type.value, point.pain_point_id))

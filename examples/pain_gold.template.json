@@ -1,0 +1,13 @@
+{
+  "case_id": "CASE-ID",
+  "summary": {
+    "total": 0,
+    "clinical": 0,
+    "cost": 0,
+    "experience": 0,
+    "high_priority": 0
+  },
+  "pain_points": [],
+  "engine_version": "expert-annotation-v1",
+  "analysis_warnings": []
+}

@@ -79,6 +79,7 @@ let isDemoCase = true;
 let backendUrl = localStorage.getItem("medicalClaimsBackend") || "";
 let predictionData = null;
 let goldData = null;
+let painReport = null;
 
 let batchCases = [
   { id: "CASE-001", docs: 12, stage: "已完成", completeness: 96.1, confidence: 94.8, review: 1, status: "done" },
@@ -440,6 +441,7 @@ async function runPipeline() {
     } else {
       result = parseLocalText();
     }
+    painReport = null;
     setPipelineState(5);
     await sleep(260);
     setPipelineState(6);
@@ -462,6 +464,7 @@ function loadDemo() {
   documents.forEach(function(x) { if (x.previewUrl) URL.revokeObjectURL(x.previewUrl); });
   documents = structuredClone(demoDocuments);
   result = demoCase();
+  painReport = null;
   isDemoCase = true;
   $("caseId").value = result.case_id;
   selectedDocId = documents[0].id;
@@ -486,6 +489,80 @@ function downloadJson() {
   downloadBlob(JSON.stringify(result, null, 2), (result.case_id || "claim-case") + ".json");
   showToast("当前案件JSON已导出");
 }
+function painSeverityLabel(value) {
+  return ({ low: "低", medium: "中", high: "高", critical: "紧急" })[value] || value;
+}
+function painDimensionLabel(value) {
+  return ({ clinical: "临床", cost: "费用", experience: "体验" })[value] || value;
+}
+function renderPainReport() {
+  const summary = painReport && painReport.summary;
+  $("painTotal").textContent = summary ? summary.total : "—";
+  $("painClinical").textContent = summary ? summary.clinical : "—";
+  $("painCost").textContent = summary ? summary.cost : "—";
+  $("painExperience").textContent = summary ? summary.experience : "—";
+  $("painCaseLabel").textContent = painReport ? ("病例 " + painReport.case_id) : "等待分析";
+  $("exportPainButton").disabled = !painReport;
+  const warnings = painReport ? (painReport.analysis_warnings || []) : [];
+  $("painWarnings").innerHTML = warnings.map(function(warning) {
+    return '<div class="pain-warning">' + escapeHtml(warning) + '</div>';
+  }).join("");
+  const points = painReport ? (painReport.pain_points || []) : [];
+  if (!painReport) {
+    $("painPointList").innerHTML = '<div class="pain-empty"><strong>尚未分析</strong><span>先在案件工作台完成第一问，再点击“分析当前病例”。</span></div>';
+    return;
+  }
+  if (!points.length) {
+    $("painPointList").innerHTML = '<div class="pain-empty"><strong>未发现有充分证据的痛点</strong><span>这不等于不存在健康风险；当前结果仅基于已提交的理赔材料。</span></div>';
+    return;
+  }
+  $("painPointList").innerHTML = points.map(function(point) {
+    const evidence = (point.evidence || []).map(function(item) {
+      return '<li><strong>' + escapeHtml(item.document_id) + (item.page ? " · 第" + item.page + "页" : "") + '</strong><span>' + escapeHtml(item.text) + '</span></li>';
+    }).join("");
+    return '<article class="pain-card severity-' + escapeHtml(point.severity) + '">' +
+      '<div class="pain-card-head"><div><span class="pain-dimension">' + painDimensionLabel(point.dimension) + '</span><h3>' + escapeHtml(point.title) + '</h3></div><span class="severity-chip ' + escapeHtml(point.severity) + '">' + painSeverityLabel(point.severity) + ' · ' + point.severity_score + '</span></div>' +
+      '<p>' + escapeHtml(point.description) + '</p>' +
+      '<div class="pain-meta"><span>置信度 ' + (Number(point.confidence) * 100).toFixed(1) + '%</span><span>' + escapeHtml(point.detector && point.detector.method || "unknown") + '</span><span>' + (point.review_required ? "需要复核" : "自动提示") + '</span></div>' +
+      '<div class="pain-action"><strong>建议动作</strong><span>' + escapeHtml(point.recommended_action) + '</span></div>' +
+      '<details class="pain-evidence"><summary>查看原文证据（' + (point.evidence || []).length + '）</summary><ul>' + evidence + '</ul></details>' +
+      '</article>';
+  }).join("");
+}
+async function analyzeCurrentPain() {
+  if (!backendUrl) {
+    showToast("请先连接本地后端，再运行第二问");
+    return;
+  }
+  const button = $("analyzePainButton");
+  button.disabled = true;
+  button.textContent = "正在分析…";
+  try {
+    const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/analyze-pain-points", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case: result, use_llm: true })
+    });
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+    if (!response.ok) throw new Error(payload && payload.detail ? payload.detail : (text || "无错误详情"));
+    if (!payload) throw new Error("后端返回了空响应");
+    painReport = payload;
+    renderPainReport();
+    showToast("第二问痛点分析完成");
+  } catch (error) {
+    showToast("痛点分析失败：" + (error.message || "请检查后端"));
+  } finally {
+    button.disabled = false;
+    button.textContent = "分析当前病例";
+  }
+}
+function exportPainReport() {
+  if (!painReport) return;
+  downloadBlob(JSON.stringify(painReport, null, 2), (painReport.case_id || "case") + ".pain-points.json");
+  showToast("痛点识别JSON已导出");
+}
 function switchView(name) {
   document.querySelectorAll(".view-tab").forEach(function(tab) { tab.classList.toggle("active", tab.dataset.view === name); });
   document.querySelectorAll("[data-view-panel]").forEach(function(panel) { panel.classList.toggle("active", panel.dataset.viewPanel === name); });
@@ -495,6 +572,7 @@ function switchView(name) {
   const url = new URL(window.location.href);
   url.searchParams.set("view", name);
   history.replaceState(null, "", url);
+  if (name === "pain") renderPainReport();
 }
 function renderBatch() {
   const completed = batchCases.filter(function(x) { return x.status === "done" || x.status === "review"; }).length;
@@ -691,7 +769,7 @@ $("exportButton").addEventListener("click", downloadJson);
 $("downloadJsonButton").addEventListener("click", downloadJson);
 $("closeDialog").addEventListener("click", function() { $("jsonDialog").close(); });
 $("copyJsonButton").addEventListener("click", async function() { await navigator.clipboard.writeText(JSON.stringify(result, null, 2)); showToast("JSON已复制"); });
-$("caseId").addEventListener("change", function() { result.case_id = $("caseId").value; renderAll(); });
+$("caseId").addEventListener("change", function() { result.case_id = $("caseId").value; painReport = null; renderAll(); renderPainReport(); });
 document.querySelectorAll(".tab").forEach(function(tab) { tab.addEventListener("click", function() { document.querySelectorAll(".tab").forEach(function(x) { x.classList.remove("active"); }); tab.classList.add("active"); currentTab = tab.dataset.tab; renderResults(); }); });
 document.querySelectorAll(".view-tab").forEach(function(tab) { tab.addEventListener("click", function() { switchView(tab.dataset.view); }); });
 $("folderInput").addEventListener("change", function(e) { loadBatchFolder(e.target.files); });
@@ -700,6 +778,8 @@ $("exportBatchButton").addEventListener("click", exportBatch);
 $("predictionInput").addEventListener("change", function(e) { if (e.target.files[0]) readJsonFile(e.target.files[0], "prediction"); });
 $("goldInput").addEventListener("change", function(e) { if (e.target.files[0]) readJsonFile(e.target.files[0], "gold"); });
 $("evaluateButton").addEventListener("click", runEvaluation);
+$("analyzePainButton").addEventListener("click", analyzeCurrentPain);
+$("exportPainButton").addEventListener("click", exportPainReport);
 $("providerButton").addEventListener("click", function() { $("backendUrl").value = backendUrl; updateProviderUi(Boolean(backendUrl)); $("providerDialog").showModal(); });
 $("closeProviderDialog").addEventListener("click", function() { $("providerDialog").close(); });
 $("checkBackendButton").addEventListener("click", checkBackend);
@@ -711,5 +791,6 @@ updateProviderUi(Boolean(backendUrl), backendUrl ? "已保存地址，运行前�
 setPipelineState(6);
 renderBatch();
 renderAll();
+renderPainReport();
 const initialView = new URLSearchParams(window.location.search).get("view");
-if (["case", "batch", "evaluation"].includes(initialView)) switchView(initialView);
+if (["case", "pain", "batch", "evaluation"].includes(initialView)) switchView(initialView);

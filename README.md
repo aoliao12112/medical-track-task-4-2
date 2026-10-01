@@ -89,10 +89,35 @@ src/medical_claims/models.py      # JSON Schema 和领域模型
 src/medical_claims/providers.py   # OCR、医学 NLP、LLM 接口
 src/medical_claims/pipeline.py    # 端到端编排
 src/medical_claims/validation.py  # 日期、住院天数和费用一致性校验
+src/medical_claims/pain_models.py # 第二问痛点JSON Schema
+src/medical_claims/pain_rules.py  # 费用、用药、检查与体验确定性规则
+src/medical_claims/pain_engine.py # 规则与DeepSeek候选校验、合并和去重
+src/medical_claims/pain_evaluation.py # 痛点与专家标注一致率评测
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
 web/dist/                         # 第一问网页演示与批量评测界面
 web/backend/app.py                # RapidOCR + DeepSeek 本地接口
+```
+
+## 第二问：多维痛点识别
+
+后端启动后，将第一问的 `ClaimCase` 发送到：
+
+```text
+POST /api/cases/analyze-pain-points
+```
+
+请求体为 `{"case": <ClaimCase>, "use_llm": true}`。本地规则负责费用比例、费用勾稽、
+用药说明缺失、重复用药和异常检查等可确定判断；DeepSeek 只生成需要语义理解的候选。
+所有 LLM 证据都必须与第一问 evidence 匹配，否则会被本地引擎丢弃。输出只用于关怀与
+医学复核，不作医疗责任结论，也不建议用户自行停药或改变治疗。
+
+第二问专家一致率评测：
+
+```powershell
+python -m medical_claims.pain_evaluation `
+  outputs\CASE-ID\pain\pain.prediction.json `
+  outputs\CASE-ID\pain\pain_gold.final.json
 ```
 
 ## 网页演示

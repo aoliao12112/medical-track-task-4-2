@@ -19,11 +19,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from medical_claims.json_utils import normalize_json_output
 from medical_claims.models import ClaimCase, Costs, Medication
 from medical_claims.normalization import normalize_case
+from medical_claims.pain_engine import analyze_pain_points
+from medical_claims.pain_models import (
+    PainAnalysisRequest,
+    PainPointReport,
+    SemanticPainPointBatch,
+)
 from medical_claims.validation import validate_case
 
 
-app = FastAPI(title="Medical Claims Structure API", version="0.1.0")
-BACKEND_REVISION = "2026-09-30-real-case-v3"
+app = FastAPI(title="Medical Claims Structure API", version="0.2.0")
+BACKEND_REVISION = "2026-10-01-pain-engine-v1"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -159,6 +165,53 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
     return ClaimCase.model_validate(result.model_dump())
 
 
+def semantic_pain_points_with_deepseek(case: ClaimCase) -> SemanticPainPointBatch:
+    """只让 LLM 提供需要语义理解的候选，证据和标签随后仍由本地引擎校验。"""
+
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise RuntimeError("未配置 DEEPSEEK_API_KEY")
+    instructions = (
+        "你是理赔后医护关怀中的语义痛点候选生成器，不是医疗裁决系统。"
+        "输入是已经结构化的ClaimCase，只能使用输入字段及其evidence，禁止补写病例事实或外部医学结论。"
+        "你只能输出以下三种类型：MEDICATION_DIAGNOSIS_REVIEW、"
+        "DIAGNOSIS_TERM_HARD_TO_UNDERSTAND、CARE_GUIDANCE_INCOMPLETE。"
+        "不得输出费用类、检查异常类或重复用药类标签，这些由本地确定性规则处理。"
+        "用药与诊断只能表述为对应关系需要医学复核，不能声称医生用药错误、不合理或存在医疗事故。"
+        "缺少充分证据时不输出；没有痛点时返回空数组。"
+        "每条evidence必须逐字复制输入中已有evidence的最短原文，document_id和page必须一致。"
+        "严重程度最高只能为high；confidence不得高于0.90；所有候选review_required必须为true。"
+        "recommended_action必须是安全、可执行的复核或沟通建议，不得建议自行停药或改变治疗。"
+    )
+    body = {
+        "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+        "instructions": instructions,
+        "input": case.model_dump_json(exclude_none=False),
+        "reasoning": {"effort": "none"},
+        "temperature": 0,
+        "max_output_tokens": int(os.getenv("DEEPSEEK_PAIN_MAX_OUTPUT_TOKENS", "10000")),
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "semantic_pain_point_batch",
+                "schema": SemanticPainPointBatch.model_json_schema(),
+            }
+        },
+    }
+    with httpx.Client(timeout=float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "360"))) as client:
+        response = client.post(
+            "https://api.deepseek.com/responses",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+        response.raise_for_status()
+    output_text = extract_output_text(response.json())
+    result = SemanticPainPointBatch.model_validate_json(normalize_json_output(output_text))
+    if result.case_id != case.case_id:
+        raise RuntimeError("痛点模型返回的 case_id 与请求不一致")
+    return result
+
+
 @app.get("/api/health")
 def health() -> dict[str, str | bool]:
     try:
@@ -175,6 +228,7 @@ def health() -> dict[str, str | bool]:
         "examinations_schema": "examinations" in ClaimCase.model_fields,
         "cost_semantics_schema": "personal_burden" in Costs.model_fields,
         "medication_instruction_schema": "max_daily_dose" in Medication.model_fields,
+        "pain_point_engine": True,
     }
 
 
@@ -206,3 +260,22 @@ async def process_case(
     except Exception as exc:
         logger.exception("Case processing failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/cases/analyze-pain-points", response_model=PainPointReport)
+def analyze_case_pain_points(request: PainAnalysisRequest) -> PainPointReport:
+    """对第一问的 ClaimCase 执行第二问多维痛点识别。"""
+
+    semantic_points = []
+    warnings: list[str] = []
+    if request.use_llm:
+        try:
+            semantic_points = semantic_pain_points_with_deepseek(request.case).pain_points
+        except Exception as exc:
+            logger.exception("Semantic pain-point analysis failed; returning rule-only result")
+            warnings.append(
+                f"DeepSeek语义痛点分析暂不可用，已返回确定性规则结果：{type(exc).__name__}"
+            )
+    else:
+        warnings.append("本次请求关闭了DeepSeek语义分析，仅运行确定性规则。")
+    return analyze_pain_points(request.case, semantic_points, warnings)
