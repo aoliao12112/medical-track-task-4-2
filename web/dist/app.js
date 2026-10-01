@@ -425,9 +425,12 @@ async function processWithBackend() {
 }
 async function runPipeline() {
   const button = $("runButton");
+  const uploadedPageCount = documents.filter(function(x) { return x.file; }).length;
+  const isLongCase = uploadedPageCount > 8;
   button.disabled = true;
-  setCaseStatus("正在处理", "processing");
-  button.textContent = "正在处理…";
+  setCaseStatus(isLongCase ? "长病例分块处理中" : "正在处理", "processing");
+  button.textContent = isLongCase ? ("正在分块处理 " + uploadedPageCount + " 页…") : "正在处理…";
+  if (isLongCase) showToast("检测到" + uploadedPageCount + "页长病例：系统将自动分块、合并并执行全局校验，请勿刷新页面");
   try {
     for (let i = 0; i < 5; i += 1) {
       setPipelineState(i);
@@ -448,7 +451,7 @@ async function runPipeline() {
     const hasWarning = result.quality_flags.some(function(x) { return x.severity === "warning" || x.severity === "error"; });
     setCaseStatus(hasWarning ? "需要复核" : "结构化完成", hasWarning ? "review" : "ready");
     renderAll();
-    showToast(backendUrl ? "完整流程已运行" : "已完成演示流程；连接本地后端后可运行真实OCR");
+    showToast(backendUrl ? (isLongCase ? "长病例分块抽取、合并与校验已完成" : "完整流程已运行") : "已完成演示流程；连接本地后端后可运行真实OCR");
   } catch (error) {
     setPipelineState(3, true);
     setCaseStatus("处理失败", "error");

@@ -45,3 +45,33 @@ POST /api/cases/analyze-pain-points
 失败，也会返回规则结果，并在 `analysis_warnings` 中说明降级原因。
 
 当前后端优先处理 JPG、JPEG、PNG、BMP、WebP。官方样本本身是图片，因此不影响本轮数据；PDF 后续可增加逐页转换。
+
+## 长病例
+
+超过 8 页或 OCR 文本超过 24000 字符时，后端会自动切换为长病例模式：
+
+1. 每页在本地独立 OCR；
+2. 默认按最多 6 页、不超过 18000 OCR 字符且不超过 600 个OCR块分块；
+3. 每个分块独立结构化，单块输出过长或超时时会自动减半重试；
+4. 本地确定性合并器对诊断、手术、用药、检查和事件去重；
+5. 全案重新计算费用一致性并检查证据文件、页码和实体引用；
+6. 不同分块出现冲突值时保留高置信度候选，同时标记人工复核，禁止静默覆盖。
+
+成功的分块结果默认缓存在本地 `outputs/_long_case_cache/`，缓存签名包含代码版本、文件名、页码和OCR文本哈希。长任务中途失败后，使用相同材料和病例号重试会复用已完成分块；代码升级或OCR内容变化时缓存自动失效。缓存不保存原始图片，且 `outputs/` 已被 Git 忽略。
+
+用户仍然一次上传同一案件的全部图片，不需要手工拆批。文件名不强制改写；同一案件出现同名文件时，后端会自动增加页序前缀以保证证据可追踪。
+
+可通过环境变量调整边界：
+
+```powershell
+$env:LONG_CASE_PAGE_THRESHOLD="8"
+$env:LONG_CASE_CHARACTER_THRESHOLD="24000"
+$env:LONG_CASE_CHUNK_MAX_PAGES="6"
+$env:LONG_CASE_CHUNK_MAX_CHARACTERS="18000"
+$env:LONG_CASE_CHUNK_MAX_OCR_BLOCKS="600"
+$env:DEEPSEEK_CHUNK_MAX_OUTPUT_TOKENS="30000"
+$env:DEEPSEEK_MAX_RETRIES="2"
+$env:LONG_CASE_CACHE_ENABLED="true"
+```
+
+不建议盲目调大分块。费用明细和检验报告字段密度高，即使页数不多也可能产生很长的 JSON。

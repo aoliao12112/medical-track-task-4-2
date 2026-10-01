@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .models import ClaimCase, FieldStatus, FieldValue
+from .models import ClaimCase, Examination, ExaminationCategory, FieldStatus, FieldValue
 
 
 FREQUENCY_NORMALIZATION = {
@@ -155,9 +155,48 @@ def _normalize_examinations(case: ClaimCase) -> None:
                     result.unit.warnings.append(warning)
 
 
+def _reclassify_examination_only_procedures(case: ClaimCase) -> None:
+    """纠正模型把纯检查项目误放入手术操作的情况，保留CT引导穿刺等真实操作。"""
+
+    examination_pattern = re.compile(
+        r"(?:PET\s*/?\s*CT|MRI|MR|CT|磁共振|超声|B超|X线|胸片|心电图|显像|影像|病理检查)",
+        flags=re.IGNORECASE,
+    )
+    procedure_action_pattern = re.compile(
+        r"(?:手术|切除|穿刺|植入|活检|置管|治疗|注射|采血|探查|缝合|引流|消融|吻合)"
+    )
+    retained = []
+    for procedure in case.procedures:
+        name = procedure.name.value or ""
+        if examination_pattern.search(name) and not procedure_action_pattern.search(name):
+            category = (
+                ExaminationCategory.PATHOLOGY
+                if "病理" in name
+                else ExaminationCategory.FUNCTIONAL
+                if "心电" in name
+                else ExaminationCategory.IMAGING
+            )
+            name_field = procedure.name.model_copy(deep=True)
+            warning = "该项目属于辅助检查，已从手术/操作自动归入 examinations"
+            if warning not in name_field.warnings:
+                name_field.warnings.append(warning)
+            case.examinations.append(
+                Examination(
+                    examination_id=f"exam_reclassified_{len(case.examinations) + 1}",
+                    category=category,
+                    name=name_field,
+                    performed_date=procedure.performed_date.model_copy(deep=True),
+                )
+            )
+        else:
+            retained.append(procedure)
+    case.procedures = retained
+
+
 def normalize_case(case: ClaimCase) -> ClaimCase:
     """就地规范化后重新校验，确保输出仍符合 ClaimCase Schema。"""
 
     _normalize_medications(case)
+    _reclassify_examination_only_procedures(case)
     _normalize_examinations(case)
     return ClaimCase.model_validate(case.model_dump())

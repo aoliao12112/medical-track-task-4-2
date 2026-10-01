@@ -10,6 +10,7 @@ from medical_claims.models import (
     FieldStatus,
     FieldValue,
     Medication,
+    Procedure,
 )
 from medical_claims.normalization import normalize_case
 
@@ -25,6 +26,26 @@ def extracted(value: str, text: str) -> FieldValue[str]:
 
 
 class NormalizationTest(unittest.TestCase):
+    def test_pure_imaging_is_not_kept_as_procedure(self) -> None:
+        case = ClaimCase(
+            case_id="normalize-imaging",
+            procedures=[
+                Procedure(
+                    procedure_id="proc-1",
+                    name=extracted("PET/CT躯干+局部显像", "PET/CT躯干+局部显像"),
+                ),
+                Procedure(
+                    procedure_id="proc-2",
+                    name=extracted("CT引导下经皮穿刺术前标记物植入术", "CT引导下经皮穿刺术前标记物植入术"),
+                ),
+            ],
+        )
+
+        normalized = normalize_case(case)
+
+        self.assertEqual([item.name.value for item in normalized.procedures], ["CT引导下经皮穿刺术前标记物植入术"])
+        self.assertEqual([item.name.value for item in normalized.examinations], ["PET/CT躯干+局部显像"])
+
     def test_frequency_result_unit_and_daily_limit_are_normalized(self) -> None:
         medication_text = "对乙酰氨基酚片0.5g，必要时4-6小时可重复用药，24小内不超过2g"
         case = ClaimCase(

@@ -6,9 +6,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
+import re
 import tempfile
+import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +21,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from medical_claims.json_utils import normalize_json_output
+from medical_claims.long_case import chunk_documents, document_text_size, merge_claim_cases
 from medical_claims.models import ClaimCase, Costs, Medication
 from medical_claims.normalization import normalize_case
 from medical_claims.pain_engine import analyze_pain_points
@@ -28,8 +33,8 @@ from medical_claims.pain_models import (
 from medical_claims.validation import validate_case
 
 
-app = FastAPI(title="Medical Claims Structure API", version="0.2.0")
-BACKEND_REVISION = "2026-10-01-pain-engine-v1"
+app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
+BACKEND_REVISION = "2026-10-01-long-case-v2"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -89,7 +94,49 @@ def extract_output_text(payload: dict[str, Any]) -> str:
     raise RuntimeError("DeepSeek 响应中没有结构化文本")
 
 
-def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> ClaimCase:
+def post_deepseek(body: dict[str, Any]) -> dict[str, Any]:
+    """对限流、服务端错误和瞬时超时执行有上限的重试。"""
+
+    retries = int(os.getenv("DEEPSEEK_MAX_RETRIES", "2"))
+    timeout = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "360"))
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise RuntimeError("未配置 DEEPSEEK_API_KEY")
+    for attempt in range(retries + 1):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(
+                    "https://api.deepseek.com/responses",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=body,
+                )
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < retries:
+                delay = min(8, 2 ** (attempt + 1))
+                logger.warning(
+                    "DeepSeek transient status %s; retrying in %ss",
+                    response.status_code,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+            return response.json()
+        except httpx.TimeoutException:
+            if attempt >= retries:
+                raise
+            delay = min(8, 2 ** (attempt + 1))
+            logger.warning("DeepSeek timeout; retrying in %ss", delay)
+            time.sleep(delay)
+    raise RuntimeError("DeepSeek重试次数耗尽")
+
+
+def structure_with_deepseek(
+    case_id: str,
+    documents: list[dict[str, Any]],
+    *,
+    finalize: bool = True,
+    scope_note: str | None = None,
+) -> ClaimCase:
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         raise RuntimeError("未配置 DEEPSEEK_API_KEY")
@@ -99,7 +146,14 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
             "document_id": document["document_id"],
             "page": document["page"],
             "ocr_text": document["full_text"],
-            "ocr_blocks": document["blocks"],
+            "ocr_confidence": (
+                sum(
+                    block["confidence"]
+                    for block in document["blocks"]
+                    if block.get("confidence") is not None
+                )
+                / max(1, sum(1 for block in document["blocks"] if block.get("confidence") is not None))
+            ),
         }
         for document in documents
     ]
@@ -128,6 +182,14 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         "为控制输出长度，每个字段的evidence最多保留1条最直接、最短且足以证明该字段的证据；"
         "不要在多个字段中复制整段病历，只截取包含目标值的最小原文片段。"
     )
+    if scope_note:
+        instructions += (
+            scope_note
+            + "这是长病例的一部分，只提取本批次页面明确出现的事实。"
+            "其他页面未在本批次出现不代表整个案件缺失，不得仅因本批次缺页生成缺失或冲突告警。"
+            "费用总额、分类小计和支付金额只提取原文明确给出的数值；不得根据不完整批次自行汇总全案金额。"
+            "实体ID只需在本批次内唯一，案件级系统随后会重新编号、去重和校验。"
+        )
     body = {
         "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
         "instructions": instructions,
@@ -137,7 +199,12 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
         ),
         "reasoning": {"effort": "none"},
         "temperature": 0,
-        "max_output_tokens": int(os.getenv("DEEPSEEK_MAX_OUTPUT_TOKENS", "30000")),
+        "max_output_tokens": int(
+            os.getenv(
+                "DEEPSEEK_MAX_OUTPUT_TOKENS" if finalize else "DEEPSEEK_CHUNK_MAX_OUTPUT_TOKENS",
+                "30000",
+            )
+        ),
         "text": {
             "format": {
                 "type": "json_schema",
@@ -146,22 +213,153 @@ def structure_with_deepseek(case_id: str, documents: list[dict[str, Any]]) -> Cl
             }
         },
     }
-    with httpx.Client(timeout=float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "360"))) as client:
-        response = client.post(
-            "https://api.deepseek.com/responses",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json=body,
-        )
-        response.raise_for_status()
-    output_text = extract_output_text(response.json())
+    output_text = extract_output_text(post_deepseek(body))
     result = ClaimCase.model_validate_json(normalize_json_output(output_text))
     result = normalize_case(result)
-    existing_flag_codes = {flag.code for flag in result.quality_flags}
-    result.quality_flags.extend(
-        flag for flag in validate_case(result) if flag.code not in existing_flag_codes
-    )
+    if finalize:
+        existing_flags = {
+            (flag.code, flag.field_path, flag.document_id, flag.message)
+            for flag in result.quality_flags
+        }
+        result.quality_flags.extend(
+            flag
+            for flag in validate_case(result)
+            if (flag.code, flag.field_path, flag.document_id, flag.message) not in existing_flags
+        )
     if result.case_id != case_id:
         raise RuntimeError("模型返回的 case_id 与请求不一致")
+    return ClaimCase.model_validate(result.model_dump())
+
+
+def _structure_chunk_with_fallback(
+    case_id: str,
+    documents: list[dict[str, Any]],
+    *,
+    label: str,
+) -> list[ClaimCase]:
+    """分块输出仍过长或超时时，递归减半，不让整案从头失败。"""
+
+    first_page = documents[0]["page"]
+    last_page = documents[-1]["page"]
+    cache_path = _chunk_cache_path(case_id, documents)
+    if cache_path is not None and cache_path.exists():
+        try:
+            cached = ClaimCase.model_validate_json(cache_path.read_text(encoding="utf-8"))
+            if cached.case_id == case_id:
+                logger.info("Reusing long-case chunk cache %s", cache_path.name)
+                return [cached]
+        except Exception:
+            logger.exception("Ignoring invalid long-case chunk cache %s", cache_path)
+    try:
+        result = structure_with_deepseek(
+            case_id,
+            documents,
+            finalize=False,
+            scope_note=f"当前为{label}，覆盖全案第{first_page}至{last_page}页。",
+        )
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_suffix(".tmp")
+            temporary.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+            temporary.replace(cache_path)
+        return [result]
+    except httpx.HTTPStatusError:
+        raise
+    except Exception:
+        if len(documents) <= 1:
+            raise
+        logger.exception(
+            "Long-case chunk failed; retrying two smaller chunks (pages %s-%s)",
+            first_page,
+            last_page,
+        )
+        midpoint = len(documents) // 2
+        return _structure_chunk_with_fallback(
+            case_id, documents[:midpoint], label=f"{label}-A"
+        ) + _structure_chunk_with_fallback(
+            case_id, documents[midpoint:], label=f"{label}-B"
+        )
+
+
+def _chunk_cache_path(case_id: str, documents: list[dict[str, Any]]) -> Path | None:
+    """仅缓存结构化分块，不保存原始图片；代码版本变化会自动失效。"""
+
+    if os.getenv("LONG_CASE_CACHE_ENABLED", "true").lower() in {"0", "false", "no"}:
+        return None
+    root = Path(os.getenv("LONG_CASE_CACHE_DIR", "outputs/_long_case_cache"))
+    safe_case_id = re.sub(r"[^0-9A-Za-z_.-]+", "_", case_id).strip("._") or "case"
+    signature = {
+        "revision": BACKEND_REVISION,
+        "case_id": case_id,
+        "documents": [
+            {
+                "document_id": document["document_id"],
+                "page": document["page"],
+                "ocr_sha256": hashlib.sha256(
+                    str(document.get("full_text") or "").encode("utf-8")
+                ).hexdigest(),
+            }
+            for document in documents
+        ],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(signature, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:24]
+    return root / safe_case_id / f"chunk-{fingerprint}.json"
+
+
+def structure_case_with_long_document_support(
+    case_id: str, documents: list[dict[str, Any]]
+) -> ClaimCase:
+    """短病例保持单次调用；长病例自动分块、合并并执行全局校验。"""
+
+    page_threshold = int(os.getenv("LONG_CASE_PAGE_THRESHOLD", "8"))
+    character_threshold = int(os.getenv("LONG_CASE_CHARACTER_THRESHOLD", "24000"))
+    total_characters = sum(document_text_size(document) for document in documents)
+    if len(documents) <= page_threshold and total_characters <= character_threshold:
+        return structure_with_deepseek(case_id, documents)
+
+    max_pages = int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6"))
+    max_characters = int(os.getenv("LONG_CASE_CHUNK_MAX_CHARACTERS", "18000"))
+    max_ocr_blocks = int(os.getenv("LONG_CASE_CHUNK_MAX_OCR_BLOCKS", "600"))
+    planned_chunks = chunk_documents(
+        documents,
+        max_pages=max_pages,
+        max_characters=max_characters,
+        max_ocr_blocks=max_ocr_blocks,
+    )
+    logger.info(
+        "Processing long case %s: %s pages, %s OCR chars, %s planned chunks",
+        case_id,
+        len(documents),
+        total_characters,
+        len(planned_chunks),
+    )
+    partials: list[ClaimCase] = []
+    for index, chunk in enumerate(planned_chunks, start=1):
+        partials.extend(
+            _structure_chunk_with_fallback(
+                case_id,
+                chunk,
+                label=f"计划分块{index}/{len(planned_chunks)}",
+            )
+        )
+    result = merge_claim_cases(
+        case_id,
+        partials,
+        documents,
+        chunk_count=len(partials),
+    )
+    result = normalize_case(result)
+    existing_flags = {
+        (flag.code, flag.field_path, flag.document_id, flag.message)
+        for flag in result.quality_flags
+    }
+    result.quality_flags.extend(
+        flag
+        for flag in validate_case(result)
+        if (flag.code, flag.field_path, flag.document_id, flag.message) not in existing_flags
+    )
     return ClaimCase.model_validate(result.model_dump())
 
 
@@ -198,14 +396,7 @@ def semantic_pain_points_with_deepseek(case: ClaimCase) -> SemanticPainPointBatc
             }
         },
     }
-    with httpx.Client(timeout=float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "360"))) as client:
-        response = client.post(
-            "https://api.deepseek.com/responses",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json=body,
-        )
-        response.raise_for_status()
-    output_text = extract_output_text(response.json())
+    output_text = extract_output_text(post_deepseek(body))
     result = SemanticPainPointBatch.model_validate_json(normalize_json_output(output_text))
     if result.case_id != case.case_id:
         raise RuntimeError("痛点模型返回的 case_id 与请求不一致")
@@ -213,7 +404,7 @@ def semantic_pain_points_with_deepseek(case: ClaimCase) -> SemanticPainPointBatc
 
 
 @app.get("/api/health")
-def health() -> dict[str, str | bool]:
+def health() -> dict[str, str | bool | int]:
     try:
         import rapidocr  # noqa: F401
         ocr = "rapidocr-ready"
@@ -229,6 +420,14 @@ def health() -> dict[str, str | bool]:
         "cost_semantics_schema": "personal_burden" in Costs.model_fields,
         "medication_instruction_schema": "max_daily_dose" in Medication.model_fields,
         "pain_point_engine": True,
+        "long_case_chunking": True,
+        "long_case_page_threshold": int(os.getenv("LONG_CASE_PAGE_THRESHOLD", "8")),
+        "long_case_chunk_max_pages": int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6")),
+        "long_case_chunk_max_ocr_blocks": int(
+            os.getenv("LONG_CASE_CHUNK_MAX_OCR_BLOCKS", "600")
+        ),
+        "long_case_resume_cache": os.getenv("LONG_CASE_CACHE_ENABLED", "true").lower()
+        not in {"0", "false", "no"},
     }
 
 
@@ -243,20 +442,31 @@ async def process_case(
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
             tmp_path = Path(tmp)
             documents: list[dict[str, Any]] = []
+            filenames = [upload.filename or "image.jpg" for upload in files]
+            filename_counts = Counter(filenames)
             for page, upload in enumerate(files, start=1):
                 suffix = Path(upload.filename or "image.jpg").suffix.lower()
                 if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
                     raise ValueError(f"当前OCR后端暂不处理 {suffix or '未知格式'}，请先转为图片")
                 target = tmp_path / f"{page:04d}{suffix}"
                 target.write_bytes(await upload.read())
-                documents.append(recognize_image(target, upload.filename or target.name, page))
-            return structure_with_deepseek(case_id, documents)
+                original_name = upload.filename or target.name
+                document_id = (
+                    original_name
+                    if filename_counts[original_name] == 1
+                    else f"{page:04d}-{original_name}"
+                )
+                documents.append(recognize_image(target, document_id, page))
+            return structure_case_with_long_document_support(case_id, documents)
     except httpx.HTTPStatusError as exc:
         logger.exception("DeepSeek API returned an HTTP error")
         raise HTTPException(status_code=502, detail=f"DeepSeek API 调用失败：{exc.response.status_code}") from exc
     except httpx.TimeoutException as exc:
         logger.exception("DeepSeek API timed out")
-        raise HTTPException(status_code=504, detail="DeepSeek处理超时，请减少页面或稍后重试") from exc
+        raise HTTPException(
+            status_code=504,
+            detail="DeepSeek分块处理超时；系统已尝试自动缩小分块，请稍后重试失败批次",
+        ) from exc
     except Exception as exc:
         logger.exception("Case processing failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
