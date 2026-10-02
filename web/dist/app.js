@@ -80,6 +80,7 @@ let backendUrl = localStorage.getItem("medicalClaimsBackend") || "";
 let predictionData = null;
 let goldData = null;
 let painReport = null;
+let careReport = null;
 
 let batchCases = [
   { id: "CASE-001", docs: 12, stage: "已完成", completeness: 96.1, confidence: 94.8, review: 1, status: "done" },
@@ -445,6 +446,7 @@ async function runPipeline() {
       result = parseLocalText();
     }
     painReport = null;
+    careReport = null;
     setPipelineState(5);
     await sleep(260);
     setPipelineState(6);
@@ -468,6 +470,7 @@ function loadDemo() {
   documents = structuredClone(demoDocuments);
   result = demoCase();
   painReport = null;
+  careReport = null;
   isDemoCase = true;
   $("caseId").value = result.case_id;
   selectedDocId = documents[0].id;
@@ -552,7 +555,9 @@ async function analyzeCurrentPain() {
     if (!response.ok) throw new Error(payload && payload.detail ? payload.detail : (text || "无错误详情"));
     if (!payload) throw new Error("后端返回了空响应");
     painReport = payload;
+    careReport = null;
     renderPainReport();
+    renderCareReport();
     showToast("第二问痛点分析完成");
   } catch (error) {
     showToast("痛点分析失败：" + (error.message || "请检查后端"));
@@ -566,6 +571,79 @@ function exportPainReport() {
   downloadBlob(JSON.stringify(painReport, null, 2), (painReport.case_id || "case") + ".pain-points.json");
   showToast("痛点识别JSON已导出");
 }
+function careStatusLabel(value) {
+  return ({ passed: "通过", review: "待复核", blocked: "已拦截" })[value] || value;
+}
+function renderCareReport() {
+  const report = careReport;
+  const guide = report && report.guide;
+  $("careDisease").textContent = guide ? guide.disease_topic : "—";
+  $("careCaseLabel").textContent = report ? ("病例 " + report.case_id) : "等待生成";
+  $("careMethod").textContent = report ? (report.generation_method === "llm" ? "DeepSeek" : "安全降级") : "—";
+  $("careCoverage").textContent = report ? (Number(report.evidence_coverage) * 100).toFixed(1) : "—";
+  $("careReview").textContent = report ? (report.review_required ? "待复核" : "已通过") : "—";
+  $("careKnowledgeStatus").textContent = report ? (report.knowledge_review_status === "reviewed" ? "知识卡已审核" : "知识卡待医学审核") : "知识卡待匹配";
+  $("careEngineVersion").textContent = report ? report.engine_version : "尚未生成";
+  $("exportCareButton").disabled = !report;
+  $("careWarnings").innerHTML = report ? (report.warnings || []).map(function(warning) {
+    return '<div class="pain-warning">' + escapeHtml(warning) + '</div>';
+  }).join("") : "";
+  if (!guide) {
+    $("careGuideContent").innerHTML = '<div class="pain-empty"><strong>尚未生成</strong><span>请先完成第一问和第二问，再生成个性化温度指引。</span></div>';
+    $("careSafetyList").innerHTML = '<div class="pain-empty compact"><strong>等待检查</strong><span>生成后显示医学边界、知识审核和证据状态。</span></div>';
+    return;
+  }
+  function sectionCard(section, kind) {
+    const refs = (section.evidence_fields || []).map(function(path) { return '<span>' + escapeHtml(path) + '</span>'; }).join("");
+    return '<article class="care-section ' + (kind || "") + '"><h3>' + escapeHtml(section.title) + '</h3><p>' + escapeHtml(section.content) + '</p>' + (refs ? '<div class="care-refs"><strong>病例依据</strong>' + refs + '</div>' : '<div class="care-refs review"><strong>需要复核</strong><span>本段没有病例字段引用</span></div>') + '</article>';
+  }
+  function actionList(title, items) {
+    return '<article class="care-section"><h3>' + escapeHtml(title) + '</h3><ol class="care-action-list">' + (items || []).map(function(item) {
+      return '<li><strong>' + escapeHtml(item.action) + '</strong><span>' + escapeHtml(item.timing) + ' · ' + escapeHtml(item.reason) + '</span></li>';
+    }).join("") + '</ol></article>';
+  }
+  $("careGuideContent").innerHTML =
+    sectionCard(guide.opening, "opening") +
+    '<div class="care-grid">' + sectionCard(guide.diagnosis_explanation) + sectionCard(guide.treatment_review) + sectionCard(guide.cost_explanation) + sectionCard(guide.psychological_support) + '</div>' +
+    '<div class="care-grid">' + actionList("康复行动清单", guide.recovery_plan) + actionList("下次就医建议", guide.follow_up_plan) + '</div>' +
+    '<article class="care-section alert"><h3>需要及时关注的情况</h3><ul>' + (guide.red_flags || []).map(function(item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul></article>' +
+    '<article class="care-limitations"><strong>使用边界</strong><ul>' + (guide.limitations || []).map(function(item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul></article>';
+  $("careSafetyList").innerHTML = (report.safety_checks || []).map(function(check) {
+    return '<article class="care-safety ' + escapeHtml(check.status) + '"><div><strong>' + escapeHtml(check.code) + '</strong><span>' + escapeHtml(check.message) + '</span></div><em>' + careStatusLabel(check.status) + '</em></article>';
+  }).join("");
+}
+async function generateCurrentCare() {
+  if (!backendUrl) { showToast("请先连接本地后端，再生成第三问"); return; }
+  if (!painReport) { showToast("请先到痛点洞察完成第二问，不能跳过关键输入"); return; }
+  const button = $("generateCareButton");
+  button.disabled = true;
+  button.textContent = "正在生成…";
+  try {
+    const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/generate-care-guide", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case: result, pain_report: painReport, disease_topic: $("careTopic").value.trim() || null, use_llm: true })
+    });
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+    if (!response.ok) throw new Error(payload && payload.detail ? payload.detail : (text || "无错误详情"));
+    if (!payload) throw new Error("后端返回了空响应");
+    careReport = payload;
+    renderCareReport();
+    showToast(payload.review_required ? "指引已生成，必须完成医学复核" : "第三问温度指引已生成");
+  } catch (error) {
+    showToast("温度指引生成失败：" + (error.message || "请检查后端"));
+  } finally {
+    button.disabled = false;
+    button.textContent = "生成温度指引";
+  }
+}
+function exportCareReport() {
+  if (!careReport) return;
+  downloadBlob(JSON.stringify(careReport, null, 2), (careReport.case_id || "case") + ".care-guide.json");
+  showToast("温度指引JSON已导出");
+}
 function switchView(name) {
   document.querySelectorAll(".view-tab").forEach(function(tab) { tab.classList.toggle("active", tab.dataset.view === name); });
   document.querySelectorAll("[data-view-panel]").forEach(function(panel) { panel.classList.toggle("active", panel.dataset.viewPanel === name); });
@@ -576,6 +654,7 @@ function switchView(name) {
   url.searchParams.set("view", name);
   history.replaceState(null, "", url);
   if (name === "pain") renderPainReport();
+  if (name === "care") renderCareReport();
 }
 function renderBatch() {
   const completed = batchCases.filter(function(x) { return x.status === "done" || x.status === "review"; }).length;
@@ -772,7 +851,7 @@ $("exportButton").addEventListener("click", downloadJson);
 $("downloadJsonButton").addEventListener("click", downloadJson);
 $("closeDialog").addEventListener("click", function() { $("jsonDialog").close(); });
 $("copyJsonButton").addEventListener("click", async function() { await navigator.clipboard.writeText(JSON.stringify(result, null, 2)); showToast("JSON已复制"); });
-$("caseId").addEventListener("change", function() { result.case_id = $("caseId").value; painReport = null; renderAll(); renderPainReport(); });
+$("caseId").addEventListener("change", function() { result.case_id = $("caseId").value; painReport = null; careReport = null; renderAll(); renderPainReport(); renderCareReport(); });
 document.querySelectorAll(".tab").forEach(function(tab) { tab.addEventListener("click", function() { document.querySelectorAll(".tab").forEach(function(x) { x.classList.remove("active"); }); tab.classList.add("active"); currentTab = tab.dataset.tab; renderResults(); }); });
 document.querySelectorAll(".view-tab").forEach(function(tab) { tab.addEventListener("click", function() { switchView(tab.dataset.view); }); });
 $("folderInput").addEventListener("change", function(e) { loadBatchFolder(e.target.files); });
@@ -783,6 +862,8 @@ $("goldInput").addEventListener("change", function(e) { if (e.target.files[0]) r
 $("evaluateButton").addEventListener("click", runEvaluation);
 $("analyzePainButton").addEventListener("click", analyzeCurrentPain);
 $("exportPainButton").addEventListener("click", exportPainReport);
+$("generateCareButton").addEventListener("click", generateCurrentCare);
+$("exportCareButton").addEventListener("click", exportCareReport);
 $("providerButton").addEventListener("click", function() { $("backendUrl").value = backendUrl; updateProviderUi(Boolean(backendUrl)); $("providerDialog").showModal(); });
 $("closeProviderDialog").addEventListener("click", function() { $("providerDialog").close(); });
 $("checkBackendButton").addEventListener("click", checkBackend);
@@ -795,5 +876,6 @@ setPipelineState(6);
 renderBatch();
 renderAll();
 renderPainReport();
+renderCareReport();
 const initialView = new URLSearchParams(window.location.search).get("view");
-if (["case", "pain", "batch", "evaluation"].includes(initialView)) switchView(initialView);
+if (["case", "pain", "care", "batch", "evaluation"].includes(initialView)) switchView(initialView);

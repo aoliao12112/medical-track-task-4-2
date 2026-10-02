@@ -1,6 +1,6 @@
 # 本地 OCR 与 DeepSeek 后端
 
-这层服务只用于第一问：图片在本机由 RapidOCR 识别，DeepSeek 仅接收 OCR 后的文本并按 ClaimCase JSON Schema 输出结果。
+这层服务支撑前三问：图片在本机由 RapidOCR 识别，DeepSeek 仅接收脱敏后的 OCR 文本或结构化事实包，并按受控 JSON Schema 输出结果。
 
 ## 安装
 
@@ -43,6 +43,16 @@ POST /api/cases/analyze-pain-points
 
 接口优先运行本地确定性规则，再合并经过证据校验的 DeepSeek 语义候选；即使语义调用
 失败，也会返回规则结果，并在 `analysis_warnings` 中说明降级原因。
+
+完成第二问后，在“温度指引”页生成第三问，接口为：
+
+```text
+POST /api/cases/generate-care-guide
+```
+
+第三问会匹配 `knowledge/care_guides/` 中的病种知识卡，执行字段引用和医学边界校验。
+知识卡尚未由医学人员审核时，输出始终保持 `review_required=true`。DeepSeek 调用失败会返回
+`rules_fallback` 安全草稿，不会中断演示。
 
 当前后端优先处理 JPG、JPEG、PNG、BMP、WebP。官方样本本身是图片，因此不影响本轮数据；PDF 后续可增加逐页转换。
 

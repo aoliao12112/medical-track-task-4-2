@@ -1,0 +1,44 @@
+{
+  "card_id": "care-pneumonia-v1",
+  "disease": "肺炎",
+  "aliases": ["肺部感染", "社区获得性肺炎", "支气管肺炎"],
+  "plain_explanation": "肺炎是肺部发生感染或炎症的一类疾病。病因、严重程度和恢复过程因人而异，需要结合症状、检查结果和医生判断理解。",
+  "general_actions": [
+    "按照出院医嘱使用药物，不自行停药或改变剂量",
+    "记录体温、咳嗽、胸痛和呼吸情况的变化",
+    "向经治医生确认是否需要复查及具体时间"
+  ],
+  "follow_up_questions": [
+    "目前诊断依据和可能病因是什么",
+    "药物疗程和停药条件是什么",
+    "是否需要复查影像或化验，何时复查"
+  ],
+  "red_flags": [
+    "出现明显呼吸困难或气短",
+    "出现持续胸部疼痛或压迫感",
+    "出现意识模糊、难以唤醒或抽搐",
+    "症状一度好转后再次明显加重"
+  ],
+  "prohibited_claims": [
+    "不得仅凭理赔材料判断病原体",
+    "不得承诺已经治愈",
+    "不得建议自行使用、停用或更换抗感染药物"
+  ],
+  "sources": [
+    {
+      "title": "About Pneumonia",
+      "url": "https://www.cdc.gov/pneumonia/about/index.html",
+      "organization": "U.S. CDC",
+      "accessed_at": "2026-10-02"
+    },
+    {
+      "title": "About Respiratory Illnesses",
+      "url": "https://www.cdc.gov/respiratory-viruses/about/index.html",
+      "organization": "U.S. CDC",
+      "accessed_at": "2026-10-02"
+    }
+  ],
+  "review_status": "draft_pending_medical_review",
+  "reviewer": null,
+  "reviewed_at": null
+}

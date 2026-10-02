@@ -1,0 +1,38 @@
+{
+  "card_id": "care-diabetes-v1",
+  "disease": "糖尿病",
+  "aliases": ["2型糖尿病", "1型糖尿病", "血糖升高", "高血糖"],
+  "plain_explanation": "糖尿病是一类血糖调节出现问题的慢性疾病。长期管理通常包括饮食、活动、药物和并发症筛查，但具体目标和方案需要由医生结合糖尿病类型及个人情况确定。",
+  "general_actions": [
+    "按照医生制定的方案用药和复诊，不自行改变剂量",
+    "保存医生要求记录的血糖或其他监测结果",
+    "按医嘱关注足部、眼部、肾脏和心血管相关检查"
+  ],
+  "follow_up_questions": [
+    "个人血糖管理目标和监测频率是什么",
+    "药物漏服、低血糖或生病时应该如何处理",
+    "下一次复诊和并发症筛查安排是什么"
+  ],
+  "red_flags": [
+    "出现明显意识改变、昏睡或无法正常进食饮水",
+    "出现持续恶心呕吐或呼吸异常",
+    "出现足部破损、感染或颜色明显改变",
+    "出现医生曾告知需要紧急处理的低血糖表现"
+  ],
+  "prohibited_claims": [
+    "不得统一给出血糖目标值",
+    "不得建议自行增减胰岛素或降糖药",
+    "不得把一次血糖结果等同于整体控制情况"
+  ],
+  "sources": [
+    {
+      "title": "Diabetes fact sheet",
+      "url": "https://www.who.int/news-room/fact-sheets/detail/diabetes",
+      "organization": "World Health Organization",
+      "accessed_at": "2026-10-02"
+    }
+  ],
+  "review_status": "draft_pending_medical_review",
+  "reviewer": null,
+  "reviewed_at": null
+}

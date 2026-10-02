@@ -24,6 +24,20 @@ from medical_claims.json_utils import normalize_json_output
 from medical_claims.long_case import chunk_documents, document_text_size, merge_claim_cases
 from medical_claims.models import ClaimCase, Costs, Medication
 from medical_claims.normalization import normalize_case
+from medical_claims.care_engine import (
+    build_fallback_draft,
+    diagnosis_names,
+    finalize_care_guide,
+    infer_disease_topic,
+)
+from medical_claims.care_knowledge import match_knowledge_card
+from medical_claims.care_models import (
+    CareGuideDraft,
+    CareGuideReport,
+    CareGuideRequest,
+    GenerationMethod,
+)
+from medical_claims.care_prompt import build_care_generation_context
 from medical_claims.pain_engine import analyze_pain_points
 from medical_claims.pain_models import (
     PainAnalysisRequest,
@@ -34,7 +48,7 @@ from medical_claims.validation import validate_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
-BACKEND_REVISION = "2026-10-01-long-case-pain-v5"
+BACKEND_REVISION = "2026-10-02-care-guide-v1"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -436,6 +450,52 @@ def semantic_pain_points_with_deepseek(case: ClaimCase) -> SemanticPainPointBatc
     return result
 
 
+def care_guide_with_deepseek(
+    case: ClaimCase,
+    pain_report: PainPointReport,
+    disease_topic: str,
+    card,
+) -> CareGuideDraft:
+    """DeepSeek 仅依据精简事实包和知识卡生成第三问草稿。"""
+
+    instructions = (
+        "你是理赔后医护关怀指引生成器。你不是医生，不得新增诊断、处方、剂量、疗程或复查日期。"
+        "只能使用case_fact_pack中的病例事实；knowledge_card只用于通俗解释、一般性行动建议和危险信号。"
+        "每个病例事实陈述必须在evidence_fields中引用存在且有值的字段路径。"
+        "必须区分个人自付、个人自费与现金/个人账户等付款渠道；缺少金额时明确说材料未提供，禁止推算。"
+        "内容必须包含诊断通俗解释、治疗过程回顾、费用解读、康复计划、心理安抚和下次就医建议。"
+        "开场和心理安抚必须结合本病例情境，禁止只写祝早日康复等套话。"
+        "行动建议要具体但不越权；不得建议自行停药、换药、增减剂量或擅自训练。"
+        "不知道的内容明确说明需要向经治医生确认，不得用医学常识补齐病例事实。"
+        "limitations必须原样包含："
+        "“本指引仅依据本次提交的理赔医疗材料生成，不能替代医生诊断。”和"
+        "“不要据此自行停药、换药或调整剂量。”"
+    )
+    body = {
+        "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+        "instructions": instructions,
+        "input": json.dumps(
+            build_care_generation_context(case, pain_report, card, disease_topic),
+            ensure_ascii=False,
+        ),
+        "reasoning": {"effort": "none"},
+        "temperature": 0.2,
+        "max_output_tokens": int(os.getenv("DEEPSEEK_CARE_MAX_OUTPUT_TOKENS", "12000")),
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "care_guide_draft",
+                "schema": CareGuideDraft.model_json_schema(),
+            }
+        },
+    }
+    output_text = extract_output_text(post_deepseek(body))
+    result = CareGuideDraft.model_validate_json(normalize_json_output(output_text))
+    if result.case_id != case.case_id:
+        raise RuntimeError("温度指引模型返回的 case_id 与请求不一致")
+    return result
+
+
 @app.get("/api/health")
 def health() -> dict[str, str | bool | int]:
     try:
@@ -453,6 +513,7 @@ def health() -> dict[str, str | bool | int]:
         "cost_semantics_schema": "personal_burden" in Costs.model_fields,
         "medication_instruction_schema": "max_daily_dose" in Medication.model_fields,
         "pain_point_engine": True,
+        "care_guide_engine": True,
         "long_case_chunking": True,
         "long_case_page_threshold": int(os.getenv("LONG_CASE_PAGE_THRESHOLD", "8")),
         "long_case_chunk_max_pages": int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6")),
@@ -527,3 +588,35 @@ def analyze_case_pain_points(request: PainAnalysisRequest) -> PainPointReport:
     else:
         warnings.append("本次请求关闭了DeepSeek语义分析，仅运行确定性规则。")
     return analyze_pain_points(case, semantic_points, warnings)
+
+
+@app.post("/api/cases/generate-care-guide", response_model=CareGuideReport)
+def generate_case_care_guide(request: CareGuideRequest) -> CareGuideReport:
+    """基于第一问病例、第二问痛点和已登记知识卡生成第三问温度指引。"""
+
+    case = normalize_case(request.case.model_copy(deep=True))
+    warnings: list[str] = []
+    pain_report = request.pain_report
+    if pain_report is None:
+        pain_report = analyze_pain_points(
+            case,
+            [],
+            ["请求未附第二问结果，本次仅使用确定性规则痛点。"],
+        )
+        warnings.append("未附第二问完整结果，建议先完成痛点分析后重新生成。")
+
+    card = match_knowledge_card(diagnosis_names(case), request.disease_topic)
+    disease_topic = infer_disease_topic(case, request.disease_topic, card)
+    method = GenerationMethod.RULES_FALLBACK
+    if request.use_llm:
+        try:
+            draft = care_guide_with_deepseek(case, pain_report, disease_topic, card)
+            method = GenerationMethod.LLM
+        except Exception as exc:
+            logger.exception("Care-guide generation failed; returning safe fallback")
+            warnings.append(f"DeepSeek温度指引暂不可用，已返回安全降级草稿：{type(exc).__name__}")
+            draft = build_fallback_draft(case, pain_report, card, disease_topic)
+    else:
+        warnings.append("本次关闭DeepSeek，仅生成安全降级草稿。")
+        draft = build_fallback_draft(case, pain_report, card, disease_topic)
+    return finalize_care_guide(case, draft, card, method, warnings)

@@ -1,0 +1,13 @@
+[
+  {
+    "case_id": "CASE-001",
+    "reviewer_id": "reviewer_01",
+    "warmth": 1,
+    "actionability": 1,
+    "personalization": 1,
+    "clarity": 1,
+    "factual_errors": 0,
+    "unsafe_suggestions": 0,
+    "comments": "请在这里填写评分理由；1分为最低，5分为最高。"
+  }
+]

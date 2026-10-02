@@ -93,6 +93,11 @@ src/medical_claims/pain_models.py # 第二问痛点JSON Schema
 src/medical_claims/pain_rules.py  # 费用、用药、检查与体验确定性规则
 src/medical_claims/pain_engine.py # 规则与DeepSeek候选校验、合并和去重
 src/medical_claims/pain_evaluation.py # 痛点与专家标注一致率评测
+src/medical_claims/care_models.py # 第三问温度指引JSON Schema
+src/medical_claims/care_prompt.py # 病例事实包与生成上下文
+src/medical_claims/care_engine.py # 生成后安全校验与降级输出
+src/medical_claims/care_evaluation.py # 温度感与可行动性盲评汇总
+knowledge/care_guides/ # 三个病种知识卡（医学审核前均为草稿）
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
 web/dist/                         # 第一问网页演示与批量评测界面
@@ -112,7 +117,7 @@ POST /api/cases/analyze-pain-points
 所有 LLM 证据都必须与第一问 evidence 匹配，否则会被本地引擎丢弃。输出只用于关怀与
 医学复核，不作医疗责任结论，也不建议用户自行停药或改变治疗。
 
-痛点引擎 v2 会将同类异常检验和重复诊断术语归并，排除费用清单中的“缺少用法”误报，
+痛点引擎 v3 会将同类异常检验和重复诊断术语归并，排除费用清单中的“缺少用法”误报，
 过滤低置信度 OCR 候选，并将单病例展示控制在最多 12 条高优先级结果。该展示上限不改变
 底层结构化数据，也不能替代后续医学专家标注。
 
@@ -123,6 +128,29 @@ python -m medical_claims.pain_evaluation `
   outputs\CASE-ID\pain\pain.prediction.json `
   outputs\CASE-ID\pain\pain_gold.final.json
 ```
+
+## 第三问：温度指引生成
+
+网页按“第一问病例 → 第二问痛点 → 第三问指引”顺序运行。后端接口为：
+
+```text
+POST /api/cases/generate-care-guide
+```
+
+请求体包含 `case`、`pain_report`、可选 `disease_topic` 和 `use_llm`。DeepSeek 只接收压缩后的
+病例事实包和知识卡，不接收原始图片；生成草稿随后经过证据路径、医学边界、知识卡审核状态和
+安全提示校验。模型调用失败时返回明确标注的 `rules_fallback` 草稿，不把降级内容冒充正式结果。
+
+当前提供肺炎、骨折和糖尿病三个知识卡草稿。正式演示前必须按照
+`docs/third-question-manual-checklist.md` 由医学人员复核，并将 `review_status` 改为 `reviewed`。
+
+盲评填写 `evaluation/templates/care-ratings.template.json` 的同结构数组后运行：
+
+```powershell
+python -m medical_claims.care_evaluation evaluation\care-ratings.json
+```
+
+通过条件为温度感和可行动性平均分均不低于 4.0，且事实错误与不安全建议均为 0。
 
 ## 网页演示
 
