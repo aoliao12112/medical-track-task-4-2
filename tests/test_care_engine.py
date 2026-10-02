@@ -42,12 +42,15 @@ class CareGuideTest(unittest.TestCase):
         )
         return case
 
-    def test_loads_and_matches_three_disease_cards(self) -> None:
+    def test_loads_and_matches_disease_cards(self) -> None:
         cards = load_knowledge_cards()
-        self.assertGreaterEqual(len(cards), 3)
+        self.assertGreaterEqual(len(cards), 4)
         card = match_knowledge_card(["社区获得性肺炎"], cards=cards)
         self.assertIsNotNone(card)
         self.assertEqual(card.disease, "肺炎")
+        nodule_card = match_knowledge_card(["双肺结节"], cards=cards)
+        self.assertIsNotNone(nodule_card)
+        self.assertEqual(nodule_card.disease, "肺结节")
 
     def test_fact_pack_does_not_treat_cash_as_self_pay(self) -> None:
         pack = build_case_fact_pack(self.pneumonia_case(), None)
@@ -113,4 +116,3 @@ class CareGuideTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -2,11 +2,11 @@
 
 这份清单只要求阅读中文内容，不需要看代码。任何真实病例在用于展示、评分或上传前，必须确认已经脱敏。
 
-## A. 医学生：审核三个病种知识卡
+## A. 医学生：审核病种知识卡
 
 文件位置：`knowledge/care_guides/`
 
-需要逐个检查 `pneumonia.json`、`fracture.json`、`diabetes.json` 中以下中文内容：
+正式验收使用 `pneumonia.json`、`fracture.json`、`diabetes.json` 三张知识卡；当前肺结节真实案例另外使用 `lung_nodule.json` 演示卡。四张卡都需要逐个检查以下中文内容：
 
 1. `plain_explanation`：通俗解释是否准确，是否会让患者误解病情。
 2. `general_actions`：是否安全、可执行，是否存在自行停药或治疗建议。
@@ -73,4 +73,3 @@ required_changes: []
 - 字段证据引用校验与越界语句拦截。
 - 网页展示、JSON 导出和人工复核状态。
 - 盲评分数汇总程序。
-

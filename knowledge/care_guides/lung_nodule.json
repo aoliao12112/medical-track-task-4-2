@@ -1,0 +1,45 @@
+{
+  "card_id": "care-lung-nodule-v1",
+  "disease": "肺结节",
+  "aliases": ["肺部结节", "肺小结节", "双肺结节", "多发肺结节"],
+  "plain_explanation": "肺结节是影像检查中看到的局部小阴影或小结节，并不是一个已经确定性质的诊断。仅凭“肺结节”三个字不能判断良性或恶性，通常需要结合结节的大小、形态、与既往影像相比是否变化，以及个人风险因素，由医生决定后续观察或检查方案。",
+  "general_actions": [
+    "保存本次和既往胸部影像、报告及就诊记录，复诊时交给医生进行对比",
+    "向医生确认本病例的复查方式和具体时间，不自行套用他人的复查周期",
+    "记录新出现或明显加重的呼吸困难、胸痛、咯血等症状，并及时向医生说明"
+  ],
+  "follow_up_questions": [
+    "结节的大小、形态和位置是什么，与既往影像相比是否有变化",
+    "结合年龄、吸烟史和其他个人情况，医生如何判断风险",
+    "下一次需要做什么检查、何时检查，是否需要呼吸科或胸外科进一步评估"
+  ],
+  "red_flags": [
+    "出现新发或明显加重的呼吸困难",
+    "出现咯血或痰中反复带血",
+    "出现持续或加重的胸痛",
+    "出现医生特别交代需要立即就医的其他症状"
+  ],
+  "prohibited_claims": [
+    "不得仅凭理赔材料判断结节为良性或恶性",
+    "不得把多发结节直接解释为病情更严重",
+    "不得给所有患者设定统一的复查间隔",
+    "不得在缺少医生判断时建议穿刺、手术或药物治疗"
+  ],
+  "sources": [
+    {
+      "title": "Lung Nodules",
+      "url": "https://www.radiologyinfo.org/en/info/lung-nodules",
+      "organization": "RadiologyInfo.org (ACR/RSNA)",
+      "accessed_at": "2026-10-02"
+    },
+    {
+      "title": "Pulmonary (lung) nodules",
+      "url": "https://www.cuh.nhs.uk/patient-information/pulmonary-lung-nodules/",
+      "organization": "Cambridge University Hospitals NHS Foundation Trust",
+      "accessed_at": "2026-10-02"
+    }
+  ],
+  "review_status": "draft_pending_medical_review",
+  "reviewer": null,
+  "reviewed_at": null
+}

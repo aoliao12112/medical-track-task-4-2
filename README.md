@@ -97,7 +97,7 @@ src/medical_claims/care_models.py # 第三问温度指引JSON Schema
 src/medical_claims/care_prompt.py # 病例事实包与生成上下文
 src/medical_claims/care_engine.py # 生成后安全校验与降级输出
 src/medical_claims/care_evaluation.py # 温度感与可行动性盲评汇总
-knowledge/care_guides/ # 三个病种知识卡（医学审核前均为草稿）
+knowledge/care_guides/ # 三个验收病种知识卡 + 肺结节演示卡（医学审核前均为草稿）
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
 web/dist/                         # 第一问网页演示与批量评测界面
