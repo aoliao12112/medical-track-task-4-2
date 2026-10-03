@@ -103,6 +103,16 @@ function showToast(message) {
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(function() { toast.classList.remove("show"); }, 2600);
 }
+function formatApiDetail(detail) {
+  if (Array.isArray(detail)) {
+    return detail.map(function(item) {
+      const location = Array.isArray(item.loc) ? item.loc.join(".") : "请求";
+      return location + "：" + (item.msg || JSON.stringify(item));
+    }).join("；");
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return detail == null ? "无错误详情" : String(detail);
+}
 function clampConfidence(n) {
   return n == null ? "—" : (n * 100).toFixed(n >= .995 ? 0 : 1) + "%";
 }
@@ -308,7 +318,7 @@ function renderDocuments() {
   $("documentList").innerHTML = documents.map(function(doc, index) {
     return '<button class="document-item ' + (doc.id === selectedDocId ? "active" : "") + '" data-id="' + escapeHtml(doc.id) + '">' +
       '<span class="doc-icon">' + (doc.previewUrl ? "▧" : "▤") + '</span><span class="doc-copy"><strong>' + escapeHtml(doc.name) + '</strong><span>' + escapeHtml(doc.type) + ' · 第' + (doc.page || index + 1) + '页</span></span>' +
-      '<span class="doc-state ' + (doc.text ? "" : "pending") + '">' + (doc.text ? "OCR " + (doc.ocrConfidence ? Math.round(doc.ocrConfidence * 100) + "%" : "已识别") : "待OCR") + '</span></button>';
+      '<span class="doc-state ' + (doc.text ? "" : "pending") + '">' + (doc.humanCorrected ? "人工修正" : (doc.text ? "OCR " + (doc.ocrConfidence != null ? Math.round(doc.ocrConfidence * 100) + "%" : "已识别") : "待OCR")) + '</span></button>';
   }).join("");
   $("documentList").querySelectorAll(".document-item").forEach(function(button) {
     button.addEventListener("click", function() { selectedDocId = button.dataset.id; renderDocuments(); });
@@ -321,6 +331,11 @@ function renderSelectedDocument() {
   $("selectedDocName").textContent = doc.name;
   $("selectedDocType").textContent = doc.type;
   $("ocrText").value = doc.text || "";
+  const correctionStatus = $("ocrCorrectionStatus");
+  correctionStatus.className = "ocr-note" + (doc.humanCorrected ? " corrected" : "");
+  correctionStatus.textContent = doc.humanCorrected ?
+    "本页已人工修正；点击“应用修正并重新结构化”后才会更新右侧字段。" :
+    (doc.text ? "当前显示后端OCR结果；请重点核对模糊字、数字、单位、日期和否定词。" : "本页尚未完成OCR识别。");
   $("documentPreview").innerHTML = doc.previewUrl ?
     '<img alt="' + escapeHtml(doc.name) + '" src="' + doc.previewUrl + '"><div class="evidence-overlay" id="evidenceOverlay">证据定位</div>' :
     '<div class="paper-preview"><div class="paper-line wide"></div><div class="paper-line"></div><div class="paper-line short"></div><div class="paper-block"></div><div class="paper-line wide"></div><div class="paper-line"></div></div><div class="evidence-overlay" id="evidenceOverlay">证据定位</div>';
@@ -409,20 +424,99 @@ function parseLocalText() {
 function sleep(ms) {
   return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
+function mergeOcrDocuments(ocrDocuments) {
+  const byPage = new Map((ocrDocuments || []).map(function(doc) { return [Number(doc.page), doc]; }));
+  documents = documents.map(function(doc, index) {
+    const ocr = byPage.get(index + 1);
+    if (!ocr) return doc;
+    const scores = (ocr.blocks || []).map(function(block) { return block.confidence; }).filter(function(value) { return value != null; });
+    const average = scores.length ? scores.reduce(function(total, value) { return total + Number(value); }, 0) / scores.length : null;
+    return Object.assign({}, doc, {
+      id: ocr.document_id,
+      name: ocr.document_id,
+      page: ocr.page,
+      text: ocr.full_text || "",
+      originalOcrText: ocr.full_text || "",
+      ocrBlocks: ocr.blocks || [],
+      ocrConfidence: average,
+      humanCorrected: Boolean(ocr.human_corrected)
+    });
+  });
+  selectedDocId = documents.length ? documents[0].id : null;
+}
 async function processWithBackend() {
   const form = new FormData();
   form.append("case_id", $("caseId").value || "LOCAL-CASE");
   documents.forEach(function(doc) { if (doc.file) form.append("files", doc.file, doc.name); });
-  const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/process", { method: "POST", body: form });
+  const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/process-detailed", { method: "POST", body: form });
   const text = await response.text();
   let payload = null;
   try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
   if (!response.ok) {
-    const detail = payload && payload.detail ? payload.detail : (text || "无错误详情");
+    const detail = payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情");
     throw new Error("后端 " + response.status + "：" + detail);
   }
   if (!payload) throw new Error("后端返回了空响应或非JSON内容");
-  return payload;
+  if (!payload.case || !Array.isArray(payload.documents)) throw new Error("后端版本过旧或详细OCR响应格式不正确");
+  mergeOcrDocuments(payload.documents);
+  return payload.case;
+}
+async function restructureFromCorrectedOcr() {
+  if (!backendUrl) { showToast("请先连接本地后端"); return; }
+  const correctedCount = documents.filter(function(doc) { return doc.humanCorrected; }).length;
+  if (!correctedCount) { showToast("请先修改OCR文本并保存本页修正"); return; }
+  if (documents.some(function(doc) { return !doc.text; })) { showToast("仍有页面没有OCR文本，不能重新结构化"); return; }
+  const button = $("applyOcrCorrectionsButton");
+  button.disabled = true;
+  button.textContent = "正在重新结构化…";
+  setCaseStatus("应用OCR修正中", "processing");
+  try {
+    const payload = {
+      case_id: $("caseId").value || result.case_id,
+      documents: documents.map(function(doc, index) {
+        return {
+          document_id: doc.name || doc.id,
+          page: doc.page || index + 1,
+          full_text: doc.text || "",
+          blocks: doc.ocrBlocks || [],
+          human_corrected: Boolean(doc.humanCorrected)
+        };
+      })
+    };
+    const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/restructure-from-ocr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const text = await response.text();
+    let parsed = null;
+    try { parsed = text ? JSON.parse(text) : null; } catch (error) { parsed = null; }
+    if (!response.ok) throw new Error(parsed && parsed.detail ? formatApiDetail(parsed.detail) : (text || "无错误详情"));
+    if (!parsed) throw new Error("后端返回了空响应");
+    result = parsed;
+    painReport = null;
+    careReport = null;
+    documents.forEach(function(doc) {
+      if (doc.humanCorrected) doc.originalOcrText = doc.text;
+      doc.humanCorrected = false;
+    });
+    setPipelineState(6);
+    const hasWarning = result.quality_flags.some(function(flag) { return flag.severity === "warning" || flag.severity === "error"; });
+    setCaseStatus(hasWarning ? "修正已应用，仍需复核" : "修正已应用", hasWarning ? "review" : "ready");
+    renderAll();
+    renderPainReport();
+    renderCareReport();
+    const status = $("ocrCorrectionStatus");
+    status.className = "ocr-note applied";
+    status.textContent = "人工修正已用于重新结构化；第二问和第三问旧结果已清空，请重新运行。";
+    showToast("已应用 " + correctedCount + " 页OCR修正并更新病例字段");
+  } catch (error) {
+    setCaseStatus("OCR修正应用失败", "error");
+    showToast("重新结构化失败：" + (error.message || "请检查后端"));
+  } finally {
+    button.disabled = false;
+    button.textContent = "应用修正并重新结构化";
+  }
 }
 async function runPipeline() {
   const button = $("runButton");
@@ -552,7 +646,7 @@ async function analyzeCurrentPain() {
     const text = await response.text();
     let payload = null;
     try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
-    if (!response.ok) throw new Error(payload && payload.detail ? payload.detail : (text || "无错误详情"));
+    if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
     if (!payload) throw new Error("后端返回了空响应");
     painReport = payload;
     careReport = null;
@@ -627,7 +721,7 @@ async function generateCurrentCare() {
     const text = await response.text();
     let payload = null;
     try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
-    if (!response.ok) throw new Error(payload && payload.detail ? payload.detail : (text || "无错误详情"));
+    if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
     if (!payload) throw new Error("后端返回了空响应");
     careReport = payload;
     renderCareReport();
@@ -803,7 +897,7 @@ async function checkBackend() {
     const response = await fetch(candidate + "/api/health");
     if (!response.ok) throw new Error("HTTP " + response.status);
     const data = await response.json();
-    if (data.examinations_schema !== true || data.cost_semantics_schema !== true || data.medication_instruction_schema !== true) {
+    if (data.examinations_schema !== true || data.cost_semantics_schema !== true || data.medication_instruction_schema !== true || data.ocr_review_workflow !== true) {
       updateProviderUi(false, "后端版本过旧：请停止旧进程并重启服务");
       return false;
     }
@@ -840,10 +934,20 @@ $("dropZone").addEventListener("keydown", function(e) { if (e.key === "Enter" ||
 $("dropZone").addEventListener("drop", function(e) { addFiles(e.dataTransfer.files); });
 $("saveOcrButton").addEventListener("click", function() {
   const doc = documents.find(function(x) { return x.id === selectedDocId; });
-  if (doc) { doc.text = $("ocrText").value.trim(); doc.ocrConfidence = null; }
+  if (doc) {
+    const revisedText = $("ocrText").value.trim();
+    doc.text = revisedText;
+    doc.humanCorrected = revisedText !== (doc.originalOcrText == null ? "" : doc.originalOcrText.trim());
+  }
+  painReport = null;
+  careReport = null;
+  setCaseStatus("OCR修正待应用", "review");
   renderDocuments();
-  showToast("OCR修正已保存到当前浏览器会话");
+  renderPainReport();
+  renderCareReport();
+  showToast(doc && doc.humanCorrected ? "本页修正已保存；还需点击重新结构化" : "本页文本与原OCR一致");
 });
+$("applyOcrCorrectionsButton").addEventListener("click", restructureFromCorrectedOcr);
 $("runButton").addEventListener("click", runPipeline);
 $("demoButton").addEventListener("click", loadDemo);
 $("jsonButton").addEventListener("click", openJson);

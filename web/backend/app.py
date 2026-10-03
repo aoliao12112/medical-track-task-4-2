@@ -19,10 +19,11 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import Field
 
 from medical_claims.json_utils import normalize_json_output
 from medical_claims.long_case import chunk_documents, document_text_size, merge_claim_cases
-from medical_claims.models import ClaimCase, Costs, Medication
+from medical_claims.models import ClaimCase, Costs, Medication, StrictModel
 from medical_claims.normalization import normalize_case
 from medical_claims.care_engine import (
     build_fallback_draft,
@@ -48,7 +49,7 @@ from medical_claims.validation import validate_case
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
-BACKEND_REVISION = "2026-10-02-care-guide-v1"
+BACKEND_REVISION = "2026-10-03-ocr-review-v2"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -62,6 +63,30 @@ app.add_middleware(
 )
 
 _ocr_engine: Any | None = None
+
+
+class OcrBlockPayload(StrictModel):
+    text: str
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    bbox: tuple[float, float, float, float] | None = None
+
+
+class OcrDocumentPayload(StrictModel):
+    document_id: str
+    page: int = Field(ge=1)
+    full_text: str = ""
+    blocks: list[OcrBlockPayload] = Field(default_factory=list)
+    human_corrected: bool = False
+
+
+class DetailedCaseProcessingResult(StrictModel):
+    case: ClaimCase
+    documents: list[OcrDocumentPayload]
+
+
+class OcrRestructureRequest(StrictModel):
+    case_id: str
+    documents: list[OcrDocumentPayload] = Field(min_length=1)
 
 
 def normalize_document_id(value: str) -> str:
@@ -122,7 +147,45 @@ def recognize_image(path: Path, document_id: str, page: int) -> dict[str, Any]:
         "page": page,
         "blocks": blocks,
         "full_text": "\n".join(texts),
+        "human_corrected": False,
     }
+
+
+def document_ocr_confidence(document: dict[str, Any]) -> float | None:
+    """人工确认后的整页文本优先；否则返回有效 OCR 块的平均置信度。"""
+
+    if document.get("human_corrected"):
+        return 1.0
+    scores = [
+        float(block["confidence"])
+        for block in document.get("blocks", [])
+        if block.get("confidence") is not None
+    ]
+    return sum(scores) / len(scores) if scores else None
+
+
+async def recognize_uploaded_documents(
+    files: list[UploadFile], tmp_path: Path
+) -> list[dict[str, Any]]:
+    filenames = [
+        normalize_document_id(upload.filename or "image.jpg") for upload in files
+    ]
+    filename_counts = Counter(filenames)
+    documents: list[dict[str, Any]] = []
+    for page, upload in enumerate(files, start=1):
+        suffix = Path(upload.filename or "image.jpg").suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            raise ValueError(f"当前OCR后端暂不处理 {suffix or '未知格式'}，请先转为图片")
+        target = tmp_path / f"{page:04d}{suffix}"
+        target.write_bytes(await upload.read())
+        original_name = normalize_document_id(upload.filename or target.name)
+        document_id = (
+            original_name
+            if filename_counts[original_name] == 1
+            else f"{page:04d}-{original_name}"
+        )
+        documents.append(recognize_image(target, document_id, page))
+    return documents
 
 
 def extract_output_text(payload: dict[str, Any]) -> str:
@@ -187,14 +250,8 @@ def structure_with_deepseek(
             "document_id": document["document_id"],
             "page": document["page"],
             "ocr_text": document["full_text"],
-            "ocr_confidence": (
-                sum(
-                    block["confidence"]
-                    for block in document["blocks"]
-                    if block.get("confidence") is not None
-                )
-                / max(1, sum(1 for block in document["blocks"] if block.get("confidence") is not None))
-            ),
+            "ocr_confidence": document_ocr_confidence(document),
+            "human_corrected": bool(document.get("human_corrected")),
         }
         for document in documents
     ]
@@ -220,6 +277,8 @@ def structure_with_deepseek(
         "DIAGNOSIS_EVIDENCE_REVIEW 质量标记并提示医学复核，不得给出临床责任结论。"
         "不要为姓名、年龄等不在输出Schema中的脱敏字段创建缺失告警。"
         "字段置信度应综合OCR置信度、文本明确程度和跨文档一致性，低于0.90时使用 review_required。"
+        "若页面标记 human_corrected=true，说明OCR文本已经人工对照原图修正，应优先采用修正文本；"
+        "但仍不得补写修正文本中没有出现的事实。"
         "为控制输出长度，每个字段的evidence最多保留1条最直接、最短且足以证明该字段的证据；"
         "不要在多个字段中复制整段病历，只截取包含目标值的最小原文片段。"
     )
@@ -514,6 +573,7 @@ def health() -> dict[str, str | bool | int]:
         "medication_instruction_schema": "max_daily_dose" in Medication.model_fields,
         "pain_point_engine": True,
         "care_guide_engine": True,
+        "ocr_review_workflow": True,
         "long_case_chunking": True,
         "long_case_page_threshold": int(os.getenv("LONG_CASE_PAGE_THRESHOLD", "8")),
         "long_case_chunk_max_pages": int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6")),
@@ -535,24 +595,7 @@ async def process_case(
     try:
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
             tmp_path = Path(tmp)
-            documents: list[dict[str, Any]] = []
-            filenames = [
-                normalize_document_id(upload.filename or "image.jpg") for upload in files
-            ]
-            filename_counts = Counter(filenames)
-            for page, upload in enumerate(files, start=1):
-                suffix = Path(upload.filename or "image.jpg").suffix.lower()
-                if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
-                    raise ValueError(f"当前OCR后端暂不处理 {suffix or '未知格式'}，请先转为图片")
-                target = tmp_path / f"{page:04d}{suffix}"
-                target.write_bytes(await upload.read())
-                original_name = normalize_document_id(upload.filename or target.name)
-                document_id = (
-                    original_name
-                    if filename_counts[original_name] == 1
-                    else f"{page:04d}-{original_name}"
-                )
-                documents.append(recognize_image(target, document_id, page))
+            documents = await recognize_uploaded_documents(files, tmp_path)
             return structure_case_with_long_document_support(case_id, documents)
     except httpx.HTTPStatusError as exc:
         logger.exception("DeepSeek API returned an HTTP error")
@@ -565,6 +608,67 @@ async def process_case(
         ) from exc
     except Exception as exc:
         logger.exception("Case processing failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/cases/process-detailed",
+    response_model=DetailedCaseProcessingResult,
+)
+async def process_case_detailed(
+    case_id: str = Form(...),
+    files: list[UploadFile] = File(...),
+) -> DetailedCaseProcessingResult:
+    """运行OCR和结构化，并把逐页OCR文本返回给人工复核界面。"""
+
+    if not files:
+        raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
+    try:
+        with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
+            documents = await recognize_uploaded_documents(files, Path(tmp))
+            case = structure_case_with_long_document_support(case_id, documents)
+            return DetailedCaseProcessingResult(
+                case=case,
+                documents=[OcrDocumentPayload.model_validate(item) for item in documents],
+            )
+    except httpx.HTTPStatusError as exc:
+        logger.exception("DeepSeek API returned an HTTP error")
+        raise HTTPException(
+            status_code=502,
+            detail=f"DeepSeek API 调用失败：{exc.response.status_code}",
+        ) from exc
+    except httpx.TimeoutException as exc:
+        logger.exception("DeepSeek API timed out")
+        raise HTTPException(
+            status_code=504,
+            detail="DeepSeek分块处理超时；OCR文本已生成，但结构化尚未完成，请稍后重试",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Detailed case processing failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/cases/restructure-from-ocr", response_model=ClaimCase)
+def restructure_case_from_ocr(request: OcrRestructureRequest) -> ClaimCase:
+    """使用人工校正后的逐页OCR文本重新结构化，不再次识别图片。"""
+
+    try:
+        documents = [document.model_dump() for document in request.documents]
+        return structure_case_with_long_document_support(request.case_id, documents)
+    except httpx.HTTPStatusError as exc:
+        logger.exception("DeepSeek API returned an HTTP error during OCR correction")
+        raise HTTPException(
+            status_code=502,
+            detail=f"DeepSeek API 调用失败：{exc.response.status_code}",
+        ) from exc
+    except httpx.TimeoutException as exc:
+        logger.exception("DeepSeek API timed out during OCR correction")
+        raise HTTPException(
+            status_code=504,
+            detail="修正文本重新结构化超时；系统会保留已完成分块缓存，请稍后重试",
+        ) from exc
+    except Exception as exc:
+        logger.exception("OCR correction restructuring failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

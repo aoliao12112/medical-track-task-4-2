@@ -6,7 +6,7 @@
   <meta name="description" content="理赔医疗记录结构化、事件重建与批量评测工作台">
   <title>医护洞察 · 病历结构化工作台</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2307111f'/%3E%3Cpath d='M20 15h24a5 5 0 0 1 5 5v24a5 5 0 0 1-5 5H20a5 5 0 0 1-5-5V20a5 5 0 0 1 5-5Z' fill='%230f9f91'/%3E%3Cpath d='M28 22h8v6h6v8h-6v6h-8v-6h-6v-8h6Z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=20261002-care-v1">
+  <link rel="stylesheet" href="./styles.css?v=20261003-ocr-review-v2">
 </head>
 <body>
   <div class="app-shell">
@@ -70,7 +70,7 @@
             <div class="document-inspector">
               <div class="inspector-head"><strong id="selectedDocName">出院记录 · 第1页</strong><span id="selectedDocType">出院小结</span></div>
               <div class="preview" id="documentPreview"></div>
-              <details class="ocr-editor"><summary>查看或修正 OCR 文本</summary><textarea id="ocrText" rows="7" placeholder="后端未接入时，可在此粘贴OCR文本进行规则基线演示。"></textarea><button class="btn secondary small" id="saveOcrButton" type="button">保存修正</button></details>
+              <details class="ocr-editor"><summary>查看或修正 OCR 文本</summary><textarea id="ocrText" rows="10" placeholder="完成OCR后将显示本页识别文本；请对照原图修正模糊字、数字、单位和日期。"></textarea><div class="ocr-actions"><button class="btn secondary small" id="saveOcrButton" type="button">保存本页修正</button><button class="btn primary small" id="applyOcrCorrectionsButton" type="button">应用修正并重新结构化</button></div><small class="ocr-note" id="ocrCorrectionStatus">修正先保存在当前浏览器会话；点击重新结构化后才会更新右侧字段。</small></details>
             </div>
           </aside>
 
@@ -138,6 +138,6 @@
   </div><div class="dialog-actions"><button class="btn secondary" id="clearBackendButton">清除配置</button><button class="btn primary" id="saveBackendButton">保存配置</button></div></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="./app.js?v=20261002-care-v1"></script>
+  <script src="./app.js?v=20261003-ocr-review-v2"></script>
 </body>
 </html>
