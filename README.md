@@ -103,6 +103,8 @@ src/medical_claims/care_models.py # 第三问温度指引JSON Schema
 src/medical_claims/care_prompt.py # 病例事实包与生成上下文
 src/medical_claims/care_engine.py # 生成后安全校验与降级输出
 src/medical_claims/care_evaluation.py # 温度感与可行动性盲评汇总
+src/medical_claims/provider_models.py # 第四问脱敏医院/医生角色上下文
+src/medical_claims/provider_extraction.py # 医院、医生角色和病种覆盖提取
 knowledge/care_guides/ # 三个验收病种知识卡 + 肺结节演示卡（医学审核前均为草稿）
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
@@ -157,6 +159,22 @@ python -m medical_claims.care_evaluation evaluation\care-ratings.json
 ```
 
 通过条件为温度感和可行动性平均分均不低于 4.0，且事实错误与不安全建议均为 0。
+
+## 第四问：品质画像数据审计
+
+正式构建医院、医生和治疗方案画像前，先运行本地机构覆盖审计：
+
+```powershell
+& '.\.venv\Scripts\python.exe' '.\scripts\audit_provider_coverage.py'
+```
+
+脚本只读取压缩包内的图片，明确跳过 `_manifest.json`，且不调用外部大模型。医院、医生及
+文档编号均采用本地 HMAC 脱敏；可展示结果写入 `work/provider_audit/`，真实名称映射、密钥与
+OCR 缓存只留在其 `private/` 子目录。完整边界、输出说明和人工复核要求见
+`docs/fourth-question-provider-audit.md`。
+
+案件文件夹编号只代表一次案件，不能当作稳定患者编号；报告医师、检验者和审核者也不能冒充
+经治医生进入排名。未经抽样复核的结果只能称为“候选机构上下文”，不能直接发布排行榜。
 
 ## 网页演示
 
