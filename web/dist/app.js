@@ -81,6 +81,7 @@ let predictionData = null;
 let goldData = null;
 let painReport = null;
 let careReport = null;
+let qualityAudit = null;
 
 let batchCases = [
   { id: "CASE-001", docs: 12, stage: "已完成", completeness: 96.1, confidence: 94.8, review: 1, status: "done" },
@@ -738,6 +739,95 @@ function exportCareReport() {
   downloadBlob(JSON.stringify(careReport, null, 2), (careReport.case_id || "case") + ".care-guide.json");
   showToast("温度指引JSON已导出");
 }
+function qualityDiseaseLabel(value) {
+  return ({
+    pneumonia: "肺炎",
+    influenza: "流感",
+    hypertension: "高血压",
+    coronary_heart_disease: "冠心病",
+    diabetes: "糖尿病",
+    cholecystitis: "胆囊炎",
+    fracture: "骨折",
+    lung_nodule: "肺结节",
+    appendicitis: "阑尾炎",
+    cataract: "白内障",
+    urinary_calculus: "泌尿系结石"
+  })[value] || value;
+}
+function renderQualityAudit() {
+  const audit = qualityAudit;
+  const institution = audit && audit.institution_coverage;
+  const clinician = audit && audit.clinician_coverage;
+  const requirement = audit && audit.requirement_check;
+  const scope = audit && audit.scope;
+  $("qualityHospitals").textContent = institution ? institution.unique_institutions : "—";
+  $("qualityConflicts").textContent = institution ? institution.review_required_cases : "—";
+  $("qualityClinicians").textContent = clinician ? clinician.ranking_eligible_clinicians : "—";
+  $("qualityCoverage").textContent = requirement ? (requirement.meets_three_diseases_by_five_institutions ? "候选达标" : "未达标") : "—";
+  $("qualityInstitutionRate").textContent = institution ? ("案件识别率 " + (Number(institution.rate) * 100).toFixed(1) + "%") : "等待读取审计";
+  $("qualityCoverageHint").textContent = requirement ? ((requirement.diseases_meeting_five_institutions || []).map(qualityDiseaseLabel).join("、") || "暂无病种达到5家") : "候选覆盖待确认";
+  $("qualityAuditScope").textContent = scope ? (scope.case_count + "案 · " + scope.image_count + "页") : "尚未载入";
+  $("exportQualityButton").disabled = !audit;
+
+  const warnings = [];
+  if (audit) {
+    if (institution.review_required_cases) warnings.push(institution.review_required_cases + "个案件存在多机构候选，必须先完成主机构人工复核。候选数量不能直接当正式覆盖。 ");
+    if (scope.empty_ocr_images) warnings.push(scope.empty_ocr_images + "张图片未识别到文字，相关案件需对照原图抽查。 ");
+    warnings.push("当前只完成机构与病种覆盖审计；正式费用、用药和规范性画像仍需把这些病例批量跑通第一、二问。 ");
+  }
+  $("qualityWarnings").innerHTML = warnings.map(function(warning) { return '<div class="pain-warning">' + escapeHtml(warning) + '</div>'; }).join("");
+
+  const coverage = audit ? audit.disease_institution_coverage || {} : {};
+  const rows = Object.keys(coverage).map(function(key) {
+    return { key: key, cases: coverage[key].case_count || 0, institutions: coverage[key].institution_count || 0, meets: Boolean(coverage[key].meets_five_institutions) };
+  }).sort(function(a, b) { return b.institutions - a.institutions || b.cases - a.cases; });
+  $("qualityCoverageRows").innerHTML = rows.length ? rows.map(function(row) {
+    return '<tr><td><strong>' + escapeHtml(qualityDiseaseLabel(row.key)) + '</strong></td><td>' + row.cases + '</td><td>' + row.institutions + '</td><td><span class="table-status ' + (row.meets ? "done" : "waiting") + '">' + (row.meets ? "候选达标" : "不足5家") + '</span></td></tr>';
+  }).join("") : '<tr><td colspan="4">连接本地后端后载入审计</td></tr>';
+
+  const dimensions = [
+    { name: "费用效率", state: audit ? "partial" : "unavailable", tag: audit ? "待结构化" : "未载入", note: "需同病种总费用/住院日，并进行严重度风险调整。" },
+    { name: "用药合理性", state: audit ? "partial" : "unavailable", tag: audit ? "待第二问" : "未载入", note: "只使用有原文证据的用药复核结果，不能把未报错当满分。" },
+    { name: "治疗记录规范性", state: audit ? "partial" : "unavailable", tag: "代理指标", note: "可先评估记录完整度；临床规范性仍需指南规则或专家金标准。" },
+    { name: "30日再入院控制", state: "unavailable", tag: "不可用", note: "案件号不是稳定患者标识，现阶段无法跨就诊关联。" },
+    { name: "患者反馈", state: "unavailable", tag: "不可用", note: "病例图片不含反馈，禁止由大模型生成分数。" },
+    { name: "数据质量", state: audit ? "ready" : "unavailable", tag: audit ? "已审计" : "未载入", note: audit ? ((scope.unique_image_contents || scope.image_count) + "个唯一页面内容，OCR空页" + (scope.empty_ocr_images || 0) + "张。") : "等待机构覆盖审计。" }
+  ];
+  $("qualityDimensionList").innerHTML = dimensions.map(function(item) {
+    return '<article class="quality-dimension ' + item.state + '"><div><strong>' + escapeHtml(item.name) + '</strong><span>' + escapeHtml(item.note) + '</span></div><small>' + escapeHtml(item.tag) + '</small></article>';
+  }).join("");
+}
+async function loadQualityAudit(silent) {
+  if (!backendUrl) {
+    if (!silent) showToast("请先连接本地后端，再载入第四问真实审计");
+    renderQualityAudit();
+    return;
+  }
+  const button = $("loadQualityButton");
+  button.disabled = true;
+  button.textContent = "正在载入…";
+  try {
+    const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/quality/audit-summary");
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+    if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
+    if (!payload) throw new Error("后端返回了空响应");
+    qualityAudit = payload;
+    renderQualityAudit();
+    if (!silent) showToast("第四问真实覆盖审计已载入");
+  } catch (error) {
+    if (!silent) showToast("审计载入失败：" + (error.message || "请检查后端"));
+  } finally {
+    button.disabled = false;
+    button.textContent = "载入真实审计";
+  }
+}
+function exportQualityAudit() {
+  if (!qualityAudit) return;
+  downloadBlob(JSON.stringify(qualityAudit, null, 2), "provider-coverage-report.json");
+  showToast("第四问安全审计JSON已导出");
+}
 function switchView(name) {
   document.querySelectorAll(".view-tab").forEach(function(tab) { tab.classList.toggle("active", tab.dataset.view === name); });
   document.querySelectorAll("[data-view-panel]").forEach(function(panel) { panel.classList.toggle("active", panel.dataset.viewPanel === name); });
@@ -749,6 +839,10 @@ function switchView(name) {
   history.replaceState(null, "", url);
   if (name === "pain") renderPainReport();
   if (name === "care") renderCareReport();
+  if (name === "quality") {
+    renderQualityAudit();
+    if (!qualityAudit && backendUrl) loadQualityAudit(true);
+  }
 }
 function renderBatch() {
   const completed = batchCases.filter(function(x) { return x.status === "done" || x.status === "review"; }).length;
@@ -968,6 +1062,8 @@ $("analyzePainButton").addEventListener("click", analyzeCurrentPain);
 $("exportPainButton").addEventListener("click", exportPainReport);
 $("generateCareButton").addEventListener("click", generateCurrentCare);
 $("exportCareButton").addEventListener("click", exportCareReport);
+$("loadQualityButton").addEventListener("click", function() { loadQualityAudit(false); });
+$("exportQualityButton").addEventListener("click", exportQualityAudit);
 $("providerButton").addEventListener("click", function() { $("backendUrl").value = backendUrl; updateProviderUi(Boolean(backendUrl)); $("providerDialog").showModal(); });
 $("closeProviderDialog").addEventListener("click", function() { $("providerDialog").close(); });
 $("checkBackendButton").addEventListener("click", checkBackend);
@@ -981,5 +1077,6 @@ renderBatch();
 renderAll();
 renderPainReport();
 renderCareReport();
+renderQualityAudit();
 const initialView = new URLSearchParams(window.location.search).get("view");
-if (["case", "pain", "care", "batch", "evaluation"].includes(initialView)) switchView(initialView);
+if (["case", "pain", "care", "quality", "batch", "evaluation"].includes(initialView)) switchView(initialView);

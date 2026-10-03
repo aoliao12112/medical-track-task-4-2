@@ -6,7 +6,7 @@
   <meta name="description" content="理赔医疗记录结构化、事件重建与批量评测工作台">
   <title>医护洞察 · 病历结构化工作台</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2307111f'/%3E%3Cpath d='M20 15h24a5 5 0 0 1 5 5v24a5 5 0 0 1-5 5H20a5 5 0 0 1-5-5V20a5 5 0 0 1 5-5Z' fill='%230f9f91'/%3E%3Cpath d='M28 22h8v6h6v8h-6v6h-8v-6h-6v-8h6Z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=20261003-ocr-review-v2">
+  <link rel="stylesheet" href="./styles.css?v=20261003-quality-profile-v1">
 </head>
 <body>
   <div class="app-shell">
@@ -19,6 +19,7 @@
         <button class="view-tab active" data-view="case">案件工作台</button>
         <button class="view-tab" data-view="pain">痛点洞察</button>
         <button class="view-tab" data-view="care">温度指引</button>
+        <button class="view-tab" data-view="quality">品质推荐</button>
         <button class="view-tab" data-view="batch">批量中心</button>
         <button class="view-tab" data-view="evaluation">效果评测</button>
       </nav>
@@ -104,6 +105,37 @@
         </section>
       </section>
 
+      <section class="view" id="qualityView" data-view-panel="quality">
+        <div class="page-heading"><div><div class="eyebrow">第四问 · 品质画像与推荐</div><h1>医院、医生与治疗方案品质画像</h1><p>先验证机构与病种覆盖，再以真实结构化字段计算六维画像；数据缺失就明确显示不可用，样本不足不得进入推荐榜。</p></div><div class="command-actions"><button class="btn secondary" id="exportQualityButton" type="button" disabled>导出审计 JSON</button><button class="btn primary" id="loadQualityButton" type="button">载入真实审计</button></div></div>
+        <section class="metrics quality-metrics">
+          <article class="metric-card"><span class="metric-label">机构候选</span><strong id="qualityHospitals">—</strong><span class="metric-unit">家</span><small id="qualityInstitutionRate">等待读取审计</small></article>
+          <article class="metric-card warning"><span class="metric-label">机构冲突</span><strong id="qualityConflicts">—</strong><span class="metric-unit">案</span><small>需确认本次诊疗主机构</small></article>
+          <article class="metric-card"><span class="metric-label">医生画像候选</span><strong id="qualityClinicians">—</strong><span class="metric-unit">人</span><small>仅主治、经治与手术角色</small></article>
+          <article class="metric-card accent"><span class="metric-label">3病种×5机构</span><strong id="qualityCoverage">—</strong><small id="qualityCoverageHint">候选覆盖待确认</small></article>
+        </section>
+        <div id="qualityWarnings" class="pain-warnings quality-warnings"></div>
+        <section class="quality-layout">
+          <section class="panel quality-coverage-panel">
+            <div class="panel-header"><div><div class="eyebrow">真实材料覆盖</div><h2>病种 × 机构候选矩阵</h2></div><span class="care-badge" id="qualityAuditScope">尚未载入</span></div>
+            <div class="table-wrap flat"><table class="batch-table"><thead><tr><th>病种</th><th>病例数</th><th>机构数</th><th>≥5家</th></tr></thead><tbody id="qualityCoverageRows"><tr><td colspan="4">连接本地后端后载入审计</td></tr></tbody></table></div>
+          </section>
+          <aside class="panel quality-readiness-panel">
+            <div class="panel-header"><div><div class="eyebrow">六维画像</div><h2>数据就绪状态</h2></div></div>
+            <div class="quality-dimension-list" id="qualityDimensionList"></div>
+          </aside>
+        </section>
+        <section class="panel quality-policy-panel">
+          <div class="panel-header"><div><div class="eyebrow">可信推荐约束</div><h2>何时允许进入推荐榜</h2></div><span class="care-badge">至少2条推荐理由</span></div>
+          <div class="quality-policy-grid">
+            <article><strong>同病种比较</strong><span>不同疾病、不同费用口径不得混排。</span></article>
+            <article><strong>样本量门槛</strong><span>默认每主体至少3例；正式上线应提高并设置时间窗。</span></article>
+            <article><strong>至少3个可计算维度</strong><span>不可用维度不补零，也不让大模型猜分。</span></article>
+            <article><strong>证据可解释</strong><span>每个推荐理由必须回到结构化字段、计算公式与样本量。</span></article>
+          </div>
+          <div class="quality-refusal"><strong>当前发布状态：候选画像</strong><span>机构冲突尚未人工复核，且70例尚未全部跑通第一、二问结构化，因此页面不会生成真实排行榜。</span></div>
+        </section>
+      </section>
+
       <section class="view" id="batchView" data-view-panel="batch">
         <div class="page-heading"><div><div class="eyebrow">现场验收准备</div><h1>批量病例处理中心</h1><p>按病例文件夹导入，逐例运行OCR、结构化和质量校验；单例失败不会中断整批任务。</p></div><div class="command-actions"><label class="btn secondary file-button">选择病例文件夹<input id="folderInput" type="file" multiple webkitdirectory directory hidden></label><button class="btn primary" id="runBatchButton">开始批量处理</button></div></div>
         <section class="batch-summary">
@@ -138,6 +170,6 @@
   </div><div class="dialog-actions"><button class="btn secondary" id="clearBackendButton">清除配置</button><button class="btn primary" id="saveBackendButton">保存配置</button></div></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="./app.js?v=20261003-ocr-review-v2"></script>
+  <script src="./app.js?v=20261003-quality-profile-v1"></script>
 </body>
 </html>

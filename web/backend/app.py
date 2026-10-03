@@ -45,11 +45,18 @@ from medical_claims.pain_models import (
     PainPointReport,
     SemanticPainPointBatch,
 )
+from medical_claims.quality_engine import build_quality_portfolio, recommend_profiles
+from medical_claims.quality_models import (
+    QualityPortfolio,
+    QualityPortfolioRequest,
+    RecommendationReport,
+    RecommendationRequest,
+)
 from medical_claims.validation import validate_case
 
 
-app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
-BACKEND_REVISION = "2026-10-03-ocr-review-v2"
+app = FastAPI(title="Medical Claims Structure API", version="0.4.0")
+BACKEND_REVISION = "2026-10-03-quality-profile-v1"
 # 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
 # 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
 LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
@@ -576,6 +583,8 @@ def health() -> dict[str, str | bool | int]:
         "medication_instruction_schema": "max_daily_dose" in Medication.model_fields,
         "pain_point_engine": True,
         "care_guide_engine": True,
+        "quality_profile_engine": True,
+        "explainable_recommendation_engine": True,
         "ocr_review_workflow": True,
         "long_case_chunking": True,
         "long_case_page_threshold": int(os.getenv("LONG_CASE_PAGE_THRESHOLD", "8")),
@@ -727,3 +736,55 @@ def generate_case_care_guide(request: CareGuideRequest) -> CareGuideReport:
         warnings.append("本次关闭DeepSeek，仅生成安全降级草稿。")
         draft = build_fallback_draft(case, pain_report, card, disease_topic)
     return finalize_care_guide(case, draft, card, method, warnings)
+
+
+@app.get("/api/quality/audit-summary")
+def get_quality_audit_summary() -> dict[str, Any]:
+    """返回本地机构覆盖审计的安全汇总；绝不读取 private 目录。"""
+
+    configured = os.getenv("PROVIDER_AUDIT_REPORT")
+    report_path = (
+        Path(configured)
+        if configured
+        else Path(__file__).resolve().parents[2]
+        / "work"
+        / "provider_audit"
+        / "provider-coverage-report.json"
+    )
+    if not report_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="尚未生成机构覆盖审计，请先运行 scripts/audit_provider_coverage.py",
+        )
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="机构覆盖审计报告无法读取") from exc
+    if report.get("scope", {}).get("manifest_used") is not False:
+        raise HTTPException(status_code=409, detail="审计报告未通过 manifest 隔离检查")
+    return report
+
+
+@app.post("/api/quality/profiles/build", response_model=QualityPortfolio)
+def build_quality_profiles(request: QualityPortfolioRequest) -> QualityPortfolio:
+    """按病种和脱敏主体编号聚合品质画像。"""
+
+    records = [
+        record.model_copy(
+            update={"case": normalize_case(record.case.model_copy(deep=True))}
+        )
+        for record in request.records
+    ]
+    return build_quality_portfolio(records, request.minimum_sample_size)
+
+
+@app.post("/api/quality/recommendations", response_model=RecommendationReport)
+def get_quality_recommendations(request: RecommendationRequest) -> RecommendationReport:
+    """只对通过样本量和可计算维度门槛的画像执行可解释推荐。"""
+
+    return recommend_profiles(
+        request.portfolio,
+        request.disease_group,
+        request.entity_type,
+        request.top_k,
+    )

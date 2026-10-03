@@ -26,6 +26,17 @@ uvicorn web.backend.app:app --host 127.0.0.1 --port 8000
 
 网页右上角点击“演示模式”，填写 `http://127.0.0.1:8000` 并检测连接。
 
+第四问新增接口：
+
+```text
+GET  /api/quality/audit-summary
+POST /api/quality/profiles/build
+POST /api/quality/recommendations
+```
+
+机构覆盖审计需先运行 `scripts/audit_provider_coverage.py`。画像接口只接收已经脱敏的医院、
+医生和治疗方案编号；样本量或可计算维度不足时会拒绝生成排行榜。
+
 ## OCR人工复核
 
 网页第一问使用以下详细处理接口，同时返回结构化病例和逐页OCR文本：

@@ -105,6 +105,8 @@ src/medical_claims/care_engine.py # 生成后安全校验与降级输出
 src/medical_claims/care_evaluation.py # 温度感与可行动性盲评汇总
 src/medical_claims/provider_models.py # 第四问脱敏医院/医生角色上下文
 src/medical_claims/provider_extraction.py # 医院、医生角色和病种覆盖提取
+src/medical_claims/quality_models.py # 第四问品质画像与推荐JSON Schema
+src/medical_claims/quality_engine.py # 六维画像聚合、准入门槛和解释性推荐
 knowledge/care_guides/ # 三个验收病种知识卡 + 肺结节演示卡（医学审核前均为草稿）
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
@@ -175,6 +177,9 @@ OCR 缓存只留在其 `private/` 子目录。完整边界、输出说明和人�
 
 案件文件夹编号只代表一次案件，不能当作稳定患者编号；报告医师、检验者和审核者也不能冒充
 经治医生进入排名。未经抽样复核的结果只能称为“候选机构上下文”，不能直接发布排行榜。
+
+后端同时提供 `/api/quality/profiles/build` 和 `/api/quality/recommendations`。六维口径、拒绝推荐
+规则、离线批处理命令及还需人工完成的内容见 `docs/fourth-question-quality-profile.md`。
 
 ## 网页演示
 
