@@ -2,6 +2,10 @@
 
 基于理赔医护记录的“医护洞察与温度指引”引擎原型。
 
+团队安装、共享 DeepSeek Key、本地启动以及全部接口调用示例见
+[`docs/team-setup-and-api-guide.md`](docs/team-setup-and-api-guide.md)。真实密钥、病例、OCR缓存和
+身份映射禁止上传 GitHub。
+
 ## 团队
 
 - 1 名医学生

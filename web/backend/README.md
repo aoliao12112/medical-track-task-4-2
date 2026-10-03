@@ -1,6 +1,6 @@
 # 本地 OCR 与 DeepSeek 后端
 
-这层服务支撑前三问：图片在本机由 RapidOCR 识别，DeepSeek 仅接收脱敏后的 OCR 文本或结构化事实包，并按受控 JSON Schema 输出结果。
+这层服务支撑四问：图片在本机由 RapidOCR 识别，DeepSeek 仅接收脱敏后的 OCR 文本或结构化事实包，并按受控 JSON Schema 输出结果。团队统一配置和全部接口示例见 [团队环境与 API 调用说明](../../docs/team-setup-and-api-guide.md)。
 
 ## 安装
 
