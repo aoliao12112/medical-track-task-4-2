@@ -50,6 +50,9 @@ from medical_claims.validation import validate_case
 
 app = FastAPI(title="Medical Claims Structure API", version="0.3.0")
 BACKEND_REVISION = "2026-10-03-ocr-review-v2"
+# 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
+# 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
+LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -389,7 +392,7 @@ def _chunk_cache_path(case_id: str, documents: list[dict[str, Any]]) -> Path | N
     root = Path(os.getenv("LONG_CASE_CACHE_DIR", "outputs/_long_case_cache"))
     safe_case_id = re.sub(r"[^0-9A-Za-z_.-]+", "_", case_id).strip("._") or "case"
     signature = {
-        "revision": BACKEND_REVISION,
+        "revision": LONG_CASE_CACHE_REVISION,
         "case_id": case_id,
         "documents": [
             {
