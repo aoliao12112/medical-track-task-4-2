@@ -21,7 +21,13 @@ class KnowledgeSource(StrictModel):
 class DiseaseKnowledgeCard(StrictModel):
     card_id: str
     disease: str
-    aliases: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "仅填写同一医学概念的严格同义称呼；不得填写子类型、症状、定义或相关疾病。"
+            "没有可靠别名时保持空数组。"
+        ),
+    )
     plain_explanation: str
     general_actions: list[str] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
@@ -78,4 +84,3 @@ def knowledge_card_payload(card: DiseaseKnowledgeCard | None) -> dict[str, objec
         "prohibited_claims": card.prohibited_claims,
         "review_status": card.review_status.value,
     }
-

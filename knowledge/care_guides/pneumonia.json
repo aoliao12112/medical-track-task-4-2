@@ -1,7 +1,7 @@
 {
   "card_id": "care-pneumonia-v1",
   "disease": "肺炎",
-  "aliases": ["肺部感染", "社区获得性肺炎", "支气管肺炎"],
+  "aliases": [],
   "plain_explanation": "肺炎是肺部发生感染或炎症的一类疾病。病因、严重程度和恢复过程因人而异，需要结合症状、检查结果和医生判断理解。",
   "general_actions": [
     "按照出院医嘱使用药物，不自行停药或改变剂量",
