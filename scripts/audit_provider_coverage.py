@@ -26,7 +26,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from medical_claims.provider_extraction import build_safe_context  # noqa: E402
+from medical_claims.provider_extraction import (  # noqa: E402
+    build_safe_context,
+    extract_institution_candidates,
+)
 from medical_claims.providers import OcrBlock, OcrDocument  # noqa: E402
 
 
@@ -209,6 +212,7 @@ def main() -> int:
                     "clinicians": {},
                     "documents": {},
                 }
+                review_queue: list[dict[str, object]] = []
                 processed = 0
                 empty_ocr_images = 0
                 for case_index, (case_id, names) in enumerate(selected.items(), start=1):
@@ -230,10 +234,54 @@ def main() -> int:
                     contexts.append(context)
                     private_mapping["institutions"].update(mapping["institutions"])
                     private_mapping["clinicians"].update(mapping["clinicians"])
+                    if context.institution is not None and context.institution.review_required:
+                        grouped_candidates: dict[str, list] = defaultdict(list)
+                        for candidate in extract_institution_candidates(documents):
+                            grouped_candidates[candidate.value].append(candidate)
+                        selected_name = mapping["institutions"].get(
+                            context.institution.institution_id, ""
+                        )
+                        review_queue.append(
+                            {
+                                "case_id": case_id,
+                                "selected_institution_id": context.institution.institution_id,
+                                "selected_institution_name": selected_name,
+                                "review_status": "pending",
+                                "reviewer": None,
+                                "reviewed_at": None,
+                                "decision": None,
+                                "institution_candidates": [
+                                    {
+                                        "name": name,
+                                        "occurrences": len(candidates),
+                                        "mean_ocr_confidence": round(
+                                            sum(item.confidence for item in candidates)
+                                            / len(candidates),
+                                            4,
+                                        ),
+                                        "sources": sorted(
+                                            {
+                                                f"{item.document_id}:page-{item.page}"
+                                                for item in candidates
+                                            }
+                                        ),
+                                    }
+                                    for name, candidates in sorted(
+                                        grouped_candidates.items(),
+                                        key=lambda item: (
+                                            -len(item[1]),
+                                            -sum(candidate.confidence for candidate in item[1]),
+                                            item[0],
+                                        ),
+                                    )
+                                ],
+                            }
+                        )
 
     safe_payload = [context.model_dump(mode="json") for context in contexts]
     json_dump(output / "provider-contexts.safe.json", safe_payload)
     json_dump(private_dir / "provider-mapping.private.json", private_mapping)
+    json_dump(private_dir / "provider-review-queue.private.json", review_queue)
 
     institution_ids = [
         context.institution.institution_id

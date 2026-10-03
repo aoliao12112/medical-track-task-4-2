@@ -40,12 +40,13 @@ OCR 按图片内容哈希缓存，中断后重新运行会复用已经完成的�
 - `work/provider_audit/provider-coverage-report.json`：第四问后续程序输入。
 - `work/provider_audit/provider-contexts.safe.json`：逐案件的脱敏医院、医生角色与病种。
 - `work/provider_audit/private/`：真实名称映射、密钥和 OCR 缓存，只能留在本机。
+- `work/provider_audit/private/provider-review-queue.private.json`：多机构冲突案件的逐案人工复核清单，包含候选名称和证据页，禁止上传。
 
 ## 人工复核
 
 程序跑完后，医学生只需要抽查：
 
-1. 至少 10 个案件的医院归属是否正确；
+1. 先处理 `provider-review-queue.private.json` 中全部多机构冲突案件；没有冲突的案件再随机抽查至少 10 个；
 2. 医生角色是否把报告/检验医师误当成经治医师；
 3. 病种命中是否来自肯定诊断，而不是“排除骨折”“未见肺炎”等否定表达；
 4. 多机构冲突案件（转诊、外院报告）中的主机构选择是否正确。
