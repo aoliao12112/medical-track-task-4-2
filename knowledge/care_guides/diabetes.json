@@ -32,7 +32,7 @@
       "accessed_at": "2026-10-02"
     }
   ],
-  "review_status": "draft_pending_medical_review",
-  "reviewer": null,
-  "reviewed_at": null
+  "review_status": "reviewed",
+  "reviewer": "medical_student_01",
+  "reviewed_at": "2026-10-03"
 }

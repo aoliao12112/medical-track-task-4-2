@@ -79,7 +79,7 @@ class CareGuideTest(unittest.TestCase):
         self.assertTrue(report.guide.recovery_plan)
         self.assertTrue(report.guide.follow_up_plan)
         self.assertTrue(report.guide.cost_explanation.content)
-        self.assertTrue(report.review_required)  # 知识卡仍待医学审核
+        self.assertTrue(report.review_required)  # 新生成的患者指引仍需逐病例事实复核
 
     def test_invalid_evidence_path_requires_review(self) -> None:
         case = self.pneumonia_case()
