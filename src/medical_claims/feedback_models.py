@@ -27,6 +27,10 @@ class FeedbackRequest(StrictModel):
     helpful: bool = Field(strict=True)
     category: FeedbackCategory
     comment: str = Field(default="", max_length=4000)
+    clarity_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    reassurance_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    actionability_score: int | None = Field(default=None, ge=1, le=5, strict=True)
+    consent_to_contact: bool = Field(default=False, strict=True)
 
 
 class FeedbackRecord(FeedbackRequest):

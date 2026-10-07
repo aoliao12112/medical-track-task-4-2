@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>医护关怀指引</title>
+  <link rel="stylesheet" href="./patient.css?v=20261007-mobile-preview-v1">
+</head>
+<body>
+  <header class="patient-header"><a class="patient-brand" href="./index.html"><span>＋</span><div><strong>医护关怀</strong><small>理赔之后，关心继续</small></div></a><span class="privacy-chip">隐私保护中</span></header>
+  <div id="modeBanner" class="mode-banner" hidden></div>
+  <main class="patient-shell">
+    <section id="emptyState" class="empty-state" hidden><span>♡</span><h1>还没有可查看的关怀指引</h1><p>请返回医疗关怀审核工作台，先生成温度指引，再点击“预览用户端”或“审核通过并打开”。</p><a href="./index.html?view=care">返回审核工作台</a></section>
+    <div id="patientContent" hidden>
+      <section class="welcome-card"><div class="welcome-top"><span class="care-mark">安心指引</span><span id="reviewBadge" class="review-badge"></span></div><h1 id="openingTitle">想先对您说</h1><p id="openingContent"></p><div class="guide-meta"><span id="diseaseTopic"></span><span id="caseLabel"></span><span id="publishedAt"></span></div></section>
+
+      <nav class="quick-nav" aria-label="页面内容"><a href="#understand">了解病情</a><a href="#actions">康复行动</a><a href="#followup">复诊准备</a><a href="#feedback">告诉我们</a></nav>
+
+      <section id="understand" class="content-section"><div class="section-heading"><span>01</span><div><small>本次就医</small><h2>把专业内容说明白</h2></div></div><div class="info-grid"><article><div class="card-icon blue">诊</div><h3 id="diagnosisTitle"></h3><p id="diagnosisContent"></p></article><article><div class="card-icon teal">疗</div><h3 id="treatmentTitle"></h3><p id="treatmentContent"></p></article><article class="wide"><div class="card-icon amber">¥</div><h3 id="costTitle"></h3><p id="costContent"></p></article></div></section>
+
+      <section id="actions" class="content-section"><div class="section-heading"><span>02</span><div><small>接下来怎么做</small><h2>您的康复行动清单</h2></div></div><div id="recoveryList" class="action-list"></div><p class="progress-copy"><strong id="actionProgress">0/0</strong> 已完成。每一步都算数，不必着急。</p></section>
+
+      <section class="support-card"><span>给您的提醒</span><h2 id="supportTitle"></h2><p id="supportContent"></p></section>
+
+      <section id="followup" class="content-section"><div class="section-heading"><span>03</span><div><small>下次就医</small><h2>复诊前可以这样准备</h2></div></div><div id="followupList" class="followup-list"></div><aside class="recommendation-boundary"><strong>关于就医机构</strong><p id="recommendationContent">我们不会仅凭一次病历给医院或医生排名。当前建议聚焦科室选择、复诊问题和材料准备，具体机构请结合医生建议、距离与实际服务能力选择。</p></aside></section>
+
+      <section class="alert-card"><div><span>!</span><h2>出现这些情况，请及时联系医疗机构</h2></div><ul id="redFlagList"></ul></section>
+
+      <section class="limitations-card"><strong>请留意</strong><ul id="limitationList"></ul></section>
+
+      <section id="feedback" class="feedback-card"><div class="section-heading"><span>04</span><div><small>帮助我们做得更好</small><h2>这份指引对您有帮助吗？</h2></div></div><form id="feedbackForm"><div class="score-grid"><label>内容容易理解<select id="clarityScore" required><option value="">请选择</option><option value="5">5分 · 很清楚</option><option value="4">4分 · 比较清楚</option><option value="3">3分 · 一般</option><option value="2">2分 · 不太清楚</option><option value="1">1分 · 看不懂</option></select></label><label>让我更安心<select id="reassuranceScore" required><option value="">请选择</option><option value="5">5分 · 很安心</option><option value="4">4分 · 比较安心</option><option value="3">3分 · 一般</option><option value="2">2分 · 仍有担心</option><option value="1">1分 · 更焦虑</option></select></label><label>知道下一步做什么<select id="actionabilityScore" required><option value="">请选择</option><option value="5">5分 · 非常明确</option><option value="4">4分 · 比较明确</option><option value="3">3分 · 一般</option><option value="2">2分 · 不太明确</option><option value="1">1分 · 不知道</option></select></label></div><fieldset><legend>整体来说有帮助吗？</legend><label><input type="radio" name="helpful" value="true" required> 有帮助</label><label><input type="radio" name="helpful" value="false"> 暂时没有</label></fieldset><label class="question-label">还有什么没有说明白？<textarea id="unresolvedQuestion" maxlength="500" rows="4" placeholder="请不要填写姓名、手机号、身份证号等个人信息"></textarea><small><span id="questionCount">0</span>/500</small></label><label class="consent"><input id="consentToContact" type="checkbox"> 我愿意后续由客服通过已授权渠道联系我</label><button id="submitFeedbackButton" type="submit">提交反馈</button><p id="feedbackStatus" class="feedback-status" role="status"></p></form></section>
+    </div>
+  </main>
+  <footer>本指引根据本次已提交的理赔医疗材料生成，不替代医生诊断、处方或紧急医疗服务。</footer>
+  <script src="./patient.js?v=20261007-mobile-preview-v1"></script>
+</body>
+</html>

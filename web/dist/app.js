@@ -828,6 +828,9 @@ function renderCareReport() {
   $("careKnowledgeStatus").textContent = report ? (report.knowledge_review_status === "reviewed" ? "知识卡已审核" : "知识卡待医学审核") : "知识卡待匹配";
   $("careEngineVersion").textContent = report ? "已生成" : "尚未生成";
   $("exportCareButton").disabled = !report;
+  $("previewPatientButton").disabled = !report;
+  $("mobilePreviewButton").disabled = !report;
+  $("publishPatientButton").disabled = !report;
   $("careWarnings").innerHTML = report ? (report.warnings || []).map(function(warning) {
     return '<div class="pain-warning">' + escapeHtml(warning) + '</div>';
   }).join("") : "";
@@ -854,6 +857,96 @@ function renderCareReport() {
   $("careSafetyList").innerHTML = (report.safety_checks || []).map(function(check) {
     return '<article class="care-safety ' + escapeHtml(check.status) + '"><div><strong>' + "内容安全检查" + '</strong><span>' + escapeHtml(uiReason(check.message)) + '</span></div><em>' + careStatusLabel(check.status) + '</em></article>';
   }).join("");
+}
+
+function patientPublication(status) {
+  const publicationId = "PUB-" + Date.now().toString(36).toUpperCase();
+  return {
+    version: "patient-publication-v1",
+    publication_id: publicationId,
+    status: status,
+    case_id: careReport.case_id,
+    reviewer_code: null,
+    published_at: null,
+    created_at: new Date().toISOString(),
+    backend_url: backendUrl || null,
+    report: careReport
+  };
+}
+
+function openPatientPage(status) {
+  if (!careReport) {
+    showToast("请先生成温度指引");
+    return;
+  }
+  const publication = patientPublication(status);
+  localStorage.setItem("medicalClaimsPatientPublicationV1", JSON.stringify(publication));
+  window.open("./patient.html?mode=" + encodeURIComponent(status), "_blank", "noopener");
+  showToast("已打开用户端预览");
+}
+
+async function createMobilePreview() {
+  if (!careReport) { showToast("请先生成温度指引"); return; }
+  requireWorkflowCase();
+  const button = $("mobilePreviewButton");
+  const regenerate = $("regenerateMobilePreviewButton");
+  button.disabled = true;
+  regenerate.disabled = true;
+  button.textContent = "正在生成…";
+  try {
+    const payload = await workflowFetch(
+      "/api/workflow/cases/" + encodeURIComponent(workflowCase.case_id) + "/mobile-preview",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expires_in_minutes: 30 }) }
+    );
+    $("mobilePreviewQr").src = payload.qr_code_data_url;
+    $("mobilePreviewUrl").value = payload.preview_url;
+    $("mobilePreviewNotice").textContent = payload.notice;
+    $("mobilePreviewExpiry").textContent = "有效期至：" + new Date(payload.expires_at).toLocaleString("zh-CN");
+    $("mobilePreviewDialog").showModal();
+    showToast("手机预览链接已生成，30分钟后自动失效");
+  } catch (error) {
+    showToast("生成手机预览失败：" + error.message);
+  } finally {
+    button.disabled = !careReport;
+    regenerate.disabled = false;
+    button.textContent = "手机预览 / 二维码";
+  }
+}
+
+async function copyMobilePreviewLink() {
+  const input = $("mobilePreviewUrl");
+  if (!input.value) return;
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch (error) {
+    input.select();
+    document.execCommand("copy");
+  }
+  showToast("手机预览链接已复制");
+}
+
+async function goToDeliveryReview() {
+  switchView("delivery");
+  await prepareCurrentDelivery();
+}
+
+function openDeliveredPatientPage() {
+  const selected = inboxDeliveries.find(function(delivery) { return delivery.delivery_id === activeDeliveryId; });
+  if (!selected) { showToast("请先在模拟收件箱选择一条已触达记录"); return; }
+  const publication = {
+    version: "patient-publication-v2",
+    publication_id: selected.delivery_id,
+    delivery_id: selected.delivery_id,
+    status: "published",
+    case_id: selected.case_id,
+    published_at: selected.created_at,
+    created_at: new Date().toISOString(),
+    backend_url: backendUrl || null,
+    delivery: selected
+  };
+  localStorage.setItem("medicalClaimsPatientPublicationV1", JSON.stringify(publication));
+  window.open("./patient.html?mode=published", "_blank", "noopener");
+  showToast("已打开正式模拟触达的用户页面");
 }
 async function generateCurrentCare() {
   const generation = caseGeneration;
@@ -934,6 +1027,7 @@ function renderDeliveryWorkflow() {
   }).join(' ') : '<p>尚无模拟用户触达记录</p>';
   $("mockInboxList").querySelectorAll('.inbox-delivery').forEach(function(button) {button.addEventListener('click',function(){activeDeliveryId=button.dataset.delivery;renderDeliveryWorkflow();});});
   const selected = deliveries.find(function(delivery) {return delivery.delivery_id === activeDeliveryId;});
+  $("openPatientDeliveryButton").disabled = !selected;
   $("submitDeliveryFeedbackButton").disabled = !selected;
   const option = $("deliveryFeedbackTarget").querySelector('option[value="recommendation"]');
   if (option) option.disabled = !selected || !selected.recommendation_included;
@@ -1841,6 +1935,13 @@ $("analyzePainButton").addEventListener("click", analyzeCurrentPain);
 $("exportPainButton").addEventListener("click", exportPainReport);
 $("generateCareButton").addEventListener("click", generateCurrentCare);
 $("exportCareButton").addEventListener("click", exportCareReport);
+$("previewPatientButton").addEventListener("click", function() { openPatientPage("preview"); });
+$("mobilePreviewButton").addEventListener("click", createMobilePreview);
+$("closeMobilePreviewDialog").addEventListener("click", function() { $("mobilePreviewDialog").close(); });
+$("copyMobilePreviewButton").addEventListener("click", copyMobilePreviewLink);
+$("openMobilePreviewButton").addEventListener("click", function() { const url = $("mobilePreviewUrl").value; if (url) window.open(url, "_blank", "noopener"); });
+$("regenerateMobilePreviewButton").addEventListener("click", createMobilePreview);
+$("publishPatientButton").addEventListener("click", goToDeliveryReview);
 $("loadQualityButton").addEventListener("click", function() { loadQualityAudit(false); });
 $("exportQualityButton").addEventListener("click", exportQualityAudit);
 $("reloadDeliveryButton").addEventListener('click',loadDeliveryWorkflow);
@@ -1849,6 +1950,7 @@ $("sendDeliveryButton").addEventListener('click',sendCurrentDelivery);
 $("approveDeliveryButton").addEventListener('click',function(){submitDeliveryReview('APPROVED');});
 $("rejectDeliveryButton").addEventListener('click',function(){submitDeliveryReview('REJECTED');});
 $("submitDeliveryFeedbackButton").addEventListener('click',submitCurrentDeliveryFeedback);
+$("openPatientDeliveryButton").addEventListener('click',openDeliveredPatientPage);
 $("refreshProfilesButton").addEventListener("click", loadIntegratedQuality);
 $("buildPortfolioButton").addEventListener("click", buildIntegratedPortfolio);
 $("candidateDiseaseSelect").addEventListener("change", renderMultiSourceCandidatePools);

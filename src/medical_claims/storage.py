@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import sqlite3
 from uuid import uuid4
 
@@ -81,6 +83,13 @@ class CaseStorage:
                     task_id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(case_id),
                     feedback_id TEXT NOT NULL UNIQUE REFERENCES feedback(feedback_id),
                     status TEXT NOT NULL, record_json TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS mobile_previews (
+                    token_hash TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL REFERENCES cases(case_id),
+                    preview_json TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 );
             """)
 
@@ -211,6 +220,66 @@ class CaseStorage:
                 raise WorkflowConflict("请先保存痛点分析结果")
             db.execute("UPDATE case_results SET care_result_json=? WHERE case_id=?", (encode(result), case_id))
             self._status(db, case_id, WorkflowStatus.CARE_READY)
+
+    def create_mobile_preview(self, case_id: str, ttl_minutes: int = 30):
+        """Create an expiring, read-only snapshot without exposing the real case id."""
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=ttl_minutes)
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        public_case_id = f"PREVIEW-{secrets.token_hex(4).upper()}"
+        publication_id = f"MP-{secrets.token_hex(8).upper()}"
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            if row["consent_status"] != "authorized" or row["deidentification_status"] != "confirmed":
+                raise WorkflowConflict("手机预览仅允许用于已授权并确认脱敏的案件")
+            if row["care_result_json"] is None:
+                raise WorkflowConflict("请先生成温度指引")
+            care = json.loads(row["care_result_json"])
+            guide = care.get("guide")
+            if not isinstance(guide, dict):
+                raise WorkflowConflict("温度指引缺少可预览内容")
+            public_guide = json.loads(json.dumps(guide, ensure_ascii=False))
+            public_guide["case_id"] = public_case_id
+            publication = {
+                "version": "patient-mobile-preview-v1",
+                "publication_id": publication_id,
+                "status": "preview",
+                "case_id": public_case_id,
+                "created_at": now.isoformat(),
+                "published_at": None,
+                "expires_at": expires_at.isoformat(),
+                "report": {"case_id": public_case_id, "guide": public_guide},
+            }
+            db.execute("DELETE FROM mobile_previews WHERE expires_at<=?", (now.isoformat(),))
+            db.execute(
+                "INSERT INTO mobile_previews VALUES (?, ?, ?, ?, ?)",
+                (token_hash, case_id, encode(publication), expires_at.isoformat(), now.isoformat()),
+            )
+        return {
+            "token": token,
+            "publication_id": publication_id,
+            "expires_at": expires_at.isoformat(),
+        }
+
+    def get_mobile_preview(self, token: str):
+        """Resolve a mobile preview by a raw token; only its hash is stored."""
+
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT preview_json, expires_at FROM mobile_previews WHERE token_hash=?",
+                (token_hash,),
+            ).fetchone()
+            if row is None:
+                raise WorkflowItemNotFound("手机预览链接不存在或已失效")
+            if datetime.fromisoformat(row["expires_at"]) <= now:
+                db.execute("DELETE FROM mobile_previews WHERE token_hash=?", (token_hash,))
+                raise WorkflowItemNotFound("手机预览链接已过期")
+            return json.loads(row["preview_json"])
 
     def _invalidate_profile(self, db, case_id, clear_context=False):
         changed = db.execute("DELETE FROM profile_case_records WHERE case_id=? AND source_kind='workflow'",

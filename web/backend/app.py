@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+import base64
+import io
+import ipaddress
 import json
 import hashlib
 import logging
 import os
 import re
+import socket
 import tempfile
 import time
 from collections import Counter
@@ -17,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import Field
 
@@ -75,10 +79,11 @@ from medical_claims.delivery import prepare_delivery_content, SendDeliveryReques
 from medical_claims.review_models import ReviewRequest
 from medical_claims.feedback_models import FeedbackRequest, ResolveFollowUpRequest
 from fastapi.responses import JSONResponse
+from urllib.parse import urlencode
 
 
-app = FastAPI(title="Medical Claims Structure API", version="0.4.0")
-BACKEND_REVISION = "2026-10-06-competition-hardening"
+app = FastAPI(title="Medical Claims Structure API", version="0.5.0")
+BACKEND_REVISION = "2026-10-07-mobile-preview-v1"
 # 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
 # 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
 LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
@@ -90,9 +95,37 @@ app.add_middleware(
         "http://localhost:8765",
         "https://medical-claims-workbench.zhengwenxi251.chatgpt.site",
     ],
+    allow_origin_regex=r"^http://(?:localhost|127\.0\.0\.1|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?$",
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+def _is_loopback_client(host: str | None) -> bool:
+    if not host or host == "testclient":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@app.middleware("http")
+async def limit_remote_mobile_access(request: Request, call_next):
+    """When bound to the LAN, expose only the token-protected mobile preview."""
+
+    remote = request.client.host if request.client else None
+    allowed_remote_paths = {"/api/mobile-preview"}
+    if (
+        not _is_loopback_client(remote)
+        and request.method != "OPTIONS"
+        and request.url.path not in allowed_remote_paths
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "局域网设备仅允许访问临时手机预览"},
+        )
+    return await call_next(request)
 
 _ocr_engine: Any | None = None
 
@@ -149,6 +182,51 @@ class OcrDocumentPayload(StrictModel):
 class DetailedCaseProcessingResult(StrictModel):
     case: ClaimCase
     documents: list[OcrDocumentPayload]
+
+
+class MobilePreviewCreateRequest(StrictModel):
+    expires_in_minutes: int = Field(default=30, ge=5, le=240)
+
+
+def _discover_mobile_preview_host() -> str:
+    configured = os.getenv("MOBILE_PREVIEW_HOST", "").strip()
+    if configured:
+        return configured
+    candidates: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 80))
+            candidates.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        candidates.extend(
+            item[4][0]
+            for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        )
+    except OSError:
+        pass
+    for candidate in candidates:
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if not address.is_loopback and not address.is_link_local and not address.is_unspecified:
+            return candidate
+    raise RuntimeError("未找到可供手机访问的局域网 IPv4 地址")
+
+
+def _qr_svg_data_url(value: str) -> str:
+    try:
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+    except ImportError as exc:
+        raise RuntimeError("缺少 qrcode 依赖，无法生成二维码") from exc
+    image = qrcode.make(value, image_factory=SvgPathImage, box_size=8, border=3)
+    output = io.BytesIO()
+    image.save(output)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 class OcrRestructureRequest(StrictModel):
@@ -643,6 +721,9 @@ def health() -> dict[str, str | bool | int]:
         "medication_instruction_schema": "max_daily_dose" in Medication.model_fields,
         "pain_point_engine": True,
         "care_guide_engine": True,
+        "patient_experience_page": True,
+        "expiring_mobile_preview": True,
+        "feedback_loop": True,
         "quality_profile_engine": True,
         "explainable_recommendation_engine": True,
         "ocr_review_workflow": True,
@@ -978,6 +1059,40 @@ def get_current_case_recommendations(case_id: str):
 def prepare_case_delivery(case_id: str):
     storage = get_case_storage()
     return storage.prepare_delivery(prepare_delivery_content(storage, case_id))
+
+
+@app.post("/api/workflow/cases/{case_id}/mobile-preview", status_code=201)
+def create_case_mobile_preview(case_id: str, request: MobilePreviewCreateRequest):
+    """Create an internal, expiring mobile preview without bypassing delivery safety."""
+
+    created = get_case_storage().create_mobile_preview(
+        case_id, ttl_minutes=request.expires_in_minutes
+    )
+    host = _discover_mobile_preview_host()
+    gateway_base = os.getenv(
+        "MOBILE_PREVIEW_GATEWAY_BASE_URL",
+        f"http://{host}:{os.getenv('MOBILE_PREVIEW_GATEWAY_PORT', '8766')}",
+    ).rstrip("/")
+    fragment = urlencode(
+        {"preview_token": created["token"], "api_base": gateway_base}
+    )
+    preview_url = f"{gateway_base}/patient.html#{fragment}"
+    return {
+        "publication_id": created["publication_id"],
+        "preview_url": preview_url,
+        "qr_code_data_url": _qr_svg_data_url(preview_url),
+        "expires_at": created["expires_at"],
+        "expires_in_minutes": request.expires_in_minutes,
+        "network_host": host,
+        "notice": "仅供内部预览；链接到期自动失效，不代表已通过发送安全审核。",
+    }
+
+
+@app.get("/api/mobile-preview")
+def get_mobile_preview(x_preview_token: str = Header(min_length=20, max_length=200)):
+    """Read the minimal patient-facing snapshot using a non-logged header token."""
+
+    return get_case_storage().get_mobile_preview(x_preview_token)
 
 
 class StructuredEvaluationRequest(StrictModel):

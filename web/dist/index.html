@@ -116,6 +116,7 @@
 
       <section class="view" id="careView" data-view-panel="care">
         <div class="page-heading"><div><div class="eyebrow">第三问 · 温度指引生成</div><h1>基于真实病历的个性化关怀</h1><p>组合第一问病例事实、第二问痛点与经审核病种知识卡，生成诊断解释、治疗回顾、费用解读、康复行动、心理安抚和复诊建议。</p></div><div class="command-actions care-actions"><input id="careTopic" class="topic-input" placeholder="病种自动匹配，也可手工指定"><button class="btn secondary" id="exportCareButton" type="button" disabled>导出指引 JSON</button><button class="btn primary" id="generateCareButton" type="button">生成温度指引</button></div></div>
+        <section class="patient-publish-bar" aria-label="用户端预览控制"><div><strong>用户端预览与触达</strong><span>先检查患者实际阅读效果；手机预览是限时内部预览，不代表已通过发送审核。</span></div><button class="btn secondary" id="previewPatientButton" type="button" disabled>电脑预览</button><button class="btn secondary" id="mobilePreviewButton" type="button" disabled>手机预览 / 二维码</button><button class="btn primary" id="publishPatientButton" type="button" disabled>前往触达审核</button></section>
         <section class="metrics care-metrics"><article class="metric-card"><span class="metric-label">核心病种</span><strong id="careDisease">—</strong><small id="careCaseLabel">等待生成</small></article><article class="metric-card"><span class="metric-label">生成方式</span><strong id="careMethod">—</strong><small>DeepSeek / 安全降级</small></article><article class="metric-card accent"><span class="metric-label">证据覆盖</span><strong id="careCoverage">—</strong><span class="metric-unit">%</span><small>事实段落字段引用</small></article><article class="metric-card warning"><span class="metric-label">复核状态</span><strong id="careReview">—</strong><small id="careKnowledgeStatus">知识卡待匹配</small></article></section>
         <section class="care-layout">
           <section class="panel care-report-panel"><div class="panel-header"><div><div class="eyebrow">用户可读版本</div><h2>医护关怀指引</h2></div><span class="care-badge" id="careEngineVersion">尚未生成</span></div><div id="careWarnings" class="pain-warnings"></div><div id="careGuideContent" class="care-guide-content"><div class="pain-empty"><strong>尚未生成</strong><span>请先完成第一问和第二问，再生成个性化温度指引。</span></div></div></section>
@@ -200,7 +201,7 @@
           <div id="deliveryReviewHistory"></div>
         </section>
         <section class="panel quality-policy-panel">
-          <div class="panel-header"><div><div class="eyebrow">模拟触达</div><h2>模拟用户收件箱 · 演示环境</h2></div></div>
+          <div class="panel-header"><div><div class="eyebrow">模拟触达</div><h2>模拟用户收件箱 · 演示环境</h2></div><button class="btn primary" id="openPatientDeliveryButton" disabled>打开用户端页面</button></div>
           <div id="mockInboxList">尚无触达记录</div><div id="mockInboxContent"></div>
         </section>
         <section class="panel quality-policy-panel">
@@ -256,6 +257,8 @@
 
   <dialog id="batchResultDialog"><div class="dialog-head"><div><div class="eyebrow">真实批量结果</div><h2 id="batchResultTitle">病例处理结果</h2></div><button class="icon-button" id="closeBatchResultDialog" aria-label="关闭">×</button></div><pre id="batchResultOutput"></pre><div class="dialog-actions"><button class="btn primary" id="downloadBatchCaseButton">下载本例 JSON</button></div></dialog>
 
+  <dialog id="mobilePreviewDialog" class="mobile-preview-dialog"><div class="dialog-head"><div><div class="eyebrow">限时内部预览</div><h2>手机扫码查看用户端</h2></div><button class="icon-button" id="closeMobilePreviewDialog" aria-label="关闭">×</button></div><div class="mobile-preview-body"><div class="mobile-qr-frame"><img id="mobilePreviewQr" alt="手机预览二维码"></div><div class="mobile-preview-copy"><strong>手机和电脑需要连接同一可信网络</strong><p id="mobilePreviewNotice">二维码仅用于内部演示，不代表已通过发送安全审核。</p><label for="mobilePreviewUrl">预览链接</label><input id="mobilePreviewUrl" readonly><small id="mobilePreviewExpiry"></small><div class="mobile-security-note">链接包含随机访问令牌，请勿发到群聊或公共平台。到期后需要重新生成。</div></div></div><div class="dialog-actions"><button class="btn secondary" id="copyMobilePreviewButton">复制链接</button><button class="btn secondary" id="openMobilePreviewButton">在电脑打开</button><button class="btn primary" id="regenerateMobilePreviewButton">重新生成</button></div></dialog>
+
   <dialog id="providerDialog" class="provider-dialog"><div class="dialog-head"><div><div class="eyebrow">能力接入</div><h2>OCR与结构化服务</h2></div><button class="icon-button" id="closeProviderDialog" aria-label="关闭">×</button></div><div class="provider-body">
     <section class="provider-card recommended"><div class="provider-title"><span class="provider-logo">识别</span><div><strong>RapidOCR 本地识别</strong><small>开源 · 中文 · 普通电脑可运行</small></div><span class="status-tag local">推荐</span></div><p>病历图片留在本机，输出文字、坐标和OCR置信度。后续可替换为PaddleOCR或官方OCR。</p></section>
     <section class="provider-card"><div class="provider-title"><span class="provider-logo llm">模型</span><div><strong>DeepSeek 结构化</strong><small>按约定 JSON 结构输出 · 需要 API 密钥</small></div><span class="status-tag">后端接入</span></div><p>只发送脱敏后的OCR文本。API 密钥必须存放在后端环境变量，禁止写入网页或提交GitHub。</p></section>
@@ -264,6 +267,6 @@
   </div><div class="dialog-actions"><button class="btn secondary" id="clearBackendButton">清除配置</button><button class="btn primary" id="saveBackendButton">保存配置</button></div></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="./app.js?v=20261007-recommendation-ui"></script>
+  <script src="./app.js?v=20261007-mobile-preview-v1"></script>
 </body>
 </html>
