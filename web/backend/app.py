@@ -53,10 +53,32 @@ from medical_claims.quality_models import (
     RecommendationRequest,
 )
 from medical_claims.validation import validate_case
+from medical_claims.evidence_grounding import apply_evidence_grounding
+from medical_claims.evaluation import evaluate
+from dataclasses import asdict
+from medical_claims.storage import CaseStorage, CaseNotFound, WorkflowConflict, WorkflowItemNotFound
+from medical_claims.workflow_models import CreateCaseRequest, WorkflowCase
+from medical_claims.profile_records import (
+    HistoricalProfileImport, CaseProfileContextRequest, StoredPortfolioBuildRequest,
+    ConfirmedProviderContext, build_profile_case_record, resolve_disease_group,
+)
+from medical_claims.quality_integration import (
+    current_profile_input, build_saved_portfolio, case_recommendations, provider_context_from_saved_ocr,
+)
+from medical_claims.quality_coverage import audit_quality_coverage
+from medical_claims.multisource_quality import (
+    MultiSourceCandidatePools,
+    build_multisource_candidate_pools,
+    load_multisource_inputs,
+)
+from medical_claims.delivery import prepare_delivery_content, SendDeliveryRequest
+from medical_claims.review_models import ReviewRequest
+from medical_claims.feedback_models import FeedbackRequest, ResolveFollowUpRequest
+from fastapi.responses import JSONResponse
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.4.0")
-BACKEND_REVISION = "2026-10-03-quality-profile-v1"
+BACKEND_REVISION = "2026-10-06-competition-hardening"
 # 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
 # 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
 LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
@@ -73,6 +95,41 @@ app.add_middleware(
 )
 
 _ocr_engine: Any | None = None
+
+
+def get_case_storage() -> CaseStorage:
+    return CaseStorage()
+
+
+@app.exception_handler(CaseNotFound)
+async def case_not_found_handler(request, exc):
+    return JSONResponse(status_code=404, content={"detail": "案件不存在"})
+
+
+@app.exception_handler(WorkflowConflict)
+async def workflow_conflict_handler(request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(WorkflowItemNotFound)
+async def workflow_item_not_found_handler(request, exc):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.post("/api/workflow/cases", response_model=WorkflowCase, status_code=201)
+def create_workflow_case(request: CreateCaseRequest):
+    """Competition prototype simulated claim trigger, not an insurer integration."""
+    return get_case_storage().create_case(request)
+
+
+@app.get("/api/workflow/cases/{case_id}")
+def get_workflow_case(case_id: str):
+    return get_case_storage().get_case(case_id)
+
+
+@app.get("/api/workflow/cases/{case_id}/result")
+def get_workflow_results(case_id: str):
+    return get_case_storage().get_results(case_id)
 
 
 class OcrBlockPayload(StrictModel):
@@ -336,6 +393,8 @@ def structure_with_deepseek(
             for flag in validate_case(result)
             if (flag.code, flag.field_path, flag.document_id, flag.message) not in existing_flags
         )
+    if finalize:
+        result = apply_evidence_grounding(result, documents)
     if result.case_id != case_id:
         raise RuntimeError("模型返回的 case_id 与请求不一致")
     return ClaimCase.model_validate(result.model_dump())
@@ -427,7 +486,7 @@ def structure_case_with_long_document_support(
     character_threshold = int(os.getenv("LONG_CASE_CHARACTER_THRESHOLD", "24000"))
     total_characters = sum(document_text_size(document) for document in documents)
     if len(documents) <= page_threshold and total_characters <= character_threshold:
-        return structure_with_deepseek(case_id, documents)
+        return apply_evidence_grounding(structure_with_deepseek(case_id, documents), documents)
 
     max_pages = int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6"))
     max_characters = int(os.getenv("LONG_CASE_CHUNK_MAX_CHARACTERS", "18000"))
@@ -470,6 +529,7 @@ def structure_case_with_long_document_support(
         for flag in validate_case(result)
         if (flag.code, flag.field_path, flag.document_id, flag.message) not in existing_flags
     )
+    result = apply_evidence_grounding(result, documents)
     return ClaimCase.model_validate(result.model_dump())
 
 
@@ -586,6 +646,9 @@ def health() -> dict[str, str | bool | int]:
         "quality_profile_engine": True,
         "explainable_recommendation_engine": True,
         "ocr_review_workflow": True,
+        "case_persistence_workflow": True,
+        "case_quality_integration": True,
+        "risk_delivery_feedback_loop": True,
         "long_case_chunking": True,
         "long_case_page_threshold": int(os.getenv("LONG_CASE_PAGE_THRESHOLD", "8")),
         "long_case_chunk_max_pages": int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6")),
@@ -604,11 +667,16 @@ async def process_case(
 ) -> ClaimCase:
     if not files:
         raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
+    storage = get_case_storage()
+    storage.begin_processing(case_id)
     try:
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
             tmp_path = Path(tmp)
             documents = await recognize_uploaded_documents(files, tmp_path)
-            return structure_case_with_long_document_support(case_id, documents)
+            storage.save_ocr(case_id, documents)
+            case = structure_case_with_long_document_support(case_id, documents)
+            storage.save_structured(case_id, case)
+            return case
     except httpx.HTTPStatusError as exc:
         logger.exception("DeepSeek API returned an HTTP error")
         raise HTTPException(status_code=502, detail=f"DeepSeek API 调用失败：{exc.response.status_code}") from exc
@@ -621,6 +689,9 @@ async def process_case(
     except Exception as exc:
         logger.exception("Case processing failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if storage.get_case(case_id)["status"] == "PROCESSING":
+            storage.finish_failed_processing(case_id)
 
 
 @app.post(
@@ -635,10 +706,14 @@ async def process_case_detailed(
 
     if not files:
         raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
+    storage = get_case_storage()
+    storage.begin_processing(case_id)
     try:
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
             documents = await recognize_uploaded_documents(files, Path(tmp))
+            storage.save_ocr(case_id, documents)
             case = structure_case_with_long_document_support(case_id, documents)
+            storage.save_structured(case_id, case)
             return DetailedCaseProcessingResult(
                 case=case,
                 documents=[OcrDocumentPayload.model_validate(item) for item in documents],
@@ -658,15 +733,23 @@ async def process_case_detailed(
     except Exception as exc:
         logger.exception("Detailed case processing failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if storage.get_case(case_id)["status"] == "PROCESSING":
+            storage.finish_failed_processing(case_id)
 
 
 @app.post("/api/cases/restructure-from-ocr", response_model=ClaimCase)
 def restructure_case_from_ocr(request: OcrRestructureRequest) -> ClaimCase:
     """使用人工校正后的逐页OCR文本重新结构化，不再次识别图片。"""
 
+    storage = get_case_storage()
+    storage.begin_processing(request.case_id)
     try:
         documents = [document.model_dump() for document in request.documents]
-        return structure_case_with_long_document_support(request.case_id, documents)
+        storage.save_ocr(request.case_id, documents)
+        case = structure_case_with_long_document_support(request.case_id, documents)
+        storage.save_structured(request.case_id, case)
+        return case
     except httpx.HTTPStatusError as exc:
         logger.exception("DeepSeek API returned an HTTP error during OCR correction")
         raise HTTPException(
@@ -682,12 +765,17 @@ def restructure_case_from_ocr(request: OcrRestructureRequest) -> ClaimCase:
     except Exception as exc:
         logger.exception("OCR correction restructuring failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if storage.get_case(request.case_id)["status"] == "PROCESSING":
+            storage.finish_failed_processing(request.case_id)
 
 
 @app.post("/api/cases/analyze-pain-points", response_model=PainPointReport)
 def analyze_case_pain_points(request: PainAnalysisRequest) -> PainPointReport:
     """对第一问的 ClaimCase 执行第二问多维痛点识别。"""
 
+    storage = get_case_storage()
+    storage.require_current(request.case.case_id, request.case)
     # 兼容浏览器中仍保留的旧版第一问结果：分析前重新执行确定性规范化，
     # 修正费用语义、证据文件名等问题，且不会重新 OCR 或调用结构化模型。
     case = normalize_case(request.case.model_copy(deep=True))
@@ -703,13 +791,19 @@ def analyze_case_pain_points(request: PainAnalysisRequest) -> PainPointReport:
             )
     else:
         warnings.append("本次请求关闭了DeepSeek语义分析，仅运行确定性规则。")
-    return analyze_pain_points(case, semantic_points, warnings)
+    report = analyze_pain_points(case, semantic_points, warnings)
+    storage.save_pain(case.case_id, report, request.case)
+    return report
 
 
 @app.post("/api/cases/generate-care-guide", response_model=CareGuideReport)
 def generate_case_care_guide(request: CareGuideRequest) -> CareGuideReport:
     """基于第一问病例、第二问痛点和已登记知识卡生成第三问温度指引。"""
 
+    storage = get_case_storage()
+    storage.require_current(request.case.case_id, request.case, request.pain_report)
+    if request.pain_report is None:
+        raise WorkflowConflict("请先保存痛点分析结果")
     case = normalize_case(request.case.model_copy(deep=True))
     warnings: list[str] = []
     pain_report = request.pain_report
@@ -735,7 +829,9 @@ def generate_case_care_guide(request: CareGuideRequest) -> CareGuideReport:
     else:
         warnings.append("本次关闭DeepSeek，仅生成安全降级草稿。")
         draft = build_fallback_draft(case, pain_report, card, disease_topic)
-    return finalize_care_guide(case, draft, card, method, warnings)
+    report = finalize_care_guide(case, draft, card, method, warnings)
+    storage.save_care(case.case_id, report, request.case, request.pain_report)
+    return report
 
 
 @app.get("/api/quality/audit-summary")
@@ -766,25 +862,187 @@ def get_quality_audit_summary() -> dict[str, Any]:
 
 
 @app.post("/api/quality/profiles/build", response_model=QualityPortfolio)
-def build_quality_profiles(request: QualityPortfolioRequest) -> QualityPortfolio:
+def build_quality_profiles(request: QualityPortfolioRequest | StoredPortfolioBuildRequest) -> QualityPortfolio:
     """按病种和脱敏主体编号聚合品质画像。"""
 
+    if isinstance(request, StoredPortfolioBuildRequest):
+        return build_saved_portfolio(get_case_storage(), request.minimum_sample_size)
+    # Retain the legacy explicitly supplied-record preview; it is not a
+    # confirmed historical dataset and cannot replace the persisted portfolio.
     records = [
         record.model_copy(
             update={"case": normalize_case(record.case.model_copy(deep=True))}
         )
         for record in request.records
     ]
-    return build_quality_portfolio(records, request.minimum_sample_size)
+    portfolio = build_quality_portfolio(records, request.minimum_sample_size)
+    portfolio.warnings.append("PREVIEW ONLY：此请求自行提供的记录未经过确认上下文入库，不替换持久化portfolio或正式KR4覆盖")
+    return portfolio
 
 
 @app.post("/api/quality/recommendations", response_model=RecommendationReport)
 def get_quality_recommendations(request: RecommendationRequest) -> RecommendationReport:
     """只对通过样本量和可计算维度门槛的画像执行可解释推荐。"""
 
-    return recommend_profiles(
+    report = recommend_profiles(
         request.portfolio,
         request.disease_group,
         request.entity_type,
         request.top_k,
     )
+    report.warnings.append("PREVIEW ONLY：此请求自行提供portfolio；正式案件推荐请使用案件级接口和已保存数据")
+    return report
+
+
+@app.get("/api/quality/multisource-candidate-pools", response_model=MultiSourceCandidatePools)
+def get_multisource_candidate_pools() -> MultiSourceCandidatePools:
+    """返回肺炎、流感和高血压的多源医院画像候选池；不生成排名或最终推荐。"""
+
+    root = Path(__file__).resolve().parents[2]
+    try:
+        public_audit, dataset_audit = load_multisource_inputs(root)
+        return build_multisource_candidate_pools(
+            public_audit,
+            dataset_audit,
+            get_case_storage().load_portfolio(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/quality/records/import")
+def import_historical_profile_records(request: HistoricalProfileImport):
+    storage = get_case_storage()
+    assemblies = []
+    for payload in request.records:
+        assembly = build_profile_case_record(payload)
+        storage.save_profile_record(payload, assembly)
+        assemblies.append(assembly.model_dump(mode="json", exclude={"record"}))
+    return {"records": assemblies, "dataset": storage.profile_dataset_summary()}
+
+
+@app.get("/api/quality/portfolio")
+def get_persisted_quality_portfolio():
+    storage = get_case_storage()
+    portfolio = storage.load_portfolio()
+    return {"status": "available" if portfolio and any(p.eligible_for_recommendation for p in portfolio.profiles) else
+            "insufficient_evidence" if portfolio else "not_evaluated",
+            "portfolio": portfolio.model_dump(mode="json") if portfolio else None,
+            "dataset": storage.profile_dataset_summary()}
+
+
+@app.get("/api/quality/coverage")
+def get_quality_coverage():
+    storage = get_case_storage()
+    return audit_quality_coverage(storage.load_portfolio(), storage.profile_dataset_summary())
+
+
+@app.get("/api/workflow/cases/{case_id}/quality-context")
+def get_case_quality_context(case_id: str):
+    storage = get_case_storage()
+    saved = storage.get_results(case_id)
+    settings = storage.get_profile_context(case_id)
+    candidates = provider_context_from_saved_ocr(case_id, saved["ocr_result"]) if saved["ocr_result"] else None
+    case = ClaimCase.model_validate(saved["structured_result"]) if saved["structured_result"] else None
+    assembly = build_profile_case_record(current_profile_input(storage, case_id)) if case else None
+    return {"case_id": case_id, "disease_group": resolve_disease_group(case) if case else "unavailable",
+            "candidates": candidates.model_dump(mode="json") if candidates else None,
+            "saved_context": settings,
+            "assembly": assembly.model_dump(mode="json", exclude={"record"}) if assembly else None}
+
+
+@app.post("/api/workflow/cases/{case_id}/quality-context")
+def save_case_quality_context(case_id: str, request: CaseProfileContextRequest):
+    if request.provider.context.case_id != case_id:
+        raise HTTPException(status_code=422, detail="上下文 case_id 与当前案件不一致")
+    storage = get_case_storage()
+    metadata = storage.get_case(case_id)
+    if metadata["consent_status"] != "authorized" or metadata["deidentification_status"] != "confirmed":
+        raise WorkflowConflict("画像数据入库需要已声明授权且已确认脱敏")
+    payload = current_profile_input(storage, case_id, request.provider)
+    payload.stable_patient_token = request.stable_patient_token
+    payload.readmitted_within_30_days = request.readmitted_within_30_days
+    payload.patient_feedback_score = request.patient_feedback_score
+    storage.save_profile_context(case_id, request.model_dump(mode="json"), payload.case, payload.pain_report)
+    assembly = build_profile_case_record(payload)
+    storage.save_profile_record(payload, assembly, source_kind="workflow")
+    return assembly.model_dump(mode="json", exclude={"record"})
+
+
+@app.get("/api/workflow/cases/{case_id}/recommendations")
+def get_current_case_recommendations(case_id: str):
+    return case_recommendations(get_case_storage(), case_id)
+
+
+@app.post("/api/workflow/cases/{case_id}/delivery/prepare")
+def prepare_case_delivery(case_id: str):
+    storage = get_case_storage()
+    return storage.prepare_delivery(prepare_delivery_content(storage, case_id))
+
+
+class StructuredEvaluationRequest(StrictModel):
+    prediction: dict[str, Any] | list[dict[str, Any]]
+    gold: dict[str, Any] | list[dict[str, Any]]
+
+
+@app.post("/api/evaluation/structured")
+def evaluate_structured_records(request: StructuredEvaluationRequest):
+    try:
+        return asdict(evaluate(request.prediction, request.gold))
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/workflow/cases/{case_id}/delivery/send")
+def send_case_delivery(case_id: str, request: SendDeliveryRequest | None = None):
+    storage = get_case_storage()
+    prepared = prepare_delivery_content(storage, case_id)
+    if request and request.content_fingerprint and request.content_fingerprint != prepared["content_fingerprint"]:
+        raise WorkflowConflict("触达页面内容已过时，请重新准备")
+    return storage.send_delivery(prepared)
+
+
+@app.get("/api/workflow/cases/{case_id}/deliveries")
+def get_case_deliveries(case_id: str):
+    return get_case_storage().list_deliveries(case_id)
+
+
+@app.get("/api/deliveries/{delivery_id}")
+def get_mock_inbox_delivery(delivery_id: str):
+    return get_case_storage().get_delivery(delivery_id)
+
+
+@app.post("/api/workflow/cases/{case_id}/reviews", status_code=201)
+def review_case_delivery(case_id: str, request: ReviewRequest):
+    storage = get_case_storage()
+    return storage.save_review(prepare_delivery_content(storage, case_id), request)
+
+
+@app.get("/api/workflow/cases/{case_id}/reviews")
+def get_case_reviews(case_id: str):
+    return get_case_storage().list_reviews(case_id)
+
+
+@app.post("/api/deliveries/{delivery_id}/feedback", status_code=201)
+def submit_delivery_feedback(delivery_id: str, request: FeedbackRequest):
+    return get_case_storage().save_feedback(delivery_id, request)
+
+
+@app.get("/api/workflow/cases/{case_id}/feedback")
+def get_case_feedback(case_id: str):
+    return get_case_storage().list_feedback(case_id)
+
+
+@app.get("/api/follow-ups")
+def get_follow_up_tasks():
+    return get_case_storage().list_follow_ups()
+
+
+@app.get("/api/workflow/cases/{case_id}/follow-ups")
+def get_case_follow_ups(case_id: str):
+    return get_case_storage().list_follow_ups(case_id)
+
+
+@app.post("/api/follow-ups/{task_id}/resolve")
+def resolve_follow_up_task(task_id: str, request: ResolveFollowUpRequest):
+    return get_case_storage().resolve_follow_up(task_id, request.resolution)

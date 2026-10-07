@@ -26,8 +26,25 @@ REQUIRED_LIMITATIONS = (
 )
 UNSAFE_PATTERNS = {
     "UNSUPPORTED_CERTAINTY": re.compile(r"(?:确定|肯定|已经)(?:痊愈|治愈|恶性|良性)"),
-    "MEDICATION_CHANGE": re.compile(r"(?:自行|建议你|可以)(?:停药|换药|减量|加量|调整剂量)"),
 }
+
+MEDICATION_ACTION = r"(?:停药|换药|减量|加量|调整剂量|停止服用(?:这个药)?|(?:这个药)?(?:可以)?直接停掉|换成另一种药|(?:自行)?(?:增加|减少)(?:一倍|一半)?剂量|把剂量(?:增加|减少)一(?:倍|半))"
+PROTECTIVE_MEDICATION = re.compile(
+    r"(?:不要|请勿|切勿|不得|不可|不能|禁止)(?:据此)?(?:自行|擅自|自己|随意|直接)?"
+    + MEDICATION_ACTION + r"(?:(?:、|或|和|及)(?:自行|擅自)?" + MEDICATION_ACTION + r")*"
+)
+MEDICATION_INSTRUCTION = re.compile(MEDICATION_ACTION)
+NO_PHYSICIAN = re.compile(r"(?:不需要咨询医生|不用问医生|无需咨询医生)")
+
+def unsafe_medication_instruction(text: str) -> bool:
+    # Remove only tightly bound prohibitions, not an entire sentence containing
+    # a safe disclaimer. An unsafe instruction elsewhere remains detectable.
+    text = re.sub(r"(?:如需|如果需要)(?:调整用药|调整剂量|停药|换药)[，,]?\s*请(?:先)?咨询医生", "", text)
+    for clause in re.split(r"[。；;，,！？!?\n]|但是|但|然而", text):
+        remainder = PROTECTIVE_MEDICATION.sub("", clause)
+        if MEDICATION_INSTRUCTION.search(remainder) or NO_PHYSICIAN.search(remainder):
+            return True
+    return False
 
 
 def diagnosis_names(case: ClaimCase) -> list[str]:
@@ -73,7 +90,8 @@ def _path_exists(case: ClaimCase, path: str) -> bool:
                 return False
             current = current[int(match.group(2))]
     value = getattr(current, "value", current)
-    return value is not None
+    status = getattr(current, "status", None)
+    return value is not None and getattr(status, "value", status) not in {"review_required", "conflict"}
 
 
 def _all_text(draft: CareGuideDraft) -> str:
@@ -83,8 +101,8 @@ def _all_text(draft: CareGuideDraft) -> str:
         draft.treatment_review.content,
         draft.cost_explanation.content,
         draft.psychological_support.content,
-        *(item.action + " " + item.reason for item in draft.recovery_plan),
-        *(item.action + " " + item.reason for item in draft.follow_up_plan),
+        *(item.action + " " + item.timing + " " + item.reason for item in draft.recovery_plan),
+        *(item.action + " " + item.timing + " " + item.reason for item in draft.follow_up_plan),
         *draft.red_flags,
         *draft.limitations,
     ]
@@ -117,6 +135,8 @@ def validate_care_guide(
 
     text = _all_text(draft)
     unsafe_codes = [code for code, pattern in UNSAFE_PATTERNS.items() if pattern.search(text)]
+    if unsafe_medication_instruction(text):
+        unsafe_codes.append("MEDICATION_CHANGE")
     checks.append(
         CareSafetyCheck(
             code="MEDICAL_BOUNDARY",
@@ -214,7 +234,9 @@ def finalize_care_guide(
         raise ValueError("温度指引与病例 case_id 不一致")
     checks, coverage, warnings = validate_care_guide(case, draft, card)
     warnings.extend(extra_warnings or [])
-    review_required = any(check.status != SafetyStatus.PASSED for check in checks)
+    review_required = method == GenerationMethod.RULES_FALLBACK or bool(warnings) or any(
+        check.status != SafetyStatus.PASSED for check in checks
+    )
     return CareGuideReport(
         case_id=case.case_id,
         guide=draft,

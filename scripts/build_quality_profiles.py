@@ -18,15 +18,23 @@ from medical_claims.quality_models import (  # noqa: E402
     ProfileEntityType,
     QualityPortfolioRequest,
 )
+from medical_claims.storage import CaseStorage  # noqa: E402
+from medical_claims.quality_integration import build_saved_portfolio  # noqa: E402
+from medical_claims.profile_records import StoredPortfolioBuildRequest  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="ProfileCaseRecord 数组或 QualityPortfolioRequest JSON")
-    parser.add_argument("output", type=Path, help="输出目录")
+    parser.add_argument("input", type=Path, nargs="?", help="旧版记录JSON预览输入；不是确认后的持久数据集")
+    parser.add_argument("output", type=Path, nargs="?", default=ROOT / "outputs/quality_profiles", help="输出目录")
+    parser.add_argument("--from-storage", action="store_true", help="从SQLite已确认病例组装画像并持久化")
+    parser.add_argument("--database", type=Path, help="默认outputs/competition.db")
     parser.add_argument("--minimum-sample-size", type=int, default=3)
     parser.add_argument("--top-k", type=int, default=5)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.from_storage and args.input is None:
+        parser.error("需要旧版JSON输入，或指定 --from-storage")
+    return args
 
 
 def dump(path: Path, payload: object) -> None:
@@ -36,16 +44,19 @@ def dump(path: Path, payload: object) -> None:
 
 def main() -> int:
     args = parse_args()
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
-    if isinstance(payload, list):
-        records = [ProfileCaseRecord.model_validate(item) for item in payload]
-        minimum = args.minimum_sample_size
+    if args.from_storage:
+        settings = StoredPortfolioBuildRequest(minimum_sample_size=args.minimum_sample_size)
+        portfolio = build_saved_portfolio(CaseStorage(args.database), settings.minimum_sample_size)
     else:
-        request = QualityPortfolioRequest.model_validate(payload)
-        records = request.records
-        minimum = request.minimum_sample_size
-
-    portfolio = build_quality_portfolio(records, minimum)
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            records = [ProfileCaseRecord.model_validate(item) for item in payload]
+            minimum = args.minimum_sample_size
+        else:
+            request = QualityPortfolioRequest.model_validate(payload)
+            records = request.records
+            minimum = request.minimum_sample_size
+        portfolio = build_quality_portfolio(records, minimum)
     dump(args.output / "quality-portfolio.json", portfolio.model_dump(mode="json"))
 
     recommendation_reports = []

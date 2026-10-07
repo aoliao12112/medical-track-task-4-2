@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any, Iterable, TypeVar
 
 from pydantic import BaseModel
+from .evidence_grounding import verify_case_evidence
 
 from .models import (
     ClaimCase,
@@ -543,19 +544,6 @@ def _remove_resolved_partial_flags(case: ClaimCase) -> None:
     case.quality_flags = retained
 
 
-def _iter_field_values(value: Any, path: str = "") -> Iterable[tuple[str, FieldValue[Any]]]:
-    if isinstance(value, FieldValue):
-        yield path, value
-        return
-    if isinstance(value, BaseModel):
-        for name in value.__class__.model_fields:
-            child_path = f"{path}.{name}" if path else name
-            yield from _iter_field_values(getattr(value, name), child_path)
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            yield from _iter_field_values(item, f"{path}[{index}]")
-
-
 def validate_long_case_integrity(
     case: ClaimCase, documents: list[dict[str, Any]]
 ) -> list[QualityFlag]:
@@ -573,52 +561,7 @@ def validate_long_case_integrity(
                     document_id=str(document["document_id"]),
                 )
             )
-    for path, field in _iter_field_values(case):
-        for evidence in field.evidence:
-            expected_page = page_by_document.get(evidence.document_id)
-            if expected_page is None:
-                flags.append(
-                    QualityFlag(
-                        code="EVIDENCE_DOCUMENT_UNKNOWN",
-                        severity=FlagSeverity.ERROR,
-                        message="字段证据引用了本案件不存在的文件",
-                        field_path=path,
-                        document_id=evidence.document_id,
-                    )
-                )
-    for index, event in enumerate(case.events):
-        for evidence in event.evidence:
-            expected_page = page_by_document.get(evidence.document_id)
-            if expected_page is None:
-                flags.append(
-                    QualityFlag(
-                        code="EVIDENCE_DOCUMENT_UNKNOWN",
-                        severity=FlagSeverity.ERROR,
-                        message="事件证据引用了本案件不存在的文件",
-                        field_path=f"events[{index}].evidence",
-                        document_id=evidence.document_id,
-                    )
-                )
-            elif evidence.page is not None and evidence.page != expected_page:
-                flags.append(
-                    QualityFlag(
-                        code="EVIDENCE_PAGE_MISMATCH",
-                        severity=FlagSeverity.WARNING,
-                        message=f"事件证据页码为{evidence.page}，文件实际排序页码为{expected_page}",
-                        field_path=f"events[{index}].evidence",
-                        document_id=evidence.document_id,
-                    )
-                )
-            elif evidence.page is not None and evidence.page != expected_page:
-                flags.append(
-                    QualityFlag(
-                        code="EVIDENCE_PAGE_MISMATCH",
-                        severity=FlagSeverity.WARNING,
-                        message=f"证据页码为{evidence.page}，文件实际排序页码为{expected_page}",
-                        field_path=path,
-                        document_id=evidence.document_id,
-                    )
-                )
+    flags.extend(verify_case_evidence(case, documents))
     entity_ids = [
         *(item.diagnosis_id for item in case.diagnoses),
         *(item.procedure_id for item in case.procedures),

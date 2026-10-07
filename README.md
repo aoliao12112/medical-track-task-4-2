@@ -187,7 +187,7 @@ OCR 缓存只留在其 `private/` 子目录。完整边界、输出说明和人�
 
 ## 网页演示
 
-网页包含单病例完整链路、批量病例中心和字段级 F1 评测入口。未连接后端时使用脱敏演示病例或手工 OCR 文本；连接本地后端后，图片由 RapidOCR 在本机识别，DeepSeek 仅接收 OCR 后的文本。
+网页保留明确标记的固定演示样例；真实处理需连接后端并创建/读取案件，图片由 RapidOCR 在本机识别，DeepSeek 接收 OCR 文本。Phase D 已禁用未接后端的 Batch，不再用本地模板冒充图片处理成功；PDF/Word 未启用。
 
 具体启动方式见 `web/backend/README.md`。真实 API Key 只能放在后端环境变量中，禁止写入前端或提交到仓库。
 
@@ -195,8 +195,8 @@ OCR 缓存只留在其 `private/` 子目录。完整边界、输出说明和人�
 
 ## 正式字段级 F1 评测
 
-预测结果和专家金标准必须分别标注，禁止把预测结果复制为金标准。网页评测采用保留重复字段的
-微平均精确匹配；命令行可运行：
+预测结果和专家金标准必须分别标注，禁止把预测结果复制为金标准。Phase D 网页通过 `/api/evaluation/structured` 调用唯一 Python 评测：先按 case_id 对齐，再确定性匹配实体，在实体内比较字段；不能跨病例或跨药品池化。
+输出 micro/macro、per-case/per-field 指标。关键字段缺失率只计应有而缺失的字段，不等于 1-recall；完整口径见 `COMPETITION_HARDENING_REPORT.md`。命令行可运行：
 
 ```powershell
 python -m medical_claims.evaluation outputs/prediction.json outputs/gold.json

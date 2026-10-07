@@ -11,11 +11,11 @@ const makeField = function(value, confidence, source, status, normalized, deriva
 };
 
 const demoDocuments = [
-  { id: "discharge-1", name: "出院记录 · 第1页", type: "出院小结", page: 1, text: "入院时间：2025-12-24 14:03；出院时间：2025-12-30 15:00；实际住院天数：6天。入院诊断：呼吸道感染。", ocrConfidence: .98 },
-  { id: "discharge-2", name: "出院记录 · 第2页", type: "出院小结", page: 2, text: "出院诊断：呼吸道感染、肺炎、血液化学异常所见、胃肠功能紊乱。出院带药：酪酸梭菌活菌散1袋，口服，每日2次。", ocrConfidence: .97 },
-  { id: "cost-1", name: "住院费用清单 · 第1页", type: "费用清单", page: 1, text: "住院天数6天。护理费、材料费、治疗费、检查费。", ocrConfidence: .95 },
-  { id: "cost-2", name: "住院费用清单 · 第2页", type: "费用清单", page: 2, text: "药品费及项目明细。合计金额：4749.98元。", ocrConfidence: .96 },
-  { id: "settlement-1", name: "医保结算单", type: "医保结算", page: 1, text: "费用总额4749.98元，医保综合支付2044.08元，个人现金支付2705.90元。", ocrConfidence: .99 }
+  { id: "discharge-1", name: "出院记录 · 第1页", type: "出院小结", page: 1, text: "入院时间：2025-12-24 14:03；出院时间：2025-12-30 15:00；实际住院天数：6天。入院诊断：呼吸道感染。", ocrConfidence:.98 },
+  { id: "discharge-2", name: "出院记录 · 第2页", type: "出院小结", page: 2, text: "出院诊断：呼吸道感染、肺炎、血液化学异常所见、胃肠功能紊乱。出院带药：酪酸梭菌活菌散1袋，口服，每日2次。", ocrConfidence:.97 },
+  { id: "cost-1", name: "住院费用清单 · 第1页", type: "费用清单", page: 1, text: "住院天数6天。护理费、材料费、治疗费、检查费。", ocrConfidence:.95 },
+  { id: "cost-2", name: "住院费用清单 · 第2页", type: "费用清单", page: 2, text: "药品费及项目明细。合计金额：4749.98元。", ocrConfidence:.96 },
+  { id: "settlement-1", name: "医保结算单", type: "医保结算", page: 1, text: "费用总额4749.98元，医保综合支付2044.08元，个人现金支付2705.90元。", ocrConfidence:.99 }
 ];
 
 function demoCase() {
@@ -82,15 +82,155 @@ let goldData = null;
 let painReport = null;
 let careReport = null;
 let qualityAudit = null;
+let workflowCase = null;
+let persistedPortfolio = null;
+let currentRecommendations = null;
+let qualityContext = null;
+let qualityCoverageReport = null;
+let multiSourceCandidatePools = null;
+let deliveryReadiness = null;
+let inboxDeliveries = [];
+let deliveryFeedback = [];
+let deliveryFollowUps = [];
+let activeDeliveryId = null;
+let caseGeneration = 0;
 
-let batchCases = [
-  { id: "CASE-001", docs: 12, stage: "已完成", completeness: 96.1, confidence: 94.8, review: 1, status: "done" },
-  { id: "CASE-002", docs: 9, stage: "已完成", completeness: 94.4, confidence: 93.7, review: 2, status: "review" },
-  { id: "CASE-003", docs: 15, stage: "已完成", completeness: 97.2, confidence: 95.3, review: 0, status: "done" },
-  { id: "CASE-004", docs: 8, stage: "已完成", completeness: 91.7, confidence: 92.6, review: 1, status: "done" },
-  { id: "CASE-005", docs: 11, stage: "等待处理", completeness: null, confidence: null, review: null, status: "waiting" },
-  { id: "CASE-006", docs: 7, stage: "等待处理", completeness: null, confidence: null, review: null, status: "waiting" }
-];
+function clearDeliveryState() {
+  deliveryReadiness = null; inboxDeliveries = []; deliveryFeedback = []; deliveryFollowUps = []; activeDeliveryId = null;
+  $("deliveryFeedbackStatus").textContent = '';
+  renderDeliveryWorkflow();
+}
+
+function resetCaseState(caseId) {
+  caseGeneration += 1;
+  documents.forEach(function(doc){if(doc.previewUrl)URL.revokeObjectURL(doc.previewUrl);});
+  workflowCase=null; documents=[]; selectedDocId=null; result=emptyWorkflowResult(caseId);
+  painReport=null; careReport=null; qualityAudit=null; isDemoCase=false;
+  $("caseId").value=caseId;
+  $("careTopic").value='';
+  setCaseStatus('未加载当前案件结果', 'review');
+  setPipelineState(0);
+  clearCaseQuality(); clearDeliveryState();
+  renderAll(); renderPainReport(); renderCareReport(); renderQualityAudit(); renderWorkflow();
+}
+function assertCaseResponse(payload, expectedId) {
+  if (!payload || payload.case_id!==expectedId) throw new Error('后端 case_id mismatch，拒绝展示');
+}
+function assertCurrentGeneration(generation) {
+  if (generation!==caseGeneration) throw new Error('案件已切换，忽略旧请求结果');
+}
+
+function clearCaseQuality() {
+  persistedPortfolio = null; currentRecommendations = null; qualityContext = null; qualityCoverageReport = null;
+  renderIntegratedQuality();
+}
+
+async function workflowFetch(path, options) {
+  if (!backendUrl) throw new Error("请先连接本地后端");
+  const generation = caseGeneration;
+  const response = await fetch(backendUrl.replace(/\/$/, "") + path, options);
+  const payload = await response.json();
+  if (generation !== caseGeneration) throw new Error("案件已切换，忽略旧请求结果");
+  if (!response.ok) throw new Error(formatApiDetail(payload.detail || "案件请求失败"));
+  return payload;
+}
+
+// 仅用于展示；接口、枚举值与保存数据保持原值。
+function uiLabel(value) {
+  return ({extracted:'已提取',derived:'已计算',review_required:'需要人工复核',missing:'信息缺失',conflict:'信息待核验',insufficient_sample:'样本不足',data_unavailable:'数据不可用',not_required:'无需复核',approved:'已通过',rejected:'已驳回',pending:'待确认',none:'尚未复核', RECEIVED:'材料待上传',PROCESSING:'正在处理',STRUCTURED:'病例已结构化',PAIN_READY:'痛点分析已完成',CARE_READY:'关怀指引已生成',DELIVERY_READY:'可以发送',AUTO_DELIVER:'可自动发送',REVIEW_REQUIRED:'需要人工复核',BLOCKED:'已阻止发送',APPROVED:'已通过',REJECTED:'已驳回',DELIVERED_MOCK:'已模拟触达',FEEDBACK_RECEIVED:'已收到反馈',FOLLOWUP_PENDING:'待处理',RESOLVED:'已完成',OPEN:'待处理',AUTO:'自动发送',HUMAN_APPROVED:'人工确认后发送',PENDING:'待确认',NOT_REQUIRED:'无需复核',NONE:'尚未复核',not_evaluated:'尚未评估',insufficient_evidence:'数据不足，暂无法推荐',available:'数据可用',unavailable:'暂不可用',calculated:'已计算',insufficient_samples:'样本不足',missing_data:'数据缺失',sufficient:'证据充足',partially_sufficient:'证据部分充足',insufficient:'证据不足',READY:'已就绪',NOT_READY:'尚未就绪',NOT_EVALUATED:'尚未评估',overall_service:'整体服务',care_guide:'关怀内容',recommendation:'推荐结果',combined_delivery:'本次发送的全部内容',clear:'内容清楚',not_clear:'内容不够清楚',not_personalized:'不够个性化',cost_question:'费用说明不清楚',recovery_question:'康复建议有疑问',medication_question:'用药内容有疑问',recommendation_question:'推荐结果有疑问',other:'其他',attending_physician:'主治医生',treating_physician:'经治医生',surgeon:'手术医生',reporting_physician:'报告医生',examining_physician:'检查医生',user_upload:'用户上传',authorized_historical:'已授权历史记录',synthetic_test:'工程测试数据',unknown:'来源未确认',mock_web_inbox:'模拟用户收件箱'})[value] || '待核验';
+}
+function uiReason(value) { return String(value).replaceAll('care_guide.review_required=true','关怀内容需要人工复核').replaceAll('knowledge_review_status','知识内容审核状态').replaceAll('review_required','需要人工复核').replaceAll('confidence','可信度').replaceAll('Care Guide','关怀指引').replaceAll('BLOCKED','已阻止发送').replaceAll('REVIEW_REQUIRED','需要人工复核').replaceAll('APPROVED','已通过').replaceAll('REJECTED','已驳回'); }
+function uiStatus(value) {
+  const tone = ['BLOCKED','REJECTED'].includes(value) ? 'error' : ['REVIEW_REQUIRED','FOLLOWUP_PENDING','OPEN','insufficient_evidence'].includes(value) ? 'review' : ['not_evaluated','NOT_EVALUATED','unavailable','RECEIVED'].includes(value) ? 'neutral' : 'ready';
+  return '<span class="status-pill ' + tone + '">' + escapeHtml(uiLabel(value)) + '</span>';
+}
+function technicalDetails(value) {
+  return '<details class="technical-details"><summary>查看技术详情</summary><pre>' + escapeHtml(typeof value === 'string' ? value : JSON.stringify(value,null,2)) + '</pre></details>';
+}
+
+function renderWorkflow() {
+  $("workflowSummary").innerHTML = workflowCase ? '<div class="workflow-overall">' + uiStatus(workflowCase.status).replace('材料待上传', '等待上传材料') + '</div><div class="workflow-stages">' + [
+    ['病例结构化', workflowCase.has_structured_result],
+    ['痛点分析', workflowCase.has_pain_result],
+    ['关怀指引', workflowCase.has_care_result]
+  ].map(function(stage) {
+    return '<div class="workflow-stage"><span>' + stage[0] + '</span><span class="status-pill ' + (stage[1] ? 'ready' : 'neutral') + '">' + (stage[1] ? '已完成' : '尚未开始') + '</span></div>';
+  }).join('') + '</div>' : '创建新案件或读取已有案件，即可开始查看处理进展。';
+}
+function emptyWorkflowResult(caseId) {
+  return emptyCase(caseId);
+}
+async function refreshWorkflow() {
+  if (!workflowCase) return;
+  const expectedId=workflowCase.case_id;
+  const metadata=await workflowFetch("/api/workflow/cases/" + encodeURIComponent(expectedId));
+  assertCaseResponse(metadata,expectedId); workflowCase=metadata;
+  clearCaseQuality();
+  clearDeliveryState();
+  renderWorkflow();
+}
+async function createWorkflowCase() {
+  if (!$("workflowConsent").checked) {
+    showToast("请先确认已获得材料使用授权");
+    return;
+  }
+  if (!$("workflowDeidentified").checked) {
+    showToast("请先确认材料已完成脱敏处理");
+    return;
+  }
+  resetCaseState("");
+  try {
+    const created = await workflowFetch("/api/workflow/cases", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claim_event_id: "claim-demo-" + crypto.randomUUID(), data_source: "user_upload",
+        consent_status: $("workflowConsent").checked ? "authorized" : "unknown", deidentification_status: $("workflowDeidentified").checked ? "confirmed" : "unknown" })
+    });
+    workflowCase = created;
+    clearCaseQuality();
+    clearDeliveryState();
+    localStorage.setItem("medicalClaimsCaseId", created.case_id);
+    $("caseId").value = created.case_id;
+    result = emptyWorkflowResult(created.case_id);
+    painReport = null; careReport = null; isDemoCase = false;
+    if (documents.some(function(doc) { return !doc.file; })) documents = [];
+    selectedDocId = documents.length ? documents[0].id : null;
+    renderAll(); renderPainReport(); renderCareReport();
+    await refreshWorkflow();
+    showToast("模拟理赔案件已创建");
+  } catch (error) { showToast("创建案件失败：" + error.message); }
+}
+async function restoreWorkflowCase(caseId) {
+  resetCaseState(caseId);
+  try {
+    const metadata = await workflowFetch("/api/workflow/cases/" + encodeURIComponent(caseId));
+    const saved = await workflowFetch("/api/workflow/cases/" + encodeURIComponent(caseId) + "/result");
+    assertCaseResponse(metadata,caseId); assertCaseResponse(saved,caseId);
+    [saved.structured_result,saved.pain_result,saved.care_result].filter(Boolean).forEach(function(item){assertCaseResponse(item,caseId);});
+    workflowCase = metadata;
+    clearCaseQuality();
+    clearDeliveryState();
+    localStorage.setItem("medicalClaimsCaseId", metadata.case_id);
+    $("caseId").value = metadata.case_id;
+    result = saved.structured_result || emptyWorkflowResult(metadata.case_id);
+    painReport = saved.pain_result; careReport = saved.care_result; isDemoCase = false;
+    documents = (saved.ocr_result || []).map(function(doc) {
+      return { id: doc.document_id, name: doc.document_id, type: "已保存OCR", page: doc.page,
+        text: doc.full_text, originalOcrText: doc.full_text, ocrBlocks: doc.blocks || [],
+        humanCorrected: doc.human_corrected, ocrConfidence:null };
+    });
+    selectedDocId = documents.length ? documents[0].id : null;
+    renderAll(); renderPainReport(); renderCareReport(); renderWorkflow();
+    showToast("已从SQLite恢复案件；原始图片未保存");
+  } catch (error) { showToast("恢复案件失败：" + error.message); }
+}
+function requireWorkflowCase() {
+  if (!workflowCase || workflowCase.case_id !== $("caseId").value) throw new Error("请先创建案件或读取已有案件编号");
+}
+
+let batchCases = [];
+let batchRunning = false;
+let activeBatchResultIndex = null;
+let batchScan = {root_name:null,total_files:0,total_images:0,unsupported_files:[],empty_directories:[],scanned_at:null};
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, function(c) {
@@ -99,7 +239,7 @@ function escapeHtml(value) {
 }
 function showToast(message) {
   const toast = $("toast");
-  toast.textContent = message;
+  toast.textContent = uiReason(message).replace("后端 case_id mismatch，拒绝展示", "返回的案件编号不一致，已拒绝展示");
   toast.classList.add("show");
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(function() { toast.classList.remove("show"); }, 2600);
@@ -172,20 +312,26 @@ function addFiles(fileList) {
       page: index + 1,
       text: "",
       file: file,
-      ocrConfidence: null,
+      ocrConfidence:null,
       previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null
     };
   });
   if (!incoming.length) return;
+  caseGeneration += 1; qualityAudit=null; clearCaseQuality(); clearDeliveryState();
   documents.forEach(function(x) { if (x.previewUrl) URL.revokeObjectURL(x.previewUrl); });
   documents = incoming;
   selectedDocId = incoming[0].id;
   isDemoCase = false;
   result = emptyCase($("caseId").value || "CASE-" + Date.now());
+  painReport = null;
+  careReport = null;
+  renderPainReport(); renderCareReport(); renderQualityAudit();
   setCaseStatus("等待处理", "review");
   setPipelineState(-1);
   renderAll();
   showToast("已载入 " + incoming.length + " 页材料，等待本地OCR");
+  renderPainReport();
+  renderCareReport();
 }
 function setCaseStatus(text, type) {
   $("caseStatus").className = "status-pill " + type;
@@ -236,7 +382,7 @@ function fieldCard(label, field, full) {
   return '<article class="field-row ' + (full ? "full" : "") + '" data-doc="' + escapeHtml(source ? source.document_id : "") + '" data-evidence="' + escapeHtml(source ? source.text : "暂无原文证据") + '">' +
     '<div class="field-top"><span class="field-label">' + escapeHtml(label) + '</span><span class="confidence ' + confidenceClass(field ? field.confidence : null) + '">' + clampConfidence(field ? field.confidence : null) + '</span></div>' +
     '<strong class="field-value">' + escapeHtml(String(value)) + '</strong>' +
-    '<span class="field-source">' + (source ? escapeHtml(source.document_id + " · 第" + (source.page || 1) + "页") : escapeHtml(field && field.status ? field.status : "无证据")) + '</span></article>';
+    '<span class="field-source">' + (source ? escapeHtml(source.document_id + " · 第" + (source.page || 1) + "页") : escapeHtml(field && field.status ? uiLabel(field.status) : "无证据")) + '</span></article>';
 }
 function moneyField(field) {
   if (!field || field.value == null) return field;
@@ -267,7 +413,7 @@ function renderResults() {
       (result.diagnoses.slice(0, 3).map(function(x) { return fieldCard("诊断 · " + labelDiagnosis(x.diagnosis_type), x.name, true); }).join("") || fieldCard("诊断", missingField(), true)) +
       (result.procedures.slice(0, 1).map(function(x) { return fieldCard("手术/操作", x.name, true); }).join("")) +
       (result.medications.slice(0, 2).map(function(x) { return fieldCard("出院用药", x.name, true); }).join("")) + '</div>' +
-      '<div class="section-title"><h3>费用摘要</h3><span>CNY · 自动对平</span></div><div class="field-grid">' +
+      '<div class="section-title"><h3>费用摘要</h3><span>人民币 · 自动核对</span></div><div class="field-grid">' +
       fieldCard("费用总额", moneyField(costs.total_amount)) + fieldCard("基金支付合计", moneyField(costs.fund_payments.total_fund_payment)) +
       fieldCard("个人自付（目录内）", moneyField(costs.personal_burden.within_policy_self_pay)) + fieldCard("个人自费（目录外）", moneyField(costs.personal_burden.outside_policy_self_expense)) + '</div>';
   } else if (currentTab === "diagnoses") {
@@ -328,7 +474,13 @@ function renderDocuments() {
 }
 function renderSelectedDocument() {
   const doc = documents.find(function(x) { return x.id === selectedDocId; }) || documents[0];
-  if (!doc) return;
+  if (!doc) {
+    $("selectedDocName").textContent = "尚未添加材料";
+    $("selectedDocType").textContent = "";
+    $("ocrText").value = "";
+    $("documentPreview").innerHTML = "";
+    return;
+  }
   $("selectedDocName").textContent = doc.name;
   $("selectedDocType").textContent = doc.type;
   $("ocrText").value = doc.text || "";
@@ -360,67 +512,26 @@ function renderTimeline() {
 function renderQuality() {
   $("qualityFlags").innerHTML = result.quality_flags.length ? result.quality_flags.map(function(flag) {
     const type = flag.severity === "error" ? "error" : (flag.severity === "info" ? "info" : "");
-    return '<article class="quality-item ' + type + '"><span class="quality-icon">' + (flag.severity === "info" ? "i" : "!") + '</span><span class="quality-copy"><strong>' + escapeHtml(flag.code) + '</strong><span>' + escapeHtml(flag.message) + '</span></span></article>';
-  }).join("") : '<article class="quality-item info"><span class="quality-icon">✓</span><span class="quality-copy"><strong>规则校验通过</strong><span>当前未发现必须人工处理的冲突。</span></span></article>';
+    return '<article class="quality-item ' + type + '"><span class="quality-icon">' + (flag.severity === "info" ? "i" : "!") + '</span><span class="quality-copy"><strong>' + "材料核验提示" + '</strong><span>' + escapeHtml(flag.message) + '</span></span></article>';
+  }).join("") : '<article class="quality-item info"><span class="quality-icon">i</span><span class="quality-copy"><strong>无已报告质量标记</strong><span>未处理的案件不代表检查通过；无标记也不是医学安全保证。</span></span></article>';
 }
 function renderMetrics() {
   $("metricDocs").textContent = documents.length;
   const count = fieldCount(result);
   $("metricFields").textContent = count;
-  $("metricCompleteness").textContent = "关键字段完整度 " + Math.min(100, count / 18 * 100).toFixed(1) + "%";
+  $("metricCompleteness").textContent = isDemoCase ? "固定演示样例；不是比赛指标" : "当前非空字段计数；不是完整率";
   const confidences = collectConfidences(result);
-  $("metricConfidence").textContent = confidences.length ? (confidences.reduce(function(a, b) { return a + b; }, 0) / confidences.length * 100).toFixed(1) : "—";
+  $("metricConfidence").textContent = !isDemoCase && confidences.length ? (confidences.reduce(function(a, b) { return a + b; }, 0) / confidences.length * 100).toFixed(1) : "—";
   $("metricFlags").textContent = result.quality_flags.length;
   $("metricDocDetail").textContent = Array.from(new Set(documents.map(function(x) { return x.type; }))).slice(0, 3).join(" · ") || "尚未添加材料";
 }
 function renderAll() {
-  result.case_id = $("caseId").value || result.case_id;
+  if (result.case_id !== $("caseId").value) result=emptyWorkflowResult($("caseId").value);
   renderDocuments();
   renderResults();
   renderTimeline();
   renderQuality();
   renderMetrics();
-}
-function parseDateMatch(match) {
-  if (!match) return null;
-  return match[1] + "-" + String(match[2]).padStart(2, "0") + "-" + String(match[3]).padStart(2, "0");
-}
-function parseLocalText() {
-  const fullText = documents.map(function(x) { return x.text; }).filter(Boolean).join("\n");
-  const parsed = emptyCase($("caseId").value || "LOCAL-CASE");
-  if (!fullText.trim()) return parsed;
-  const srcDoc = documents.find(function(x) { return x.text; }) || documents[0];
-  const evidence = function(text) { return { doc: srcDoc.id, page: srcDoc.page || 1, text: text }; };
-  const admission = fullText.match(/入院(?:时间|日期)[：:\s]*([12]\d{3})[-年/.](\d{1,2})[-月/.](\d{1,2})/);
-  const discharge = fullText.match(/出院(?:时间|日期)[：:\s]*([12]\d{3})[-年/.](\d{1,2})[-月/.](\d{1,2})/);
-  const los = fullText.match(/(?:实际)?住院天数[：:\s]*(\d+)\s*天?/);
-  const diagnosis = Array.from(fullText.matchAll(/(?:出院诊断|诊断)[：:]\s*([^\n。]+)/g)).flatMap(function(m) { return m[1].split(/[、，,；;]/); }).map(function(x) { return x.trim(); }).filter(Boolean).slice(0, 8);
-  const total = fullText.match(/(?:费用总额|合计金额|总费用)[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const insurance = fullText.match(/(?:医保(?:综合)?支付|基金支付合计)[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const withinSelfPay = fullText.match(/个人自付[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const outsideSelfExpense = fullText.match(/个人自费[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const personalAccount = fullText.match(/个人账户(?:支付)?[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  const cashPayment = fullText.match(/(?:个人)?现金支付[：:\s]*(\d+(?:\.\d{1,2})?)/);
-  if (admission) parsed.hospitalization.admission_date = makeField(parseDateMatch(admission), .84, evidence(admission[0]));
-  if (discharge) parsed.hospitalization.discharge_date = makeField(parseDateMatch(discharge), .84, evidence(discharge[0]));
-  if (los) parsed.hospitalization.length_of_stay_days = makeField(Number(los[1]), .9, evidence(los[0]));
-  parsed.diagnoses = diagnosis.map(function(name, index) {
-    return { diagnosis_id: "local-dx-" + (index + 1), name: makeField(name, .76, evidence(name), "review_required"), code: missingField(), diagnosis_type: "discharge", certainty: "confirmed" };
-  });
-  if (total) parsed.costs.total_amount = makeField(Number(total[1]), .88, evidence(total[0]));
-  if (insurance) parsed.costs.fund_payments.total_fund_payment = makeField(Number(insurance[1]), .88, evidence(insurance[0]));
-  if (withinSelfPay) parsed.costs.personal_burden.within_policy_self_pay = makeField(Number(withinSelfPay[1]), .88, evidence(withinSelfPay[0]));
-  if (outsideSelfExpense) parsed.costs.personal_burden.outside_policy_self_expense = makeField(Number(outsideSelfExpense[1]), .88, evidence(outsideSelfExpense[0]));
-  if (personalAccount) parsed.costs.payment_channels.personal_account_payment = makeField(Number(personalAccount[1]), .88, evidence(personalAccount[0]));
-  if (cashPayment) parsed.costs.payment_channels.cash_payment = makeField(Number(cashPayment[1]), .88, evidence(cashPayment[0]));
-  if (withinSelfPay && outsideSelfExpense) parsed.costs.personal_burden.total_personal_burden = makeField(Number(withinSelfPay[1]) + Number(outsideSelfExpense[1]), null, null, "derived", null, "within_policy_self_pay + outside_policy_self_expense");
-  if (total && withinSelfPay && outsideSelfExpense) parsed.costs.ratios.total_personal_burden_ratio = makeField((Number(withinSelfPay[1]) + Number(outsideSelfExpense[1])) / Number(total[1]), null, null, "derived", null, "total_personal_burden / total_amount");
-  parsed.quality_flags = [{ code: "LOCAL_RULE_BASELINE", severity: "info", message: "当前结果来自手工OCR文本与本地规则；接入RapidOCR和DeepSeek后将替换该步骤。", field_path: null, document_id: null }];
-  if (!diagnosis.length) parsed.quality_flags.push({ code: "DIAGNOSIS_MISSING", severity: "warning", message: "未从现有文本中识别到诊断。", field_path: "diagnoses", document_id: srcDoc.id });
-  if (admission) parsed.events.push({ event_id: "local-admission", event_type: "admission", event_time: parseDateMatch(admission), description: "患者入院", confidence: .84, evidence: [], related_entity_ids: [] });
-  diagnosis.forEach(function(name, index) { parsed.events.push({ event_id: "local-dx-event-" + index, event_type: "diagnosis", event_time: null, description: "记录诊断：" + name, confidence: .76, evidence: [], related_entity_ids: ["local-dx-" + (index + 1)] }); });
-  if (discharge) parsed.events.push({ event_id: "local-discharge", event_type: "discharge", event_time: parseDateMatch(discharge), description: "患者出院", confidence: .84, evidence: [], related_entity_ids: [] });
-  return parsed;
 }
 function sleep(ms) {
   return new Promise(function(resolve) { setTimeout(resolve, ms); });
@@ -439,13 +550,26 @@ function mergeOcrDocuments(ocrDocuments) {
       text: ocr.full_text || "",
       originalOcrText: ocr.full_text || "",
       ocrBlocks: ocr.blocks || [],
-      ocrConfidence: average,
+      ocrConfidence:average,
       humanCorrected: Boolean(ocr.human_corrected)
     });
   });
   selectedDocId = documents.length ? documents[0].id : null;
 }
 async function processWithBackend() {
+  const generation = caseGeneration;
+  const expectedId = $("caseId").value;
+  requireWorkflowCase();
+  if (!documents.some(function(doc) { return doc.file; })) {
+    if (!documents.length || documents.some(function(doc) { return !doc.text; })) throw new Error("请上传图片或提供完整OCR文本");
+    return workflowFetch("/api/cases/restructure-from-ocr", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case_id: workflowCase.case_id, documents: documents.map(function(doc, index) {
+        return { document_id: doc.name || doc.id, page: doc.page || index + 1,
+          full_text: doc.text, blocks: doc.ocrBlocks || [], human_corrected: Boolean(doc.humanCorrected) };
+      }) })
+    });
+  }
   const form = new FormData();
   form.append("case_id", $("caseId").value || "LOCAL-CASE");
   documents.forEach(function(doc) { if (doc.file) form.append("files", doc.file, doc.name); });
@@ -459,10 +583,13 @@ async function processWithBackend() {
   }
   if (!payload) throw new Error("后端返回了空响应或非JSON内容");
   if (!payload.case || !Array.isArray(payload.documents)) throw new Error("后端版本过旧或详细OCR响应格式不正确");
+  assertCurrentGeneration(generation); assertCaseResponse(payload.case,expectedId);
   mergeOcrDocuments(payload.documents);
   return payload.case;
 }
 async function restructureFromCorrectedOcr() {
+  const generation = caseGeneration;
+  const expectedId = $("caseId").value;
   if (!backendUrl) { showToast("请先连接本地后端"); return; }
   const correctedCount = documents.filter(function(doc) { return doc.humanCorrected; }).length;
   if (!correctedCount) { showToast("请先修改OCR文本并保存本页修正"); return; }
@@ -472,6 +599,7 @@ async function restructureFromCorrectedOcr() {
   button.textContent = "正在重新结构化…";
   setCaseStatus("应用OCR修正中", "processing");
   try {
+    requireWorkflowCase();
     const payload = {
       case_id: $("caseId").value || result.case_id,
       documents: documents.map(function(doc, index) {
@@ -491,9 +619,11 @@ async function restructureFromCorrectedOcr() {
     });
     const text = await response.text();
     let parsed = null;
-    try { parsed = text ? JSON.parse(text) : null; } catch (error) { parsed = null; }
+    try { parsed = text ? JSON.parse(text) : null; } catch (error) {
+    if(generation !== caseGeneration)return; parsed = null; }
     if (!response.ok) throw new Error(parsed && parsed.detail ? formatApiDetail(parsed.detail) : (text || "无错误详情"));
     if (!parsed) throw new Error("后端返回了空响应");
+    assertCurrentGeneration(generation); assertCaseResponse(parsed,expectedId);
     result = parsed;
     painReport = null;
     careReport = null;
@@ -512,14 +642,18 @@ async function restructureFromCorrectedOcr() {
     status.textContent = "人工修正已用于重新结构化；第二问和第三问旧结果已清空，请重新运行。";
     showToast("已应用 " + correctedCount + " 页OCR修正并更新病例字段");
   } catch (error) {
+    if(generation !== caseGeneration)return;
     setCaseStatus("OCR修正应用失败", "error");
     showToast("重新结构化失败：" + (error.message || "请检查后端"));
   } finally {
+    if (generation === caseGeneration) await refreshWorkflow().catch(function(error) { showToast(error.message); });
     button.disabled = false;
     button.textContent = "应用修正并重新结构化";
   }
 }
 async function runPipeline() {
+  const generation = caseGeneration;
+  const expectedId = $("caseId").value;
   const button = $("runButton");
   const uploadedPageCount = documents.filter(function(x) { return x.file; }).length;
   const isLongCase = uploadedPageCount > 8;
@@ -528,39 +662,43 @@ async function runPipeline() {
   button.textContent = isLongCase ? ("正在分块处理 " + uploadedPageCount + " 页…") : "正在处理…";
   if (isLongCase) showToast("检测到" + uploadedPageCount + "页长病例：系统将自动分块、合并并执行全局校验，请勿刷新页面");
   try {
-    for (let i = 0; i < 5; i += 1) {
-      setPipelineState(i);
-      await sleep(280);
-    }
-    if (backendUrl && documents.some(function(x) { return x.file; })) {
-      result = await processWithBackend();
-      isDemoCase = false;
-    } else if (isDemoCase) {
-      result = demoCase();
+    if (isDemoCase && !workflowCase) {
+      assertCurrentGeneration(generation); result=demoCase();
+      showToast('仅展示固定演示样例，未运行OCR或AI');
     } else {
-      result = parseLocalText();
+      if (!backendUrl) throw new Error('未连接后端，未执行OCR或AI处理');
+      const processed=await processWithBackend();
+      assertCurrentGeneration(generation); assertCaseResponse(processed,expectedId);
+      result=processed; isDemoCase=false;
     }
     painReport = null;
     careReport = null;
-    setPipelineState(5);
-    await sleep(260);
-    setPipelineState(6);
+    assertCurrentGeneration(generation);
+    setPipelineState(isDemoCase ? -1 : 6);
     const hasWarning = result.quality_flags.some(function(x) { return x.severity === "warning" || x.severity === "error"; });
-    setCaseStatus(hasWarning ? "需要复核" : "结构化完成", hasWarning ? "review" : "ready");
+    setCaseStatus(isDemoCase ? "固定演示样例（未执行AI）" : (hasWarning ? "需要复核" : "结构化完成"), hasWarning ? "review" : "ready");
     renderAll();
-    showToast(backendUrl ? (isLongCase ? "长病例分块抽取、合并与校验已完成" : "完整流程已运行") : "已完成演示流程；连接本地后端后可运行真实OCR");
+    showToast(isDemoCase ? "固定演示样例；未执行OCR或AI" : "真实OCR与结构化已完成；痛点和关怀请分别运行");
   } catch (error) {
+    if(generation !== caseGeneration)return;
     setPipelineState(3, true);
     setCaseStatus("处理失败", "error");
     result.quality_flags = [{ code: "PROVIDER_ERROR", severity: "error", message: error.message || "服务调用失败", field_path: null, document_id: null }];
     renderAll();
     showToast("处理失败：" + (error.message || "请检查后端连接"));
   } finally {
+    if (generation === caseGeneration) await refreshWorkflow().catch(function(error) { showToast(error.message); });
     button.disabled = false;
-    button.innerHTML = '<span class="button-icon">✦</span>运行完整流程';
+    button.innerHTML = '<span class="button-icon">✦</span>运行OCR与结构化';
   }
 }
 function loadDemo() {
+  resetCaseState("DEMO-RESP-001");
+  workflowCase = null;
+  clearCaseQuality();
+  clearDeliveryState();
+  localStorage.removeItem("medicalClaimsCaseId");
+  renderWorkflow();
   documents.forEach(function(x) { if (x.previewUrl) URL.revokeObjectURL(x.previewUrl); });
   documents = structuredClone(demoDocuments);
   result = demoCase();
@@ -569,10 +707,10 @@ function loadDemo() {
   isDemoCase = true;
   $("caseId").value = result.case_id;
   selectedDocId = documents[0].id;
-  setCaseStatus("结构化完成", "ready");
-  setPipelineState(6);
+  setCaseStatus("固定演示样例（未执行AI）", "ready");
+  setPipelineState(-1);
   renderAll();
-  showToast("已载入脱敏演示案件");
+  showToast("已载入固定演示样例；未运行OCR或AI，不作为比赛评测数据");
 }
 function openJson() {
   $("jsonOutput").textContent = JSON.stringify(result, null, 2);
@@ -597,6 +735,7 @@ function painDimensionLabel(value) {
   return ({ clinical: "临床", cost: "费用", experience: "体验" })[value] || value;
 }
 function renderPainReport() {
+  if(painReport && painReport.case_id!==$("caseId").value)painReport=null;
   const summary = painReport && painReport.summary;
   $("painTotal").textContent = summary ? summary.total : "—";
   $("painClinical").textContent = summary ? summary.clinical : "—";
@@ -606,7 +745,7 @@ function renderPainReport() {
   $("exportPainButton").disabled = !painReport;
   const warnings = painReport ? (painReport.analysis_warnings || []) : [];
   $("painWarnings").innerHTML = warnings.map(function(warning) {
-    return '<div class="pain-warning">' + escapeHtml(warning) + '</div>';
+    return '<div class="pain-warning">' + escapeHtml(uiReason(warning)) + '</div>';
   }).join("");
   const points = painReport ? (painReport.pain_points || []) : [];
   if (!painReport) {
@@ -631,6 +770,8 @@ function renderPainReport() {
   }).join("");
 }
 async function analyzeCurrentPain() {
+  const generation = caseGeneration;
+  const expectedId = $("caseId").value;
   if (!backendUrl) {
     showToast("请先连接本地后端，再运行第二问");
     return;
@@ -639,6 +780,8 @@ async function analyzeCurrentPain() {
   button.disabled = true;
   button.textContent = "正在分析…";
   try {
+    requireWorkflowCase();
+    if (!workflowCase.has_structured_result) throw new Error("请先完成并保存结构化结果");
     const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/analyze-pain-points", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -646,17 +789,21 @@ async function analyzeCurrentPain() {
     });
     const text = await response.text();
     let payload = null;
-    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+    try { payload = text ? JSON.parse(text) : null; } catch (error) {
+    if(generation !== caseGeneration)return; payload = null; }
     if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
     if (!payload) throw new Error("后端返回了空响应");
+    assertCurrentGeneration(generation); assertCaseResponse(payload,expectedId);
     painReport = payload;
     careReport = null;
     renderPainReport();
     renderCareReport();
     showToast("第二问痛点分析完成");
   } catch (error) {
+    if(generation !== caseGeneration)return;
     showToast("痛点分析失败：" + (error.message || "请检查后端"));
   } finally {
+    if (generation === caseGeneration) await refreshWorkflow().catch(function(error) { showToast(error.message); });
     button.disabled = false;
     button.textContent = "分析当前病例";
   }
@@ -670,6 +817,7 @@ function careStatusLabel(value) {
   return ({ passed: "通过", review: "待复核", blocked: "已拦截" })[value] || value;
 }
 function renderCareReport() {
+  if(careReport && careReport.case_id!==$("caseId").value)careReport=null;
   const report = careReport;
   const guide = report && report.guide;
   $("careDisease").textContent = guide ? guide.disease_topic : "—";
@@ -678,7 +826,7 @@ function renderCareReport() {
   $("careCoverage").textContent = report ? (Number(report.evidence_coverage) * 100).toFixed(1) : "—";
   $("careReview").textContent = report ? (report.review_required ? "待复核" : "已通过") : "—";
   $("careKnowledgeStatus").textContent = report ? (report.knowledge_review_status === "reviewed" ? "知识卡已审核" : "知识卡待医学审核") : "知识卡待匹配";
-  $("careEngineVersion").textContent = report ? report.engine_version : "尚未生成";
+  $("careEngineVersion").textContent = report ? "已生成" : "尚未生成";
   $("exportCareButton").disabled = !report;
   $("careWarnings").innerHTML = report ? (report.warnings || []).map(function(warning) {
     return '<div class="pain-warning">' + escapeHtml(warning) + '</div>';
@@ -690,7 +838,7 @@ function renderCareReport() {
   }
   function sectionCard(section, kind) {
     const refs = (section.evidence_fields || []).map(function(path) { return '<span>' + escapeHtml(path) + '</span>'; }).join("");
-    return '<article class="care-section ' + (kind || "") + '"><h3>' + escapeHtml(section.title) + '</h3><p>' + escapeHtml(section.content) + '</p>' + (refs ? '<div class="care-refs"><strong>病例依据</strong>' + refs + '</div>' : '<div class="care-refs review"><strong>需要复核</strong><span>本段没有病例字段引用</span></div>') + '</article>';
+    return '<article class="care-section ' + (kind || "") + '"><h3>' + escapeHtml(section.title) + '</h3><p>' + escapeHtml(section.content) + '</p>' + (refs ? '<details class="technical-details"><summary>查看病例依据</summary><div class="care-refs">' + refs + '</div></details>' : '<div class="care-refs review"><strong>需要复核</strong><span>本段没有病例字段引用</span></div>') + '</article>';
   }
   function actionList(title, items) {
     return '<article class="care-section"><h3>' + escapeHtml(title) + '</h3><ol class="care-action-list">' + (items || []).map(function(item) {
@@ -704,16 +852,19 @@ function renderCareReport() {
     '<article class="care-section alert"><h3>需要及时关注的情况</h3><ul>' + (guide.red_flags || []).map(function(item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul></article>' +
     '<article class="care-limitations"><strong>使用边界</strong><ul>' + (guide.limitations || []).map(function(item) { return '<li>' + escapeHtml(item) + '</li>'; }).join("") + '</ul></article>';
   $("careSafetyList").innerHTML = (report.safety_checks || []).map(function(check) {
-    return '<article class="care-safety ' + escapeHtml(check.status) + '"><div><strong>' + escapeHtml(check.code) + '</strong><span>' + escapeHtml(check.message) + '</span></div><em>' + careStatusLabel(check.status) + '</em></article>';
+    return '<article class="care-safety ' + escapeHtml(check.status) + '"><div><strong>' + "内容安全检查" + '</strong><span>' + escapeHtml(uiReason(check.message)) + '</span></div><em>' + careStatusLabel(check.status) + '</em></article>';
   }).join("");
 }
 async function generateCurrentCare() {
+  const generation = caseGeneration;
+  const expectedId = $("caseId").value;
   if (!backendUrl) { showToast("请先连接本地后端，再生成第三问"); return; }
   if (!painReport) { showToast("请先到痛点洞察完成第二问，不能跳过关键输入"); return; }
   const button = $("generateCareButton");
   button.disabled = true;
   button.textContent = "正在生成…";
   try {
+    requireWorkflowCase();
     const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/generate-care-guide", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -721,15 +872,19 @@ async function generateCurrentCare() {
     });
     const text = await response.text();
     let payload = null;
-    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+    try { payload = text ? JSON.parse(text) : null; } catch (error) {
+    if(generation !== caseGeneration)return; payload = null; }
     if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
     if (!payload) throw new Error("后端返回了空响应");
+    assertCurrentGeneration(generation); assertCaseResponse(payload,expectedId);
     careReport = payload;
     renderCareReport();
     showToast(payload.review_required ? "指引已生成，必须完成医学复核" : "第三问温度指引已生成");
   } catch (error) {
+    if(generation !== caseGeneration)return;
     showToast("温度指引生成失败：" + (error.message || "请检查后端"));
   } finally {
+    if (generation === caseGeneration) await refreshWorkflow().catch(function(error) { showToast(error.message); });
     button.disabled = false;
     button.textContent = "生成温度指引";
   }
@@ -741,6 +896,7 @@ function exportCareReport() {
 }
 function qualityDiseaseLabel(value) {
   return ({
+    unavailable: "尚未确认",
     pneumonia: "肺炎",
     influenza: "流感",
     hypertension: "高血压",
@@ -753,6 +909,354 @@ function qualityDiseaseLabel(value) {
     cataract: "白内障",
     urinary_calculus: "泌尿系结石"
   })[value] || value;
+}
+
+function qualityEntityLabel(value) {
+  return ({institution: "医院", clinician: "医生", treatment_plan: "治疗方案"})[value] || value;
+}
+
+function renderDeliveryWorkflow() {
+  const caseId = workflowCase && workflowCase.case_id;
+  const readiness = deliveryReadiness && deliveryReadiness.case_id === caseId ? deliveryReadiness : null;
+  $("deliveryCaseLabel").textContent = caseId ? '当前案件：' + caseId + ' · ' + uiLabel(workflowCase.status) : '尚未读取持久化案件';
+  $("deliveryGateResult").innerHTML = readiness ? '<h3>发送安全检查 ' + uiStatus(readiness.decision) + '</h3><p>复核结果：' + escapeHtml(uiLabel(readiness.review_status)) + ' · 本次包含关怀内容' + (readiness.recommendation_included ? '与推荐结果' : '，暂不包含推荐结果') + '</p><h4>判断依据</h4><ul>' + readiness.reasons.map(function(reason){return '<li>' + escapeHtml(uiReason(reason)) + '</li>';}).join('') + '</ul>' + (readiness.recommendation_unavailable_reason ? '<p>' + escapeHtml(readiness.recommendation_unavailable_reason) + '</p>' : '') + (readiness.already_delivered ? '<p>这份内容已在模拟收件箱，无需重复发送。</p>' : '') + technicalDetails(readiness) : '<p>尚未检查。生成关怀指引后，可检查是否适合发送。</p>';
+  $("sendDeliveryButton").disabled = !readiness || !readiness.can_send || readiness.already_delivered;
+  $("deliveryReviewPanel").hidden = !readiness || readiness.decision !== 'REVIEW_REQUIRED';
+  $("approveDeliveryButton").disabled = !readiness || readiness.already_delivered;
+  $("rejectDeliveryButton").disabled = !readiness || readiness.already_delivered;
+  $("deliveryReviewHistory").innerHTML = readiness ? readiness.reviews.map(function(review) {
+    return '<p>' + escapeHtml(review.created_at + ' · ' + review.reviewer + ' · ' + uiLabel(review.target_type) + ' · ' + uiLabel(review.decision) + ' · ' + review.note) + '</p>';
+  }).join('') : '';
+  const deliveries = inboxDeliveries.filter(function(delivery) {return delivery.case_id === caseId;});
+  if (!deliveries.some(function(delivery) {return delivery.delivery_id === activeDeliveryId;})) activeDeliveryId = deliveries.length ? deliveries[0].delivery_id : null;
+  $("mockInboxList").innerHTML = deliveries.length ? deliveries.map(function(delivery) {
+    return '<button class="btn secondary small inbox-delivery" data-delivery="' + escapeHtml(delivery.delivery_id) + '">' + escapeHtml(uiLabel(delivery.delivery_mode) + ' · ' + delivery.created_at) + '</button>';
+  }).join(' ') : '<p>尚无模拟用户触达记录</p>';
+  $("mockInboxList").querySelectorAll('.inbox-delivery').forEach(function(button) {button.addEventListener('click',function(){activeDeliveryId=button.dataset.delivery;renderDeliveryWorkflow();});});
+  const selected = deliveries.find(function(delivery) {return delivery.delivery_id === activeDeliveryId;});
+  $("submitDeliveryFeedbackButton").disabled = !selected;
+  const option = $("deliveryFeedbackTarget").querySelector('option[value="recommendation"]');
+  if (option) option.disabled = !selected || !selected.recommendation_included;
+  if ((!selected || !selected.recommendation_included) && $("deliveryFeedbackTarget").value === 'recommendation') $("deliveryFeedbackTarget").value = 'overall_service';
+  $("mockInboxContent").innerHTML = selected ? renderFrozenDelivery(selected) : '';
+  $("deliveryFeedbackHistory").innerHTML = deliveryFeedback.filter(function(item){return item.case_id===caseId;}).map(function(item){return '<p>' +
+    escapeHtml(item.created_at + ' · ' + uiLabel(item.target_type) + ' · 评分：' + item.rating + ' · ' + (item.helpful ? '有帮助' : '没有帮助') + ' · ' + uiLabel(item.category) + ' · ' + item.comment) + '</p>';}).join('');
+}
+function renderFrozenDelivery(delivery) {
+  const content=delivery.content;
+  const guide=content.care_guide.guide;
+  function section(value){return '<article class="care-section"><h3>' + escapeHtml(value.title) + '</h3><p>' + escapeHtml(value.content) + '</p></article>';}
+  function actions(title,items){return '<article class="care-section"><h3>' + title + '</h3><ol>' + items.map(function(item){return '<li>' + escapeHtml(item.action + ' · ' + item.timing + ' · ' + item.reason) + '</li>';}).join('') + '</ol></article>';}
+  let html='<h3>模拟用户收件箱 <span class="status-pill neutral">演示环境</span></h3><p>' + escapeHtml(uiLabel(delivery.delivery_mode) + ' · ' + delivery.created_at) + '</p>' + technicalDetails({delivery_id:delivery.delivery_id,channel:delivery.channel,data_source:content.data_source,risk_gate:delivery.risk_gate_result}) + section(guide.opening) + section(guide.diagnosis_explanation) + section(guide.treatment_review) + section(guide.cost_explanation) +
+    actions('康复计划',guide.recovery_plan) + section(guide.psychological_support) + actions('下次就医建议',guide.follow_up_plan) +
+    '<p>需要关注：' + escapeHtml(guide.red_flags.join('；')) + '</p><p>使用边界：' + escapeHtml(guide.limitations.join('；')) + '</p>';
+  if (content.recommendation_unavailable_reason) html+='<p>' + escapeHtml(content.recommendation_unavailable_reason) + '</p>';
+  html+=(content.recommendation||[]).map(function(report){return '<h3>' + escapeHtml(qualityEntityLabel(report.entity_type)) + '</h3><p>' + escapeHtml(report.warnings.join('；')) + '</p>' + report.recommendations.map(function(item){
+    return '<article class="care-section"><strong>' + escapeHtml(item.entity_id) + '</strong><p>病种：' + escapeHtml(qualityDiseaseLabel(report.disease_group)) + ' · 综合评分：' + item.composite_score.toFixed(1) +
+      ' · 可信度：' + (item.confidence*100).toFixed(1) + '% · 样本数量：' + item.sample_size + '</p><ol>' + item.reasons.map(function(reason){return '<li>' + escapeHtml(reason.title + '：' + reason.explanation) +
+      technicalDetails(reason.evidence_fields) + '</li>';}).join('') + '</ol></article>';
+  }).join('');}).join('');
+  return html;
+}
+async function loadDeliveryWorkflow() {
+  try {
+    requireWorkflowCase();
+    const caseId=workflowCase.case_id;
+    const base='/api/workflow/cases/'+encodeURIComponent(caseId);
+    const rows=await Promise.all([workflowFetch(base),workflowFetch(base+'/deliveries'),workflowFetch(base+'/feedback'),workflowFetch(base+'/follow-ups')]);
+    if (!workflowCase || workflowCase.case_id!==caseId) return;
+    assertCaseResponse(rows[0],caseId); rows.slice(1).forEach(function(items){items.forEach(function(item){assertCaseResponse(item,caseId);});});
+    workflowCase=rows[0]; inboxDeliveries=rows[1]; deliveryFeedback=rows[2]; deliveryFollowUps=rows[3];
+    renderWorkflow(); renderDeliveryWorkflow();
+  } catch(error){showToast('闭环读取失败：'+error.message);}
+}
+async function prepareCurrentDelivery() {
+  const generation=caseGeneration;
+  try {
+    requireWorkflowCase();
+    const caseId=workflowCase.case_id;
+    const prepared=await workflowFetch('/api/workflow/cases/'+encodeURIComponent(caseId)+'/delivery/prepare',{method:'POST'});
+    if (!workflowCase || workflowCase.case_id!==caseId) return;
+    assertCaseResponse(prepared,caseId); prepared.reviews.forEach(function(review){assertCaseResponse(review,caseId);}); deliveryReadiness=prepared;
+    await loadDeliveryWorkflow();
+  } catch(error){if(generation!==caseGeneration)return;deliveryReadiness=null;renderDeliveryWorkflow();showToast('准备触达失败：'+error.message);}
+}
+async function sendCurrentDelivery() {
+  const generation=caseGeneration;
+  const button=$("sendDeliveryButton");button.disabled=true;
+  try {
+    requireWorkflowCase();
+    const caseId=workflowCase.case_id;
+    if (!deliveryReadiness || deliveryReadiness.case_id!==caseId) throw new Error('请先准备触达');
+    const sent=await workflowFetch('/api/workflow/cases/'+encodeURIComponent(caseId)+'/delivery/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content_fingerprint:deliveryReadiness.content_fingerprint})});
+    if (!workflowCase || workflowCase.case_id!==caseId) return;
+    assertCaseResponse(sent,caseId); activeDeliveryId=sent.delivery_id;
+    await prepareCurrentDelivery();
+    showToast('已模拟触达 · '+uiLabel(sent.delivery_mode));
+  } catch(error){if(generation!==caseGeneration)return;showToast('触达被拒绝：'+error.message); await prepareCurrentDelivery();}
+  finally {renderDeliveryWorkflow();}
+}
+async function submitDeliveryReview(decision) {
+  try {
+    requireWorkflowCase();
+    const caseId=workflowCase.case_id;
+    if (!deliveryReadiness || deliveryReadiness.case_id!==caseId || deliveryReadiness.decision!=='REVIEW_REQUIRED') throw new Error('当前内容不接受人工批准');
+    const reviewer=$("deliveryReviewer").value.trim();if(!reviewer)throw new Error('请填写实际审核者标识');
+    await workflowFetch('/api/workflow/cases/'+encodeURIComponent(caseId)+'/reviews',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      reviewer:reviewer,decision:decision,target_type:$("deliveryReviewTarget").value,note:$("deliveryReviewNote").value,content_fingerprint:deliveryReadiness.content_fingerprint})});
+    if (!workflowCase || workflowCase.case_id!==caseId) return;
+    await prepareCurrentDelivery();showToast('已保存人工复核：'+uiLabel(decision));
+  } catch(error){showToast('复核保存失败：'+error.message);}
+}
+async function submitCurrentDeliveryFeedback() {
+  const button=$("submitDeliveryFeedbackButton");button.disabled=true;
+  try {
+    requireWorkflowCase();const caseId=workflowCase.case_id;
+    if(!activeDeliveryId)throw new Error('请选择已触达记录');
+    const result=await workflowFetch('/api/deliveries/'+encodeURIComponent(activeDeliveryId)+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      target_type:$("deliveryFeedbackTarget").value,rating:Number($("deliveryFeedbackRating").value),helpful:$("deliveryFeedbackHelpful").value==='true',category:$("deliveryFeedbackCategory").value,comment:$("deliveryFeedbackComment").value})});
+    if (!workflowCase || workflowCase.case_id!==caseId) return;
+    assertCaseResponse(result.feedback,caseId); if(result.follow_up)assertCaseResponse(result.follow_up,caseId);
+    await loadDeliveryWorkflow();$("deliveryFeedbackStatus").textContent='已收到反馈'+(result.follow_up?' · 已创建后续处理事项':' · 无需后续处理');
+    showToast('已收到反馈');
+  } catch(error){showToast('反馈保存失败：'+error.message);}
+  finally {renderDeliveryWorkflow();}
+}
+async function resolveDeliveryFollowUp(taskId) {
+  try {
+    const resolution=$("resolution-"+taskId).value.trim();if(!resolution)throw new Error('请填写实际处理结果');
+    await workflowFetch('/api/follow-ups/'+encodeURIComponent(taskId)+'/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolution:resolution})});
+    await loadDeliveryWorkflow();showToast('后续处理已完成');
+  } catch(error){showToast('待办解决失败：'+error.message);}
+}
+function qualityAvailabilityLabel(value) {
+  return ({available: "数据可用", insufficient_evidence: "数据不足，暂无法推荐", not_evaluated: "尚未评估"})[value] || value;
+}
+
+const recommendationReasonLabels = {
+  case_incomplete: "当前病例尚未完成结构化、痛点分析和温度指引",
+  disease_unconfirmed: "当前病种尚未确认",
+  provider_unconfirmed: "当前医疗机构信息尚未确认",
+  history_not_ready: "尚未构建可用于推荐的历史病例画像",
+  historical_sample_insufficient: "历史病例样本不足",
+  no_comparable_institution: "当前病种无可比较机构",
+  clinician_identity_insufficient: "医生身份信息不足",
+  clinician_sample_insufficient: "医生历史病例样本不足",
+  treatment_sample_insufficient: "治疗方案样本不足",
+  recommendation_evidence_insufficient: "推荐证据不足",
+  non_real_data: "当前数据包含工程测试或来源未确认记录，不能用于真实推荐",
+  not_evaluated: "该类推荐尚未评估"
+};
+
+function recommendationReasonKey(rawReason, entityType) {
+  const reason = String(rawReason || "");
+  if (/尚未完成前三问|尚未完成.*温度指引/.test(reason)) return "case_incomplete";
+  if (/Disease group unavailable|无法可靠确定当前病种|病种.*未确认/i.test(reason)) return "disease_unconfirmed";
+  if (/Current provider context unconfirmed|医院来源上下文|机构信息.*未确认/i.test(reason)) return "provider_unconfirmed";
+  if (/Not Evaluated|尚未构建.*portfolio|未构建.*历史数据/i.test(reason)) return "history_not_ready";
+  if (/synthetic_test|未知来源|工程验证|不得用于真实医疗推荐/i.test(reason)) return "non_real_data";
+  if (/没有满足样本量、可计算维度和置信度门槛|推荐证据不足/.test(reason)) return "recommendation_evidence_insufficient";
+  const historical = reason.match(/Insufficient historical data[：:]\s*(\d+)个同病种候选/i);
+  if (historical) {
+    const candidateCount = Number(historical[1]);
+    if (entityType === "institution") return candidateCount === 0 ? "no_comparable_institution" : "historical_sample_insufficient";
+    if (entityType === "clinician") return candidateCount === 0 ? "clinician_identity_insufficient" : "clinician_sample_insufficient";
+    if (entityType === "treatment_plan") return "treatment_sample_insufficient";
+  }
+  if (/samples=|calculated dimensions=|minimum\s*\d+|confidence=/i.test(reason)) return "recommendation_evidence_insufficient";
+  return null;
+}
+
+function recommendationReasons(entry) {
+  const report = entry && entry.report ? entry.report : {};
+  const entityType = report.entity_type;
+  const keys = [];
+  (report.warnings || []).forEach(function(rawReason) {
+    const key = recommendationReasonKey(rawReason, entityType);
+    if (key && !keys.includes(key)) keys.push(key);
+  });
+  if (!keys.length && entry && entry.status !== "available") {
+    if (entry.status === "not_evaluated") keys.push("not_evaluated");
+    else if (entityType === "clinician") keys.push("clinician_identity_insufficient");
+    else if (entityType === "treatment_plan") keys.push("treatment_sample_insufficient");
+    else keys.push("recommendation_evidence_insufficient");
+  }
+  return keys;
+}
+
+function recommendationReasonList(keys) {
+  return '<ul class="recommendation-reasons">' + keys.map(function(key) {
+    return '<li>' + escapeHtml(recommendationReasonLabels[key] || recommendationReasonLabels.recommendation_evidence_insufficient) + '</li>';
+  }).join('') + '</ul>';
+}
+
+function renderRecommendationItem(report, item) {
+  return '<article class="care-section"><h3>' + escapeHtml(item.entity_id) + '</h3><p>病种：' + escapeHtml(qualityDiseaseLabel(report.disease_group)) +
+    ' · 综合评分：' + item.composite_score.toFixed(1) + ' · 可信度：' + (item.confidence * 100).toFixed(1) + '% · 样本数量：' + item.sample_size +
+    '</p><strong>推荐理由</strong><ol>' + item.reasons.map(function(reason) {
+      return '<li>' + escapeHtml(reason.title) + '<p>' + escapeHtml(reason.explanation) + '</p>' + technicalDetails(reason.evidence_fields) + '</li>';
+    }).join('') + '</ol><small>' + escapeHtml(item.limitations.join('；')) + '</small></article>';
+}
+
+function renderRecommendationResults(query) {
+  if (!query) return '<p>尚未评估：读取当前案件后，可查看医院、医生与治疗方案推荐。</p>';
+  const entityTypes = ["institution", "clinician", "treatment_plan"];
+  const entries = entityTypes.map(function(entityType) {
+    return (query.reports || []).find(function(item) { return item.report && item.report.entity_type === entityType; }) || {
+      status: "not_evaluated", report: {entity_type: entityType, warnings: [], recommendations: []}
+    };
+  });
+  const reasonKeys = entries.map(recommendationReasons);
+  const allUnavailable = entries.every(function(entry) { return entry.status !== "available"; });
+  const sharedKeys = allUnavailable ? reasonKeys[0].filter(function(key) {
+    return reasonKeys.slice(1).every(function(keys) { return keys.includes(key); });
+  }) : [];
+  let html = '';
+  if (sharedKeys.length) {
+    html += '<section class="recommendation-status-card"><div><span class="status-pill review">暂不可用</span><h3>当前暂无法生成推荐</h3></div><strong>原因</strong>' + recommendationReasonList(sharedKeys) +
+      '<p>完成病例结构化和机构信息确认，并补充满足要求的同病种证据后，系统将继续生成医院、医生和治疗方案推荐。</p></section>';
+  }
+  html += '<div class="recommendation-module-grid">' + entries.map(function(entry, index) {
+    const report = entry.report;
+    const title = qualityEntityLabel(report.entity_type) + '推荐';
+    if (entry.status !== "available") {
+      const specificKeys = reasonKeys[index].filter(function(key) { return !sharedKeys.includes(key); });
+      return '<article class="recommendation-module unavailable"><div class="recommendation-module-head"><h3>' + escapeHtml(title) + '</h3><span class="status-pill neutral">暂不可用</span></div>' +
+        (specificKeys.length ? recommendationReasonList(specificKeys) : '<p class="muted">请先完成上方所列条件。</p>') + '</article>';
+    }
+    const recommendations = report.recommendations || [];
+    return '<article class="recommendation-module available"><div class="recommendation-module-head"><h3>' + escapeHtml(title) + '</h3><span class="status-pill ready">可查看</span></div>' +
+      (recommendations.length ? recommendations.map(function(item) { return renderRecommendationItem(report, item); }).join('') : recommendationReasonList(["recommendation_evidence_insufficient"])) + '</article>';
+  }).join('') + '</div>';
+  return html + '<details class="technical-details recommendation-debug"><summary>查看技术详情</summary><pre>' + escapeHtml(JSON.stringify(query.reports || [], null, 2)) + '</pre></details>';
+}
+function renderMultiSourceCandidatePools() {
+  const selectedDisease = $("candidateDiseaseSelect").value;
+  const pool = multiSourceCandidatePools && multiSourceCandidatePools.diseases.find(function(item) { return item.disease_group === selectedDisease; });
+  if (!pool) {
+    $("candidatePoolSummary").textContent = "连接本地后端后读取候选池";
+    $("candidatePoolResults").innerHTML = '<p>尚未读取多源医院画像。</p>';
+    return;
+  }
+  $("candidatePoolSummary").textContent = qualityDiseaseLabel(pool.disease_group) + "：涉及医院 " + pool.hospital_total +
+    " 家 · 证据充足 " + pool.sufficient_count + " 家 · 部分充足 " + pool.partially_sufficient_count +
+    " 家 · 证据不足 " + pool.insufficient_count + " 家 · 当前只形成候选池，不生成排名或最终推荐";
+  $("candidatePoolResults").innerHTML = pool.candidates.length ? pool.candidates.map(function(candidate) {
+    const profile = candidate.profile;
+    const sourceMap = Object.fromEntries(profile.sources.map(function(source) { return [source.source_id, source]; }));
+    const usableEvidence = profile.public_evidence.filter(function(item) { return item.usable_for_recommendation; });
+    const evidenceHtml = usableEvidence.map(function(item) {
+      const value = Array.isArray(item.value) ? item.value.join('、') : item.value;
+      const links = item.source_ids.map(function(sourceId) {
+        const source = sourceMap[sourceId];
+        return source && source.url ? '<a href="' + escapeHtml(source.url) + '" target="_blank" rel="noreferrer">' + escapeHtml(source.title) + '</a>' : escapeHtml(sourceId);
+      }).join('、');
+      return '<li><strong>' + escapeHtml(item.label) + '</strong>：' + escapeHtml(value || '未披露') + '<br><small>来源：' + links + '</small></li>';
+    }).join('');
+    const history = profile.historical_claims;
+    return '<article class="care-section"><div class="panel-header compact"><div><h3>' + escapeHtml(profile.standard_name) + '</h3><p>' +
+      escapeHtml([profile.region, profile.hospital_type, profile.hospital_grade].filter(Boolean).join(' · ') || '基础属性未完整公开') +
+      '</p></div><span class="status-pill ready">' + escapeHtml(uiLabel(candidate.evidence_sufficiency)) + '</span></div>' +
+      '<p><strong>相关科室：</strong>' + escapeHtml(profile.related_departments.join('、') || '未披露') + '</p>' +
+      '<p><strong>重点专科：</strong>' + escapeHtml(profile.national_key_specialties.concat(profile.provincial_key_specialties).join('、') || '未披露') + '</p>' +
+      '<p><strong>可验证专科能力：</strong>' + escapeHtml(profile.specialist_capability || '未披露') + '</p>' +
+      '<p><strong>历史病例参考：</strong>官方脱敏病例 ' + history.official_deidentified_case_count + ' 例 · ' + escapeHtml(history.note) + '</p>' +
+      '<details><summary>查看证据</summary><ul>' + evidenceHtml + '</ul><p>查询日期：' + escapeHtml(profile.queried_at) + '</p></details></article>';
+  }).join('') : '<p>当前没有医院达到候选池证据门槛。</p>';
+}
+function renderIntegratedQuality() {
+  const activeId = workflowCase && workflowCase.case_id;
+  const query = currentRecommendations && currentRecommendations.case_id === activeId ? currentRecommendations : null;
+  $("qualityCurrentCase").textContent = activeId ? "案件编号：" + activeId + " · 病种：" + (query ? qualityDiseaseLabel(query.disease_group) : "尚未评估") : "尚未读取当前案件（演示不会进入真实推荐）";
+  const snapshot = persistedPortfolio;
+  const dataset = snapshot && snapshot.dataset;
+  $("qualityDatasetStatus").textContent = snapshot ? qualityAvailabilityLabel(snapshot.status) +
+    " · 已接纳病例数：" + dataset.accepted_cases + " · 未纳入病例数：" + dataset.excluded_cases +
+    " · 数据来源：" + Object.keys(dataset.data_sources).map(uiLabel).join("、") +
+    (dataset.contains_non_real_data ? " · 包含测试或未知来源数据，不能作为真实推荐/KR4证据" : " · 来源为调用方声明，仍需核验") : "尚未读取或生成品质画像";
+  const disease = query && query.disease_group;
+  const portfolio = snapshot && snapshot.portfolio;
+  const profiles = portfolio && disease && disease !== "unavailable" ? portfolio.profiles.filter(function(p) { return p.disease_group === disease; }) : [];
+  $("qualityProfileResults").innerHTML = ["institution", "clinician", "treatment_plan"].map(function(type) {
+    const candidates = profiles.filter(function(p) { return p.entity_type === type; });
+    let html = '<article class="profile-group"><h3>' + escapeHtml(qualityEntityLabel(type)) + '</h3>';
+    if (!portfolio) return html + '<p>尚未生成对应品质画像。</p></article>';
+    if (!candidates.length) return html + '<p>当前数据不足，暂无法生成可靠画像。</p></article>';
+    return html + candidates.map(function(profile) {
+      return '<article class="care-section"><h3>' + escapeHtml(profile.entity_id) + ' · ' + escapeHtml(qualityDiseaseLabel(profile.disease_group)) + '</h3>' +
+        '<p>样本数量：' + profile.sample_size + ' · 综合情况：' + (profile.composite_score == null ? '暂不可用' : profile.composite_score.toFixed(1)) +
+        ' · 可信度：' + (profile.composite_confidence * 100).toFixed(1) + '%</p>' +
+        '<ul>' + profile.metrics.map(function(metric) {
+          const score = metric.status === "calculated" && metric.score != null ? metric.score.toFixed(1) : '暂不可用（' + uiLabel(metric.status) + '）';
+          return '<li><strong>' + escapeHtml(metric.label) + ': ' + escapeHtml(score) + '</strong> · 样本数量：' + metric.sample_size +
+            technicalDetails(metric.calculation) + '<small>' + escapeHtml((metric.limitations || []).join('；')) + '</small></li>';
+        }).join('') + '</ul><p>' + escapeHtml((profile.warnings || []).join('；')) + '</p></article>';
+    }).join('') + '</article>';
+  }).join('');
+  $("qualityRecommendationResults").innerHTML = renderRecommendationResults(query);
+  $("qualityKr4Status").textContent = qualityCoverageReport ? "推荐覆盖指标：" + uiLabel(qualityCoverageReport.status) + ' · 病种覆盖：' + qualityCoverageReport.disease_count + '/3 · ' +
+    qualityCoverageReport.diseases.map(function(d) { return qualityDiseaseLabel(d.disease_group) + '：医院 ' + d.institution_count + '/5，合格医院 ' + d.qualified_institution_count + '/5，可用维度 ' + d.available_dimension_count + '/5'; }).join('；') : '推荐覆盖指标：尚未评估';
+  renderMultiSourceCandidatePools();
+  renderProviderCandidates();
+}
+function renderProviderCandidates() {
+  const data = qualityContext;
+  if (!data || !workflowCase || data.case_id !== workflowCase.case_id) { $("qualityProviderCandidates").textContent = '先读取当前案件'; return; }
+  const confirmed = data.saved_context && data.saved_context.provider;
+  const context = confirmed ? confirmed.context : data.candidates;
+  if (!context) { $("qualityProviderCandidates").textContent = '没有可用来源候选；可导入已有审计确认的安全上下文。'; return; }
+  const institution = context.institution;
+  const hospitalReady = institution && !institution.review_required && institution.confidence >= .8 && institution.sources.length;
+  let html = institution ? '<label><input type="checkbox" id="confirmQualityInstitution" ' + (confirmed && confirmed.institution_confirmed ? 'checked ' : '') + (!hospitalReady ? 'disabled ' : '') +
+    '> 确认医院伪匿名来源 ' + escapeHtml(institution.institution_id) + ' · 可信度 ' + (institution.confidence * 100).toFixed(1) + '%</label>' : '<p>暂无可核验的医院来源</p>';
+  html += '<p>仅确认已经核对的来源；存在医院冲突时不能在这里直接放行。报告/检查医生不进入经治医生画像。</p>';
+  html += context.clinicians.map(function(clinician) {
+    const eligible = clinician.ranking_eligible && !clinician.review_required && clinician.confidence >= .8 && ["attending_physician", "treating_physician", "surgeon"].includes(clinician.role);
+    return '<label><input type="checkbox" class="confirm-quality-clinician" value="' + escapeHtml(clinician.clinician_id) + '" ' +
+      (confirmed && confirmed.confirmed_clinician_ids.includes(clinician.clinician_id) ? 'checked ' : '') + (!eligible ? 'disabled ' : '') + '> ' +
+      escapeHtml(clinician.clinician_id + ' · ' + uiLabel(clinician.role)) + (eligible ? '' : ' · 不进入医生画像') + '</label><br>';
+  }).join('');
+  $("qualityProviderCandidates").innerHTML = html;
+}
+async function loadIntegratedQuality() {
+  if (!backendUrl) { showToast('请先连接本地后端'); return; }
+  try {
+    const activeId = workflowCase && workflowCase.case_id;
+    const results = await Promise.all([
+      workflowFetch('/api/quality/portfolio'), workflowFetch('/api/quality/coverage'),
+      activeId ? workflowFetch('/api/workflow/cases/' + encodeURIComponent(activeId) + '/recommendations') : Promise.resolve(null),
+      activeId ? workflowFetch('/api/workflow/cases/' + encodeURIComponent(activeId) + '/quality-context') : Promise.resolve(null),
+      workflowFetch('/api/quality/multisource-candidate-pools')
+    ]);
+    if ((workflowCase && workflowCase.case_id) !== activeId) return;
+    if(results[2])assertCaseResponse(results[2],activeId); if(results[3])assertCaseResponse(results[3],activeId);
+    persistedPortfolio = results[0]; qualityCoverageReport = results[1]; currentRecommendations = results[2]; qualityContext = results[3]; multiSourceCandidatePools = results[4];
+    renderIntegratedQuality();
+  } catch (error) { showToast('画像/推荐读取失败：' + error.message); }
+}
+async function buildIntegratedPortfolio() {
+  const button = $("buildPortfolioButton"); button.disabled = true;
+  try {
+    await workflowFetch('/api/quality/profiles/build', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({use_saved_records:true,minimum_sample_size:3})});
+    await loadIntegratedQuality(); showToast('已使用SQLite实际记录构建画像；缺数据维度不会补分');
+  } catch (error) { showToast('画像构建失败：' + error.message); }
+  finally { button.disabled = false; }
+}
+async function saveCurrentProviderContext(payload) {
+  try {
+    requireWorkflowCase();
+    const activeId = workflowCase.case_id;
+    if (!payload) {
+      if (!qualityContext || qualityContext.case_id !== activeId) throw new Error('请先读取当前来源上下文');
+      const stored = qualityContext.saved_context;
+      const context = stored ? stored.provider.context : qualityContext.candidates;
+      if (!context) throw new Error('没有可确认来源，请导入已确认上下文');
+      payload = Object.assign({}, stored || {}, {provider:{context:context,institution_confirmed:Boolean($("confirmQualityInstitution") && $("confirmQualityInstitution").checked),
+        confirmed_clinician_ids:Array.from(document.querySelectorAll('.confirm-quality-clinician:checked')).map(function(input) {return input.value;})}});
+    }
+    const assembly = await workflowFetch('/api/workflow/cases/' + encodeURIComponent(activeId) + '/quality-context', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    await loadIntegratedQuality(); showToast(assembly.institution_id === 'unavailable' ? '医院未确认，未进入画像比较' : '来源已保存，请构建历史画像');
+  } catch (error) { showToast('来源保存失败：' + error.message); }
 }
 function renderQualityAudit() {
   const audit = qualityAudit;
@@ -773,7 +1277,7 @@ function renderQualityAudit() {
   if (audit) {
     if (institution.review_required_cases) warnings.push(institution.review_required_cases + "个案件存在多机构候选，必须先完成主机构人工复核。候选数量不能直接当正式覆盖。 ");
     if (scope.empty_ocr_images) warnings.push(scope.empty_ocr_images + "张图片未识别到文字，相关案件需对照原图抽查。 ");
-    warnings.push("当前只完成机构与病种覆盖审计；正式费用、用药和规范性画像仍需把这些病例批量跑通第一、二问。 ");
+    warnings.push("本审计只描述候选覆盖，不代表下方已保存画像或KR4达标；正式指标以已组装病例、可计算维度和覆盖报告为准。 ");
   }
   $("qualityWarnings").innerHTML = warnings.map(function(warning) { return '<div class="pain-warning">' + escapeHtml(warning) + '</div>'; }).join("");
 
@@ -798,6 +1302,8 @@ function renderQualityAudit() {
   }).join("");
 }
 async function loadQualityAudit(silent) {
+  const generation = caseGeneration;
+  const expectedId = $("caseId").value;
   if (!backendUrl) {
     if (!silent) showToast("请先连接本地后端，再载入第四问真实审计");
     renderQualityAudit();
@@ -810,13 +1316,16 @@ async function loadQualityAudit(silent) {
     const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/quality/audit-summary");
     const text = await response.text();
     let payload = null;
-    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+    try { payload = text ? JSON.parse(text) : null; } catch (error) {
+    if(generation !== caseGeneration)return; payload = null; }
     if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
     if (!payload) throw new Error("后端返回了空响应");
+    assertCurrentGeneration(generation);
     qualityAudit = payload;
     renderQualityAudit();
     if (!silent) showToast("第四问真实覆盖审计已载入");
   } catch (error) {
+    if(generation !== caseGeneration)return;
     if (!silent) showToast("审计载入失败：" + (error.message || "请检查后端"));
   } finally {
     button.disabled = false;
@@ -839,125 +1348,374 @@ function switchView(name) {
   history.replaceState(null, "", url);
   if (name === "pain") renderPainReport();
   if (name === "care") renderCareReport();
+  if (name === 'delivery') {renderDeliveryWorkflow();if(backendUrl&&workflowCase)loadDeliveryWorkflow();}
   if (name === "quality") {
     renderQualityAudit();
     if (!qualityAudit && backendUrl) loadQualityAudit(true);
+    renderIntegratedQuality();
+    if (backendUrl) loadIntegratedQuality();
   }
 }
+function batchStatusLabel(value) {
+  return ({waiting:"等待处理",processing:"处理中",completed:"已完成",review:"需要复核",failed:"失败"})[value] || value;
+}
+function batchStatusClass(value) {
+  return ({completed:"done",review:"review",failed:"failed",processing:"processing",waiting:"waiting"})[value] || "waiting";
+}
+function batchCompletedCount() {
+  return batchCases.filter(function(item){return item.status === "completed";}).length;
+}
+function batchReviewCount() {
+  return batchCases.filter(function(item){return item.status === "review";}).length;
+}
+function batchFailedCount() {
+  return batchCases.filter(function(item){return item.status === "failed";}).length;
+}
+function batchProcessedCount() {
+  return batchCases.filter(function(item){return ["completed","review","failed"].includes(item.status);}).length;
+}
+function batchProcessingCount() {
+  return batchCases.filter(function(item){return item.status === "processing";}).length;
+}
+function batchWaitingCount() {
+  return batchCases.filter(function(item){return item.status === "waiting";}).length;
+}
+function defaultBatchName() {
+  const now = new Date();
+  function pad(value){return String(value).padStart(2,"0");}
+  return "批次-" + now.getFullYear() + pad(now.getMonth()+1) + pad(now.getDate()) + "-" + pad(now.getHours()) + pad(now.getMinutes());
+}
+function renderBatchScan() {
+  if (!batchScan.scanned_at) {
+    $("batchScanSummary").textContent = "尚未选择目录";
+    $("batchScanIssues").innerHTML = "";
+    return;
+  }
+  $("batchScanSummary").textContent = "可处理病例 " + batchCases.length + " 个 · 图片 " + batchScan.total_images + " 张 · 不支持文件 " + batchScan.unsupported_files.length + " 个 · 无可处理图片目录 " + batchScan.empty_directories.length + " 个";
+  const sections = [];
+  if (batchScan.unsupported_files.length) sections.push('<details><summary>查看不支持的文件（' + batchScan.unsupported_files.length + '）</summary><div>' + batchScan.unsupported_files.map(escapeHtml).join("<br>") + '</div></details>');
+  if (batchScan.empty_directories.length) sections.push('<details><summary>查看无可处理图片的目录（' + batchScan.empty_directories.length + '）</summary><div>' + batchScan.empty_directories.map(escapeHtml).join("<br>") + '</div></details>');
+  sections.push('<span>浏览器不会返回完全空的文件夹；这里的“无可处理图片目录”指仅含不支持文件的病例目录。</span>');
+  $("batchScanIssues").innerHTML = sections.join("");
+}
 function renderBatch() {
-  const completed = batchCases.filter(function(x) { return x.status === "done" || x.status === "review"; }).length;
-  const review = batchCases.filter(function(x) { return x.status === "review"; }).length;
-  const failed = batchCases.filter(function(x) { return x.status === "failed"; }).length;
-  $("batchTotal").textContent = batchCases.length;
+  const total = batchCases.length;
+  const completed = batchCompletedCount();
+  const review = batchReviewCount();
+  const failed = batchFailedCount();
+  const processed = batchProcessedCount();
+  const processing = batchProcessingCount();
+  const waiting = batchWaitingCount();
+  $("batchTotal").textContent = total;
   $("batchCompleted").textContent = completed;
   $("batchReview").textContent = review;
   $("batchFailed").textContent = failed;
-  $("batchProgressText").textContent = completed + " / " + batchCases.length + " 已完成";
-  $("batchProgressBar").style.width = (batchCases.length ? completed / batchCases.length * 100 : 0).toFixed(1) + "%";
-  $("batchRows").innerHTML = batchCases.map(function(item) {
-    const statusLabel = ({ done: "已完成", review: "待复核", waiting: "等待", processing: "处理中", failed: "失败" })[item.status] || item.status;
-    return '<tr><td><strong>' + escapeHtml(item.id) + '</strong></td><td>' + item.docs + '页</td><td>' + escapeHtml(item.stage) + '</td><td>' + (item.completeness == null ? "—" : item.completeness.toFixed(1) + "%") + '</td><td>' + (item.confidence == null ? "—" : item.confidence.toFixed(1) + "%") + '</td><td>' + (item.review == null ? "—" : item.review + "项") + '</td><td><span class="table-status ' + item.status + '">' + statusLabel + '</span></td></tr>';
-  }).join("");
+  $("batchProcessing").textContent = processing;
+  $("batchWaiting").textContent = waiting;
+  $("batchProgressBar").style.width = (total ? (processed / total * 100) : 0).toFixed(1) + "%";
+  if (!total) {
+    $("batchTitle").textContent = "等待选择病例目录";
+    $("batchProgressText").textContent = "尚未开始";
+  } else if (batchRunning) {
+    $("batchTitle").textContent = "正在运行真实批量工作流";
+    $("batchProgressText").textContent = "已处理 " + processed + " / " + total;
+  } else if (processed === total) {
+    $("batchTitle").textContent = "本批次处理结束";
+    $("batchProgressText").textContent = "完成 " + completed + " · 复核 " + review + " · 失败 " + failed;
+  } else {
+    $("batchTitle").textContent = "已读取 " + total + " 个病例目录";
+    $("batchProgressText").textContent = "等待开始";
+  }
+  if (!total) {
+    $("batchRows").innerHTML = '<tr><td colspan="7">请选择包含病例图片的目录。</td></tr>';
+  } else {
+    $("batchRows").innerHTML = batchCases.map(function(item,index) {
+      const canView = Boolean(item.saved_result || item.structured_result || item.pain_report || item.care_guide || item.error);
+      const reasonText = item.error ? '<span class="batch-error">' + escapeHtml(item.error) + '</span>' : ((item.review_reasons || []).length ? '<span class="batch-review-reason">' + item.review_reasons.map(escapeHtml).join("；") + '</span>' : "—");
+      const actions = [];
+      if (canView) actions.push('<button class="btn secondary small" data-batch-result="' + index + '">查看结果</button>');
+      if (item.case_id) actions.push('<button class="btn secondary small" data-batch-open="' + index + '">在案例工作台中打开</button>');
+      if (item.status === "failed") actions.push('<button class="btn primary small" data-batch-retry="' + index + '">重试本病例</button>');
+      return '<tr><td><strong>' + escapeHtml(item.source_name) + '</strong></td>' +
+        '<td>' + item.file_names.length + ' 张</td>' +
+        '<td>' + escapeHtml(item.case_id || "待创建") + '</td>' +
+        '<td><span class="table-status ' + batchStatusClass(item.status) + '">' + batchStatusLabel(item.status) + '</span></td>' +
+        '<td>' + escapeHtml(item.stage) + '</td>' +
+        '<td>' + reasonText + '</td>' +
+        '<td><div class="batch-result-actions">' + (actions.join("") || "—") + '</div></td></tr>';
+    }).join("");
+  }
+  const hasWaiting = batchCases.some(function(item){return item.status === "waiting";});
+  const batchConfirmed = $("batchConsent").checked && $("batchDeidentified").checked;
+  $("runBatchButton").disabled = batchRunning || !backendUrl || !hasWaiting || !batchConfirmed || !$("batchName").value.trim();
+  $("runBatchButton").textContent = batchRunning ? "正在处理…" : "开始批量处理";
+  $("folderInput").disabled = batchRunning;
+  $("exportBatchButton").disabled = batchRunning || processed === 0;
+  renderBatchScan();
+}
+function isBatchImage(file) {
+  return Boolean(file) && ((file.type || "").startsWith("image/") || /\.(jpe?g|png|bmp|webp)$/i.test(file.name || ""));
 }
 function loadBatchFolder(fileList) {
+  if (batchRunning) return;
+  const selected = Array.from(fileList || []);
+  const paths = selected.map(function(file){return String(file.webkitRelativePath || file.name || "病例").split(/[\\/]/).filter(Boolean);});
+  const containsCaseSubfolders = paths.some(function(parts){return parts.length >= 3;});
   const groups = new Map();
-  Array.from(fileList).forEach(function(file) {
-    const parts = (file.webkitRelativePath || file.name).split("/");
-    const caseName = parts.length >= 3 ? parts[1] : (parts[0] || "CASE");
-    if (!groups.has(caseName)) groups.set(caseName, []);
-    groups.get(caseName).push(file);
+  selected.forEach(function(file,index) {
+    const parts = paths[index];
+    const sourceName = containsCaseSubfolders ? (parts.length >= 3 ? parts[1] : ((parts[0] || "所选目录") + "（根目录）")) : (parts[0] || "所选病例");
+    if (!groups.has(sourceName)) groups.set(sourceName, []);
+    groups.get(sourceName).push(file);
   });
-  batchCases = Array.from(groups.entries()).map(function(entry, index) {
-    return { id: entry[0] || "CASE-" + String(index + 1).padStart(3, "0"), docs: entry[1].length, files: entry[1], stage: "等待处理", completeness: null, confidence: null, review: null, status: "waiting" };
+  const unsupported = [];
+  const emptyDirectories = [];
+  const validGroups = [];
+  groups.forEach(function(files,sourceName) {
+    const images = files.filter(isBatchImage);
+    files.filter(function(file){return !isBatchImage(file);}).forEach(function(file){unsupported.push(file.webkitRelativePath || file.name);});
+    if (images.length) validGroups.push([sourceName,images]);
+    else emptyDirectories.push(sourceName);
   });
-  $("batchTitle").textContent = "本地批次 " + new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  batchCases = validGroups.map(function(entry,index) {
+    const sourceName = entry[0], files = entry[1];
+    return {
+      batch_item_id: "batch-item-" + String(index + 1).padStart(3,"0"),
+      source_name: sourceName,
+      files: files,
+      file_names: files.map(function(file){return file.name;}),
+      status: "waiting",
+      stage: "等待处理",
+      case_id: null,
+      workflow_case: null,
+      structured_result: null,
+      pain_report: null,
+      care_guide: null,
+      saved_result: null,
+      review_reasons: [],
+      error: null,
+      started_at: null,
+      finished_at: null
+    };
+  });
+  batchScan = {
+    root_name: paths.length && paths[0].length ? paths[0][0] : null,
+    total_files: selected.length,
+    total_images: batchCases.reduce(function(total,item){return total + item.files.length;},0),
+    unsupported_files: unsupported,
+    empty_directories: emptyDirectories,
+    scanned_at: new Date().toISOString()
+  };
+  if (!$("batchName").value.trim()) $("batchName").value = defaultBatchName();
   renderBatch();
-  showToast("已识别 " + batchCases.length + " 个病例文件夹");
+  showToast(batchCases.length ? ("扫描完成：" + batchCases.length + " 个病例、" + batchScan.total_images + " 张图片") : "未找到可处理的 JPG、PNG、BMP 或 WebP 图片");
+}
+async function batchRequest(path, options) {
+  if (!backendUrl) throw new Error("请先连接本地后端");
+  const response = await fetch(backendUrl.replace(/\/$/, "") + path, options);
+  let text = "", payload = null;
+  if (typeof response.text === "function") {
+    text = await response.text();
+    try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+  } else if (typeof response.json === "function") {
+    payload = await response.json();
+  }
+  if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "后端请求失败"));
+  if (payload == null) throw new Error("后端返回了空响应或非 JSON 内容");
+  return payload;
+}
+function hasReviewField(value) {
+  if (!value || typeof value !== "object") return false;
+  if (value.status === "review_required" || value.status === "conflict") return true;
+  return Object.keys(value).some(function(key){return hasReviewField(value[key]);});
+}
+function batchReviewReasons(item) {
+  const reasons = [];
+  const structured = item.structured_result || {};
+  if ((structured.quality_flags || []).some(function(flag){return flag.severity === "warning" || flag.severity === "error";})) reasons.push("结构化质量标记需要核对");
+  if (hasReviewField(structured)) reasons.push("结构化字段需要核对");
+  if ((item.pain_report && item.pain_report.pain_points || []).some(function(point){return point.review_required;})) reasons.push("痛点结论需要核对");
+  if ((item.pain_report && item.pain_report.analysis_warnings || []).length) reasons.push("痛点分析存在降级或警告");
+  if (item.care_guide && item.care_guide.review_required) reasons.push("温度指引需要核对");
+  if ((item.care_guide && item.care_guide.safety_checks || []).some(function(check){return check.status === "review" || check.status === "blocked";})) reasons.push("温度指引安全检查需要核对");
+  return Array.from(new Set(reasons));
+}
+async function processBatchCase(item,index) {
+  item.status = "processing";
+  item.error = null;
+  item.started_at = item.started_at || new Date().toISOString();
+  item.finished_at = null;
+  item.review_reasons = [];
+  renderBatch();
+  if (!item.case_id) {
+    item.stage = "创建案件";
+    renderBatch();
+    const created = await batchRequest("/api/workflow/cases", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({claim_event_id:("batch:" + $("batchName").value.trim() + ":" + Date.now() + ":" + (index + 1)).slice(0,200), data_source:"user_upload", consent_status:"authorized", deidentification_status:"confirmed"})
+    });
+    if (!created.case_id) throw new Error("创建案件后未返回案件编号");
+    item.case_id = created.case_id;
+    item.workflow_case = created;
+  }
+  if (!item.structured_result) {
+    item.stage = "OCR/结构化";
+    renderBatch();
+    const form = new FormData();
+    form.append("case_id", item.case_id);
+    item.files.forEach(function(file){form.append("files", file, file.name);});
+    const detailed = await batchRequest("/api/cases/process-detailed", {method:"POST",body:form});
+    if (!detailed.case || detailed.case.case_id !== item.case_id) throw new Error("结构化结果案件编号不一致");
+    item.structured_result = detailed.case;
+  }
+  if (!item.pain_report) {
+    item.stage = "痛点分析";
+    renderBatch();
+    item.pain_report = await batchRequest("/api/cases/analyze-pain-points", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({case:item.structured_result,use_llm:true})
+    });
+    if (item.pain_report.case_id !== item.case_id) throw new Error("痛点结果案件编号不一致");
+  }
+  if (!item.care_guide) {
+    item.stage = "温度指引";
+    renderBatch();
+    item.care_guide = await batchRequest("/api/cases/generate-care-guide", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({case:item.structured_result,pain_report:item.pain_report,disease_topic:null,use_llm:true})
+    });
+    if (item.care_guide.case_id !== item.case_id) throw new Error("温度指引案件编号不一致");
+  }
+  item.stage = "持久化重读";
+  renderBatch();
+  item.saved_result = await batchRequest("/api/workflow/cases/" + encodeURIComponent(item.case_id) + "/result");
+  if (item.saved_result.case_id !== item.case_id) throw new Error("持久化结果案件编号不一致");
+  item.workflow_case = await batchRequest("/api/workflow/cases/" + encodeURIComponent(item.case_id));
+  if (item.workflow_case.case_id !== item.case_id) throw new Error("案件状态编号不一致");
+  item.review_reasons = batchReviewReasons(item);
+  item.status = item.review_reasons.length ? "review" : "completed";
+  item.stage = "持久化重读";
+  item.finished_at = new Date().toISOString();
+  renderBatch();
+}
+function syncBatchSavedResult(item) {
+  const saved = item.saved_result || {};
+  item.structured_result = item.structured_result || saved.structured_result || null;
+  item.pain_report = item.pain_report || saved.pain_result || null;
+  item.care_guide = item.care_guide || saved.care_result || null;
+}
+async function markBatchFailure(item,error) {
+  item.status = "failed";
+  item.error = error.message || "未知错误";
+  item.finished_at = new Date().toISOString();
+  if (item.case_id) {
+    try { item.saved_result = await batchRequest("/api/workflow/cases/" + encodeURIComponent(item.case_id) + "/result"); syncBatchSavedResult(item); } catch (ignored) {}
+    try { item.workflow_case = await batchRequest("/api/workflow/cases/" + encodeURIComponent(item.case_id)); } catch (ignored) {}
+  }
+  renderBatch();
+}
+function validateBatchStart() {
+  if (!backendUrl) {showToast("请先连接本地后端");return false;}
+  if (!$("batchName").value.trim()) {showToast("请填写批次名称");return false;}
+  if (!$("batchConsent").checked) {showToast("请先确认本批次材料均已获得使用授权");return false;}
+  if (!$("batchDeidentified").checked) {showToast("请先确认本批次材料均已完成脱敏处理");return false;}
+  if (!batchCases.length) {showToast("请先选择包含多个病例子文件夹的总目录");return false;}
+  return true;
 }
 async function runBatch() {
-  const button = $("runBatchButton");
-  button.disabled = true;
-  for (let i = 0; i < batchCases.length; i += 1) {
-    const item = batchCases[i];
-    if (item.status === "done" || item.status === "review") continue;
-    item.status = "processing";
-    const stages = ["文档分类", "OCR识别", "字段提取", "一致性校验"];
-    for (let j = 0; j < stages.length; j += 1) {
-      item.stage = stages[j];
-      renderBatch();
-      await sleep(240);
+  if (batchRunning) return;
+  if (!validateBatchStart()) return;
+  const targets = batchCases.map(function(item,index){return {item:item,index:index};}).filter(function(entry){return entry.item.status === "waiting";});
+  if (!targets.length) {showToast("当前批次没有等待处理的病例；失败病例请单独重试");return;}
+  batchRunning = true;
+  renderBatch();
+  for (const target of targets) {
+    try {
+      await processBatchCase(target.item,target.index);
+    } catch (error) {
+      await markBatchFailure(target.item,error);
     }
-    item.completeness = 90 + ((i * 7) % 9);
-    item.confidence = 91 + ((i * 13) % 6);
-    item.review = i % 3;
-    item.status = item.review > 1 ? "review" : "done";
-    item.stage = "已完成";
+  }
+  batchRunning = false;
+  renderBatch();
+  showToast("批量处理结束：完成 " + batchCompletedCount() + "，待复核 " + batchReviewCount() + "，失败 " + batchFailedCount());
+}
+async function retryBatchCase(index) {
+  if (batchRunning || !validateBatchStart()) return;
+  const item = batchCases[index];
+  if (!item || item.status !== "failed") return;
+  const originalCaseId = item.case_id;
+  batchRunning = true;
+  renderBatch();
+  try {
+    await processBatchCase(item,index);
+    if (originalCaseId && item.case_id !== originalCaseId) throw new Error("重试产生了新的案件编号，已拒绝结果");
+    showToast("病例 " + item.source_name + " 重试完成");
+  } catch (error) {
+    await markBatchFailure(item,error);
+    showToast("病例 " + item.source_name + " 重试失败：" + item.error);
+  } finally {
+    batchRunning = false;
     renderBatch();
   }
-  button.disabled = false;
-  showToast(backendUrl ? "批量处理完成" : "演示批次完成；真实批处理需要连接本地后端");
+}
+function batchCaseExport(item) {
+  return {
+    batch_item_id:item.batch_item_id, source_name:item.source_name, image_count:item.file_names.length, file_names:item.file_names,
+    case_id:item.case_id, status:item.status, stage:item.stage, started_at:item.started_at,
+    finished_at:item.finished_at, review_reasons:item.review_reasons, error:item.error,
+    workflow_case:item.workflow_case, result:item.saved_result || {
+      case_id:item.case_id, structured_result:item.structured_result,
+      pain_result:item.pain_report, care_result:item.care_guide
+    }
+  };
+}
+function batchExportPayload() {
+  return {
+    export_type:"real_batch_workflow_results", generated_at:new Date().toISOString(),
+    batch:{name:$("batchName").value.trim(),root_name:batchScan.root_name,consent_status:$("batchConsent").checked?"authorized":"unknown",deidentification_status:$("batchDeidentified").checked?"confirmed":"unknown",scan:batchScan},
+    total:batchCases.length, completed:batchCompletedCount(), review_required:batchReviewCount(), failed:batchFailedCount(),
+    cases:batchCases.filter(function(item){return item.status !== "waiting" && item.status !== "processing";}).map(batchCaseExport)
+  };
 }
 function exportBatch() {
-  const payload = batchCases.map(function(item) {
-    return { case_id: item.id, status: item.status, document_count: item.docs, completeness: item.completeness, average_confidence: item.confidence, review_count: item.review };
-  });
-  downloadBlob(JSON.stringify(payload, null, 2), "batch-results.json");
-  showToast("批次摘要已导出");
+  const payload = batchExportPayload();
+  if (!payload.cases.length) {showToast("尚无真实批量处理结果可导出");return;}
+  downloadBlob(JSON.stringify(payload,null,2),"batch-workflow-results.json");
+  showToast("已导出 " + payload.cases.length + " 个真实处理结果");
 }
-function normalizeValue(value) {
-  if (value == null) return "";
-  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, "").replace(/[，,；;。]/g, "");
-  return ({ qd: "1次/日", "每日1次": "1次/日", "一日1次": "1次/日", bid: "2次/日", "每日2次": "2次/日", "一日2次": "2次/日", tid: "3次/日", "每日3次": "3次/日", "一日3次": "3次/日" })[normalized] || normalized;
+function openBatchResult(index) {
+  const item = batchCases[index];
+  if (!item) return;
+  activeBatchResultIndex = index;
+  $("batchResultTitle").textContent = item.source_name + (item.case_id ? " · " + item.case_id : "");
+  $("batchResultOutput").textContent = JSON.stringify(batchCaseExport(item),null,2);
+  $("batchResultDialog").showModal();
 }
-function comparableItems(input) {
-  const cases = Array.isArray(input) ? input : [input];
-  const items = [];
-  cases.forEach(function(item) {
-    const addField = function(path, field) {
-      if (field && field.value != null && field.status !== "not_applicable") items.push(path + ":" + normalizeValue(field.normalized_value != null ? field.normalized_value : field.value));
-    };
-    Object.entries(item.hospitalization || {}).forEach(function(entry) { addField("hospitalization." + entry[0], entry[1]); });
-    (item.diagnoses || []).forEach(function(x) { addField("diagnoses.name", x.name); addField("diagnoses.code", x.code); });
-    (item.procedures || []).forEach(function(x) { addField("procedures.name", x.name); addField("procedures.date", x.performed_date); });
-    (item.medications || []).forEach(function(x) { addField("medications.name", x.name); addField("medications.dose", x.dose); addField("medications.frequency", x.frequency); addField("medications.route", x.route); addField("medications.duration", x.duration); addField("medications.usage_condition", x.usage_condition); addField("medications.max_daily_dose", x.max_daily_dose); addField("medications.additional_instructions", x.additional_instructions); });
-    (item.examinations || []).forEach(function(x) {
-      addField("examinations.name", x.name);
-      addField("examinations.date", x.performed_date);
-      addField("examinations.conclusion", x.conclusion);
-      (x.results || []).forEach(function(r) { addField("examinations.result.item", r.item_name); addField("examinations.result.value", r.value); addField("examinations.result.unit", r.unit); addField("examinations.result.reference_range", r.reference_range); });
-    });
-    const costs = item.costs || {};
-    ["total_amount", "policy_scope_amount", "outside_policy_amount"].forEach(function(key) { addField("costs." + key, costs[key]); });
-    Object.entries(costs.fund_payments || {}).forEach(function(entry) { addField("costs.fund_payments." + entry[0], entry[1]); });
-    Object.entries(costs.personal_burden || {}).forEach(function(entry) { addField("costs.personal_burden." + entry[0], entry[1]); });
-    Object.entries(costs.payment_channels || {}).forEach(function(entry) { addField("costs.payment_channels." + entry[0], entry[1]); });
-    Object.entries(costs.ratios || {}).forEach(function(entry) { addField("costs.ratios." + entry[0], entry[1]); });
-  });
-  return items;
+function downloadBatchCase() {
+  const item = batchCases[activeBatchResultIndex];
+  if (!item) return;
+  downloadBlob(JSON.stringify(batchCaseExport(item),null,2),(item.case_id || item.batch_item_id) + ".batch-result.json");
 }
-function runEvaluation() {
-  if (!predictionData || !goldData) {
-    showToast("请先导入预测结果和专家金标准");
-    return;
-  }
-  const predicted = comparableItems(predictionData);
-  const gold = comparableItems(goldData);
-  const goldCounts = new Map();
-  gold.forEach(function(value) { goldCounts.set(value, (goldCounts.get(value) || 0) + 1); });
-  let correct = 0;
-  predicted.forEach(function(value) {
-    const remaining = goldCounts.get(value) || 0;
-    if (remaining > 0) { correct += 1; goldCounts.set(value, remaining - 1); }
-  });
-  const precision = predicted.length ? correct / predicted.length : 0;
-  const recall = gold.length ? correct / gold.length : 0;
-  const f1 = precision + recall ? 2 * precision * recall / (precision + recall) : 0;
-  const missing = gold.length ? Math.max(0, gold.length - correct) / gold.length : 0;
-  $("evalPrecision").textContent = (precision * 100).toFixed(1);
-  $("evalRecall").textContent = (recall * 100).toFixed(1);
-  $("evalF1").textContent = (f1 * 100).toFixed(1);
-  $("evalMissing").textContent = (missing * 100).toFixed(1);
-  showToast("评测完成；该页面使用规范化精确匹配口径");
+async function openBatchInWorkbench(index) {
+  const item = batchCases[index];
+  if (!item || !item.case_id) {showToast("该病例尚未创建案件");return;}
+  switchView("case");
+  await restoreWorkflowCase(item.case_id);
+}
+async function runEvaluation() {
+  if (!predictionData || !goldData) {showToast("请先导入预测结果和专家金标准");return;}
+  const evaluatedPrediction=predictionData, evaluatedGold=goldData;
+  ["evalPrecision","evalRecall","evalF1","evalMissing"].forEach(function(id){$(id).textContent='—';});
+  try {
+    const evaluated=await workflowFetch('/api/evaluation/structured',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prediction:predictionData,gold:goldData})});
+    if(predictionData!==evaluatedPrediction || goldData!==evaluatedGold)return;
+    if(evaluated.evaluation_status==='NOT_EVALUABLE')throw new Error('Gold无可评测字段，不能展示比赛指标');
+    $("evalPrecision").textContent=(evaluated.micro_precision*100).toFixed(1);
+    $("evalRecall").textContent=(evaluated.micro_recall*100).toFixed(1);
+    $("evalF1").textContent=(evaluated.micro_f1*100).toFixed(1);
+    $("evalMissing").textContent=evaluated.missing_rate==null?'—':(evaluated.missing_rate*100).toFixed(1);
+    $("evaluationDetails").textContent=JSON.stringify(evaluated,null,2);
+    showToast('评测完成：Python '+evaluated.evaluator_version+'；数据来源为导入的预测与gold，不证明正式数据授权或达标');
+  } catch(error){$("evaluationDetails").textContent='评测未完成：'+error.message;showToast(error.message);}
 }
 async function readJsonFile(file, target) {
   try {
@@ -969,6 +1727,8 @@ async function readJsonFile(file, target) {
       goldData = data;
       $("goldName").textContent = file.name;
     }
+    ["evalPrecision","evalRecall","evalF1","evalMissing"].forEach(function(id){$(id).textContent="—";});
+    $("evaluationDetails").textContent="新输入尚未评测";
     showToast("已导入 " + file.name);
   } catch (error) {
     showToast("JSON格式错误，请检查文件");
@@ -1010,13 +1770,17 @@ function saveBackend() {
   else localStorage.removeItem("medicalClaimsBackend");
   $("providerDialog").close();
   updateProviderUi(Boolean(backendUrl), backendUrl ? "已保存地址，运行前请检测服务状态" : "");
+  renderBatch();
   showToast(backendUrl ? "本地后端地址已保存" : "已切换为演示模式");
+  const rememberedCase = localStorage.getItem("medicalClaimsCaseId");
+  if (backendUrl && rememberedCase) restoreWorkflowCase(rememberedCase);
 }
 function clearBackend() {
   backendUrl = "";
   $("backendUrl").value = "";
   localStorage.removeItem("medicalClaimsBackend");
   updateProviderUi(false);
+  renderBatch();
   showToast("已清除后端配置");
 }
 
@@ -1049,12 +1813,27 @@ $("exportButton").addEventListener("click", downloadJson);
 $("downloadJsonButton").addEventListener("click", downloadJson);
 $("closeDialog").addEventListener("click", function() { $("jsonDialog").close(); });
 $("copyJsonButton").addEventListener("click", async function() { await navigator.clipboard.writeText(JSON.stringify(result, null, 2)); showToast("JSON已复制"); });
-$("caseId").addEventListener("change", function() { result.case_id = $("caseId").value; painReport = null; careReport = null; renderAll(); renderPainReport(); renderCareReport(); });
+$("caseId").addEventListener("change", function() { resetCaseState($("caseId").value.trim()); });
+$("createWorkflowButton").addEventListener("click", createWorkflowCase);
+$("reloadWorkflowButton").addEventListener("click", function() { restoreWorkflowCase($("caseId").value.trim()); });
 document.querySelectorAll(".tab").forEach(function(tab) { tab.addEventListener("click", function() { document.querySelectorAll(".tab").forEach(function(x) { x.classList.remove("active"); }); tab.classList.add("active"); currentTab = tab.dataset.tab; renderResults(); }); });
 document.querySelectorAll(".view-tab").forEach(function(tab) { tab.addEventListener("click", function() { switchView(tab.dataset.view); }); });
 $("folderInput").addEventListener("change", function(e) { loadBatchFolder(e.target.files); });
 $("runBatchButton").addEventListener("click", runBatch);
 $("exportBatchButton").addEventListener("click", exportBatch);
+$("batchConsent").addEventListener("change", renderBatch);
+$("batchDeidentified").addEventListener("change", renderBatch);
+$("batchName").addEventListener("input", renderBatch);
+$("batchRows").addEventListener("click", function(event) {
+  const resultButton = event.target.closest ? event.target.closest("[data-batch-result]") : null;
+  const openButton = event.target.closest ? event.target.closest("[data-batch-open]") : null;
+  const retryButton = event.target.closest ? event.target.closest("[data-batch-retry]") : null;
+  if (resultButton) openBatchResult(Number(resultButton.dataset.batchResult));
+  else if (openButton) openBatchInWorkbench(Number(openButton.dataset.batchOpen));
+  else if (retryButton) retryBatchCase(Number(retryButton.dataset.batchRetry));
+});
+$("closeBatchResultDialog").addEventListener("click", function() { $("batchResultDialog").close(); });
+$("downloadBatchCaseButton").addEventListener("click", downloadBatchCase);
 $("predictionInput").addEventListener("change", function(e) { if (e.target.files[0]) readJsonFile(e.target.files[0], "prediction"); });
 $("goldInput").addEventListener("change", function(e) { if (e.target.files[0]) readJsonFile(e.target.files[0], "gold"); });
 $("evaluateButton").addEventListener("click", runEvaluation);
@@ -1064,6 +1843,30 @@ $("generateCareButton").addEventListener("click", generateCurrentCare);
 $("exportCareButton").addEventListener("click", exportCareReport);
 $("loadQualityButton").addEventListener("click", function() { loadQualityAudit(false); });
 $("exportQualityButton").addEventListener("click", exportQualityAudit);
+$("reloadDeliveryButton").addEventListener('click',loadDeliveryWorkflow);
+$("prepareDeliveryButton").addEventListener('click',prepareCurrentDelivery);
+$("sendDeliveryButton").addEventListener('click',sendCurrentDelivery);
+$("approveDeliveryButton").addEventListener('click',function(){submitDeliveryReview('APPROVED');});
+$("rejectDeliveryButton").addEventListener('click',function(){submitDeliveryReview('REJECTED');});
+$("submitDeliveryFeedbackButton").addEventListener('click',submitCurrentDeliveryFeedback);
+$("refreshProfilesButton").addEventListener("click", loadIntegratedQuality);
+$("buildPortfolioButton").addEventListener("click", buildIntegratedPortfolio);
+$("candidateDiseaseSelect").addEventListener("change", renderMultiSourceCandidatePools);
+$("saveProviderContextButton").addEventListener("click", function() { saveCurrentProviderContext(); });
+$("providerContextInput").addEventListener("change", async function(event) {
+  const file = event.target.files[0]; if (!file) return;
+  try { await saveCurrentProviderContext(JSON.parse(await file.text())); } catch (error) { showToast('上下文JSON读取失败：' + error.message); }
+  event.target.value = '';
+});
+$("historicalProfilesInput").addEventListener("change", async function(event) {
+  const file = event.target.files[0]; if (!file) return;
+  try {
+    const payload = JSON.parse(await file.text());
+    const response = await workflowFetch('/api/quality/records/import', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Array.isArray(payload) ? {records:payload} : payload)});
+    await loadIntegratedQuality(); showToast('已保存历史数据，当前可用病例 ' + response.dataset.accepted_cases + '；请构建画像');
+  } catch (error) { showToast('历史数据导入失败：' + error.message); }
+  event.target.value = '';
+});
 $("providerButton").addEventListener("click", function() { $("backendUrl").value = backendUrl; updateProviderUi(Boolean(backendUrl)); $("providerDialog").showModal(); });
 $("closeProviderDialog").addEventListener("click", function() { $("providerDialog").close(); });
 $("checkBackendButton").addEventListener("click", checkBackend);
@@ -1071,12 +1874,18 @@ $("saveBackendButton").addEventListener("click", saveBackend);
 $("clearBackendButton").addEventListener("click", clearBackend);
 
 $("backendUrl").value = backendUrl;
+$("batchName").value = defaultBatchName();
 updateProviderUi(Boolean(backendUrl), backendUrl ? "已保存地址，运行前请检测服务状态" : "");
-setPipelineState(6);
+setPipelineState(-1);
 renderBatch();
 renderAll();
 renderPainReport();
 renderCareReport();
 renderQualityAudit();
+renderIntegratedQuality();
+renderDeliveryWorkflow();
+renderWorkflow();
+const savedWorkflowId = localStorage.getItem("medicalClaimsCaseId");
+if (backendUrl && savedWorkflowId) restoreWorkflowCase(savedWorkflowId);
 const initialView = new URLSearchParams(window.location.search).get("view");
-if (["case", "pain", "care", "quality", "batch", "evaluation"].includes(initialView)) switchView(initialView);
+if (["case", "pain", "care", "quality", "delivery", "batch", "evaluation"].includes(initialView)) switchView(initialView);
