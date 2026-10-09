@@ -6,7 +6,7 @@
   <meta name="description" content="理赔医疗记录结构化、事件重建与批量评测工作台">
   <title>医护洞察 · 病历结构化工作台</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2307111f'/%3E%3Cpath d='M20 15h24a5 5 0 0 1 5 5v24a5 5 0 0 1-5 5H20a5 5 0 0 1-5-5V20a5 5 0 0 1 5-5Z' fill='%230f9f91'/%3E%3Cpath d='M28 22h8v6h6v8h-6v6h-8v-6h-6v-8h6Z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=20261007-recommendation-ui">
+  <link rel="stylesheet" href="./styles.css?v=20261007-quality-phase2">
 </head>
 <body>
   <div class="app-shell">
@@ -49,9 +49,9 @@
           <div class="case-heading workflow-heading"><div class="workflow-overview"><div class="workflow-title"><h2>案件进展</h2><span class="status-pill neutral">模拟理赔</span></div>
             <div id="workflowSummary">创建新案件或读取已有案件，即可开始查看处理进展。</div></div>
             <div class="workflow-confirmations" role="group" aria-label="医疗材料使用确认">
-              <label><input id="workflowConsent" type="checkbox" value="authorized"><span>我确认已获得相关医疗材料的使用授权</span></label>
+              <label><input id="workflowConsent" type="checkbox" value="authorized"><span>我确认已获得相关医疗材料的使用授权，并同意按下方说明处理必要的脱敏信息</span></label>
               <label><input id="workflowDeidentified" type="checkbox" value="confirmed" aria-describedby="deidentificationHelp"><span>我确认已对材料中的个人身份信息完成脱敏处理<span class="confirmation-explanation">（即遮盖可识别个人身份的信息）</span></span></label>
-              <p class="workflow-hint">请仅上传已获授权并完成脱敏的医疗材料。</p>
+              <p class="workflow-hint">请仅上传已获授权并完成脱敏的医疗材料。脱敏后的必要医疗信息可能发送至已配置的大模型服务，用于温度指引和推荐意图生成。</p>
               <p class="confirmation-help" id="deidentificationHelp">脱敏是指遮盖姓名、身份证号、手机号、住址、条码/二维码等可识别个人身份的信息。</p>
             </div>
             <details class="workflow-help"><summary>使用说明</summary><p>授权及脱敏状态由操作者核实并声明。初始页面展示固定演示样例，并未执行实际模型处理；创建或读取案件后，才能处理真实材料。演示样例不会保存为真实案件。</p><p>页面可信度来自字段、OCR 块、模型或规则的原始数值，尚未校准，不能替代 F1 等正式效果评测指标。</p></details>
@@ -124,6 +124,49 @@
       </section>
 
       <section class="view" id="qualityView" data-view-panel="quality">
+        <div class="page-heading"><div><div class="eyebrow">第四问 · 多源品质画像与可解释推荐</div><h1>结合当前病例，找到更匹配的医疗资源</h1><p>以权威公开能力证据为主，结合当前患者病种、所在地和真实历史病例参考，解释推荐依据与限制。</p></div><button class="btn primary" id="refreshQualityV2Button" type="button">生成当前推荐</button></div>
+
+        <section class="panel quality-v2-context-panel">
+          <div class="panel-header"><div><div class="eyebrow">1 · 当前患者就医需求</div><h2>推荐上下文</h2></div><span class="care-badge" id="qualityV2ContextBadge">当前病例</span></div>
+          <div class="quality-v2-controls">
+            <label>上下文来源<select id="qualityV2ContextMode"><option value="current">当前病例</option><option value="demo">演示病例</option></select></label>
+            <label id="qualityV2DemoPresetLabel" hidden>演示上下文<select id="qualityV2DemoPreset"><option value="pneumonia|上海市|上海市">肺炎 + 上海</option><option value="influenza|上海市|上海市">流感 + 上海</option><option value="hypertension|江苏省|苏州市">高血压 + 苏州</option></select></label>
+            <label id="qualityV2CurrentCityLabel">当前推荐地区<input id="qualityV2CurrentCity" placeholder="病例未提供时，可补充当前城市"></label>
+          </div>
+          <p class="quality-v2-context-note" id="qualityV2ContextNote">城市仅用于本次推荐情境，不修改原始病例事实。</p>
+          <div class="quality-v2-context-grid">
+            <article><span>当前病种</span><strong id="qualityV2Disease">等待读取</strong></article>
+            <article><span>当前所在地</span><strong id="qualityV2Location">尚未提供</strong></article>
+            <article><span>病例复杂度</span><strong id="qualityV2Complexity">尚未评估</strong></article>
+            <article><span>关键合并症</span><strong id="qualityV2Comorbidities">尚未识别</strong></article>
+            <article><span>推荐策略</span><strong id="qualityV2Strategy">等待计算</strong></article>
+          </div>
+          <div id="qualityV2Status" class="pain-warnings"></div>
+        </section>
+
+        <section class="panel quality-v2-section">
+          <div class="panel-header"><div><div class="eyebrow">2 · 医院推荐</div><h2>当前病例匹配医院</h2><p>按后端 V2 返回顺序展示；当前推荐分表示本次就医情境下的优先级，不代表医院整体医疗质量。</p></div></div>
+          <div id="qualityV2Hospitals" class="quality-v2-hospital-list"><div class="pain-empty compact"><strong>等待生成</strong><span>读取当前病例并补充推荐地区后，可生成医院推荐。</span></div></div>
+        </section>
+
+        <section class="panel quality-v2-section">
+          <div class="panel-header"><div><div class="eyebrow">3 · 医院完整画像</div><h2 id="qualityV2ProfileTitle">选择医院查看能力画像</h2></div></div>
+          <div id="qualityV2HospitalProfile" class="quality-v2-profile-grid"><div class="pain-empty compact"><strong>尚未选择医院</strong><span>推荐结果生成后，可查看六个维度及当前推荐情境。</span></div></div>
+        </section>
+
+        <section class="panel quality-v2-section">
+          <div class="panel-header"><div><div class="eyebrow">4 · 医生推荐</div><h2>匹配医生</h2><p>只展示有可追溯公开资料的医生，不按职称高低自行排序。</p></div></div>
+          <div id="qualityV2Clinicians" class="quality-v2-clinician-list"><div class="pain-empty compact"><strong>等待查询</strong><span>医院推荐完成后查询当前可用医生资料。</span></div></div>
+        </section>
+
+        <section class="panel quality-v2-section">
+          <div class="panel-header"><div><div class="eyebrow">5 · 当前治疗方案评价</div><h2>本次治疗过程与历史参考</h2></div></div>
+          <div id="qualityV2Treatment" class="quality-v2-treatment"><div class="pain-empty compact"><strong>等待评价</strong><span>当前病例完成结构化后，可查看六维治疗过程评价。</span></div></div>
+        </section>
+
+        <aside class="quality-v2-compliance">仅处理已确认授权与脱敏的数据；推荐结果仅供就医参考，具体诊疗请以专业医生意见为准。</aside>
+
+        <div id="legacyQualityUi" hidden aria-hidden="true">
         <div class="page-heading"><div><div class="eyebrow">第四问 · 品质画像与推荐</div><h1>医院、医生与治疗方案品质画像</h1><p>先验证机构与病种覆盖，再以真实结构化字段计算六维画像；数据缺失就明确显示不可用，样本不足不得进入推荐榜。</p></div><div class="command-actions"><button class="btn secondary" id="exportQualityButton" type="button" disabled>导出审计 JSON</button><button class="btn primary" id="loadQualityButton" type="button">载入真实审计</button></div></div>
         <section class="metrics quality-metrics">
           <article class="metric-card"><span class="metric-label">机构候选</span><strong id="qualityHospitals">—</strong><span class="metric-unit">家</span><small id="qualityInstitutionRate">等待读取审计</small></article>
@@ -184,6 +227,7 @@
           <div class="panel-header"><div><div class="eyebrow">推荐结果</div><h2>有证据才推荐</h2></div></div>
           <div id="qualityRecommendationResults">尚未评估</div>
         </section>
+        </div>
       </section>
 
       <section class="view" id="deliveryView" data-view-panel="delivery">
@@ -223,8 +267,9 @@
           <div class="batch-setup-grid">
             <label class="batch-name-field"><span>批次名称</span><input id="batchName" maxlength="100" placeholder="系统将自动生成"></label>
             <div class="batch-confirmations">
-              <label><input id="batchConsent" type="checkbox" value="authorized"><span>我确认本批次医疗材料均已获得使用授权</span></label>
+              <label><input id="batchConsent" type="checkbox" value="authorized"><span>我确认本批次医疗材料均已获得使用授权，并同意按说明处理必要的脱敏信息</span></label>
               <label><input id="batchDeidentified" type="checkbox" value="confirmed"><span>我确认本批次材料已完成脱敏处理<span class="confirmation-explanation">（即遮盖姓名、证件号、手机号、住址、条码/二维码等身份信息）</span></span></label>
+              <p class="workflow-hint">脱敏后的必要医疗信息可能发送至已配置的大模型服务，用于温度指引和推荐意图生成。</p>
             </div>
             <div class="batch-setup-actions"><label class="btn secondary file-button">选择病例总目录<input id="folderInput" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple webkitdirectory directory hidden></label><button class="btn primary" id="runBatchButton" disabled>开始批量处理</button></div>
           </div>
@@ -264,6 +309,6 @@
   </div><div class="dialog-actions"><button class="btn secondary" id="clearBackendButton">清除配置</button><button class="btn primary" id="saveBackendButton">保存配置</button></div></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="./app.js?v=20261007-recommendation-ui"></script>
+  <script src="./app.js?v=20261007-quality-phase2"></script>
 </body>
 </html>

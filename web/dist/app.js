@@ -88,6 +88,14 @@ let currentRecommendations = null;
 let qualityContext = null;
 let qualityCoverageReport = null;
 let multiSourceCandidatePools = null;
+let qualityV2Catalog = null;
+let qualityV2HospitalReport = null;
+let qualityV2ClinicianRecommendations = [];
+let qualityV2ClinicianProfiles = [];
+let qualityV2TreatmentEvaluation = null;
+let qualityV2SelectedHospitalId = null;
+let qualityV2RequestId = 0;
+let qualityV2CurrentCity = "";
 let deliveryReadiness = null;
 let inboxDeliveries = [];
 let deliveryFeedback = [];
@@ -106,6 +114,8 @@ function resetCaseState(caseId) {
   documents.forEach(function(doc){if(doc.previewUrl)URL.revokeObjectURL(doc.previewUrl);});
   workflowCase=null; documents=[]; selectedDocId=null; result=emptyWorkflowResult(caseId);
   painReport=null; careReport=null; qualityAudit=null; isDemoCase=false;
+  qualityV2CurrentCity="";
+  if ($("qualityV2CurrentCity")) $("qualityV2CurrentCity").value="";
   $("caseId").value=caseId;
   $("careTopic").value='';
   setCaseStatus('未加载当前案件结果', 'review');
@@ -122,7 +132,10 @@ function assertCurrentGeneration(generation) {
 
 function clearCaseQuality() {
   persistedPortfolio = null; currentRecommendations = null; qualityContext = null; qualityCoverageReport = null;
+  qualityV2HospitalReport = null; qualityV2ClinicianRecommendations = []; qualityV2ClinicianProfiles = [];
+  qualityV2TreatmentEvaluation = null; qualityV2SelectedHospitalId = null; qualityV2RequestId += 1;
   renderIntegratedQuality();
+  renderQualityV2();
 }
 
 async function workflowFetch(path, options) {
@@ -911,6 +924,414 @@ function qualityDiseaseLabel(value) {
   })[value] || value;
 }
 
+function qualityV2Text(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback || "暂无足够公开证据";
+  return String(value);
+}
+
+function qualityV2FieldValue(field) {
+  if (!field || !["extracted", "derived"].includes(field.status)) return null;
+  return field.normalized_value !== null && field.normalized_value !== undefined ? field.normalized_value : field.value;
+}
+
+function qualityV2DiagnosisNames() {
+  return (result && result.diagnoses || []).map(function(item) { return qualityV2FieldValue(item.name); }).filter(Boolean);
+}
+
+function qualityV2LocationFromCase() {
+  const patient = result && (result.patient_location || result.patient || result.demographics) || {};
+  const city = patient.city || patient.current_city || result && result.patient_city;
+  const province = patient.province || patient.current_province || result && result.patient_province;
+  return {city:city || null, province:province || null};
+}
+
+function qualityV2DiseaseKey(name) {
+  const text = String(name || "").trim();
+  if (text.includes("肺炎")) return "pneumonia";
+  if (text.includes("流感")) return "influenza";
+  if (text.includes("高血压")) return "hypertension";
+  if (text.includes("冠心病")) return "coronary_heart_disease";
+  if (text.includes("糖尿病")) return "diabetes";
+  if (text.includes("胆囊炎")) return "cholecystitis";
+  if (text.includes("骨折")) return "fracture";
+  if (text.includes("肺结节")) return "lung_nodule";
+  if (text.includes("阑尾炎")) return "appendicitis";
+  if (text.includes("白内障")) return "cataract";
+  if (text.includes("泌尿系结石") || text.includes("尿路结石")) return "urinary_calculus";
+  const normalized = text.replace(/[\s/\\]+/g, "-").replace(/[^\w\u3400-\u9fff-]/g, "").toLowerCase();
+  return normalized ? "diagnosis:" + normalized : null;
+}
+
+function qualityV2DiseaseInfoFromCase() {
+  const upstreamTopic = careReport && result && careReport.case_id === result.case_id && careReport.guide && careReport.guide.disease_topic;
+  if (upstreamTopic) {
+    const upstreamLabel = String(upstreamTopic).trim();
+    const upstreamGroup = qualityV2DiseaseKey(upstreamLabel);
+    if (upstreamGroup) return {group:upstreamGroup, label:upstreamLabel, source:"care_guide.disease_topic"};
+  }
+  const diagnoses = (result && result.diagnoses || []).filter(function(item) {
+    const field = item && item.name;
+    const confidence = Number(field && field.confidence || 0);
+    return qualityV2FieldValue(field) && confidence >= 0.7 && !["suspected", "ruled_out"].includes(item.certainty) && item.diagnosis_type !== "history";
+  }).sort(function(a, b) {
+    const priority = {primary:3, discharge:2, admission:1, secondary:0, unknown:0};
+    return (priority[b.diagnosis_type] || 0) - (priority[a.diagnosis_type] || 0);
+  });
+  if (!diagnoses.length) return null;
+  const label = String(qualityV2FieldValue(diagnoses[0].name)).trim();
+  const group = qualityV2DiseaseKey(label);
+  return group ? {group:group, label:label, source:"structured_case_fallback"} : null;
+}
+
+function qualityV2DiseaseFromCase() {
+  const info = qualityV2DiseaseInfoFromCase();
+  return info && info.group;
+}
+
+function qualityV2ComplexityFromCase() {
+  const points = painReport && painReport.case_id === result.case_id ? (painReport.pain_points || []) : [];
+  if (points.some(function(item) { return ["critical", "high"].includes(item.severity); })) return "high";
+  if (points.some(function(item) { return item.severity === "medium"; }) || qualityV2DiagnosisNames().length >= 3 || (result.procedures || []).length) return "medium";
+  return result && result.case_id && (result.diagnoses || []).length ? "low" : "unknown";
+}
+
+function qualityV2ComplexityLabel(value) {
+  return ({low:"常规",medium:"需要综合评估",high:"较复杂",unknown:"尚未评估"})[value] || "尚未评估";
+}
+
+function qualityV2StatusLabel(value) {
+  return ({evaluated:"已评价",insufficient_evidence:"证据不足",not_applicable:"当前不适用",needs_review:"建议人工复核"})[value] || "尚未评价";
+}
+
+function qualityV2StatusTone(value) {
+  return value === "evaluated" ? "ready" : value === "needs_review" ? "review" : "neutral";
+}
+
+function qualityV2EvidenceStatusLabel(value) {
+  return ({
+    verified:"已核验",
+    partially_verified:"部分核验",
+    pending_verification:"待核验",
+    contradicted:"存在事实冲突",
+    "已核验":"已核验",
+    "部分核验":"部分核验",
+    "公开资料有限":"待核验"
+  })[value] || "待核验";
+}
+
+function qualityV2Context() {
+  const mode = $("qualityV2ContextMode").value;
+  if (mode === "demo") {
+    const parts = $("qualityV2DemoPreset").value.split("|");
+    return {
+      mode:"demo", case_id:"DEMO-CONTEXT-" + parts[0], disease_group:parts[0], disease_label:qualityDiseaseLabel(parts[0]), province:parts[1], city:parts[2],
+      nearby_major_cities:[], complexity:"unknown", comorbidities:[], preferred_hospital_types:[], needs_upgrade_referral:false
+    };
+  }
+  const hasCurrentCase = Boolean(workflowCase && workflowCase.has_structured_result && result && result.case_id === workflowCase.case_id);
+  const diseaseInfo = hasCurrentCase ? qualityV2DiseaseInfoFromCase() : null;
+  const disease = diseaseInfo && diseaseInfo.group;
+  const names = hasCurrentCase ? qualityV2DiagnosisNames() : [];
+  const savedLocation = hasCurrentCase ? qualityV2LocationFromCase() : {city:null, province:null};
+  const diseaseWord = diseaseInfo && diseaseInfo.label;
+  return {
+    mode:"current",
+    case_id:workflowCase ? workflowCase.case_id : (result && result.case_id || ""),
+    disease_group:disease,
+    disease_label:diseaseInfo && diseaseInfo.label,
+    province:savedLocation.province,
+    city:savedLocation.city || qualityV2CurrentCity || null,
+    nearby_major_cities:[],
+    complexity:hasCurrentCase ? qualityV2ComplexityFromCase() : "unknown",
+    comorbidities:names.filter(function(name) { return !diseaseWord || !String(name).includes(diseaseWord); }),
+    preferred_hospital_types:[],
+    needs_upgrade_referral:false
+  };
+}
+
+function qualityV2CurrentProfile(hospitalId) {
+  const discovered = qualityV2HospitalReport && qualityV2HospitalReport.candidate_profiles || [];
+  const profile = discovered.find(function(item) { return item.hospital_id === hospitalId; });
+  if (profile) return profile;
+  const context = qualityV2Context();
+  const disease = qualityV2Catalog && qualityV2Catalog.diseases.find(function(item) { return item.disease_group === context.disease_group; });
+  return disease && disease.hospitals.find(function(item) { return item.hospital_id === hospitalId; });
+}
+
+function renderQualityV2Context() {
+  const context = qualityV2Context();
+  const demo = context.mode === "demo";
+  $("qualityV2DemoPresetLabel").hidden = !demo;
+  $("qualityV2CurrentCityLabel").hidden = demo;
+  const savedLocation = demo ? {city:null} : qualityV2LocationFromCase();
+  $("qualityV2CurrentCity").disabled = Boolean(savedLocation.city);
+  if (savedLocation.city) $("qualityV2CurrentCity").value = savedLocation.city;
+  $("qualityV2ContextBadge").textContent = demo ? "演示数据" : "当前病例";
+  $("qualityV2ContextBadge").className = "care-badge" + (demo ? " quality-v2-demo-note" : "");
+  $("qualityV2ContextNote").textContent = demo ? "演示上下文仅用于临时调用 V2 推荐规则，不写入当前案件或 SQLite；退出后恢复真实病例。" : "城市仅用于本次推荐情境，不修改原始病例事实。";
+  $("qualityV2Disease").textContent = context.disease_group ? (context.disease_label || qualityDiseaseLabel(context.disease_group)) : "当前病种尚未确认";
+  $("qualityV2Location").textContent = context.city || "尚未提供患者所在地";
+  $("qualityV2Complexity").textContent = demo ? "演示未指定" : qualityV2ComplexityLabel(context.complexity);
+  $("qualityV2Comorbidities").textContent = context.comorbidities.length ? context.comorbidities.join("、") : "未见已结构化合并症";
+  $("qualityV2Strategy").textContent = qualityV2HospitalReport ? qualityV2Text(qualityV2HospitalReport.strategy, "等待计算") : "等待计算";
+  const messages = [];
+  if (!demo && !workflowCase) messages.push("请先在案件工作台创建或读取当前案件。");
+  else if (!demo && !workflowCase.has_structured_result) messages.push("当前案件尚未完成结构化，无法建立真实推荐上下文。");
+  else {
+    if (!context.disease_group) messages.push("当前病例尚未可靠识别明确病种。");
+    if (!context.city) messages.push("尚未提供患者所在地，当前推荐不计算完整地理优先级。请补充当前推荐地区。");
+  }
+  $("qualityV2Status").innerHTML = messages.map(function(message) { return '<div class="pain-warning">' + escapeHtml(message) + '</div>'; }).join("");
+}
+
+function qualityV2EvidenceHtml(profile, reason) {
+  const sources = Object.fromEntries((profile && profile.sources || []).map(function(source) { return [source.source_id, source]; }));
+  const sourceIds = reason && reason.source_ids || [];
+  const fields = reason && reason.evidence_fields || [];
+  const requestedRecordIds = reason && reason.evidence_record_ids || [];
+  const records = (profile && profile.evidence_records || []).filter(function(record) {
+    if (requestedRecordIds.length) return requestedRecordIds.includes(record.evidence_id);
+    return sourceIds.includes(record.source_id) && (!fields.length || fields.some(function(field) {
+      return record.evidence_field === field || record.evidence_field.split('.')[0] === field.split('.')[0];
+    }));
+  });
+  const rawEvidenceStatus = reason && reason.evidence_status || (records.length && records.every(function(record) { return record.verified !== false; }) ? "verified" : "pending_verification");
+  const evidenceStatus = qualityV2EvidenceStatusLabel(rawEvidenceStatus);
+  const recordHtml = records.map(function(record) {
+    const link = record.source_url ? '<a href="' + escapeHtml(record.source_url) + '" target="_blank" rel="noreferrer">链接</a>' : '暂未提供';
+    const confidence = Number(record.evidence_confidence);
+    const confidenceText = Number.isFinite(confidence) ? '（可信度 ' + Math.round(confidence * 100) + '%）' : '';
+    return '<article class="quality-v2-evidence-record">' +
+      '<p><strong>证据来源：</strong>' + escapeHtml(record.source_name || "公开资料") + '</p>' +
+      '<p><strong>证据摘要：</strong>' + escapeHtml(record.evidence_text || record.supported_claim || "暂无摘要") + '</p>' +
+      '<p><strong>查看原始页面：</strong>' + link + '</p>' +
+      '<p><strong>核验状态：</strong>' + escapeHtml(record.verified === false ? "待核验" : evidenceStatus) + ' ' + escapeHtml(confidenceText) + '</p>' +
+      '</article>';
+  }).join('');
+  const suggestedName = reason && reason.suggested_source_name;
+  const suggestedUrl = reason && reason.suggested_source_url;
+  const suggestedSummary = reason && reason.suggested_evidence_summary;
+  const suggestedHtml = !records.length && (suggestedName || suggestedUrl || suggestedSummary) ?
+    '<article class="quality-v2-evidence-record pending"><p><strong>建议核验来源：</strong>' + escapeHtml(suggestedName || "来源名称待确认") + '</p>' +
+    (suggestedSummary ? '<p><strong>建议核验内容：</strong>' + escapeHtml(suggestedSummary) + '</p>' : '') +
+    '<p><strong>候选来源链接：</strong>' + (suggestedUrl ? '<a href="' + escapeHtml(suggestedUrl) + '" target="_blank" rel="noreferrer">链接</a>' : '暂未提供') + '</p>' +
+    '<p><strong>当前状态：</strong>待核验</p><p class="muted">候选来源尚未完成后台核验，不作为已核验证据。</p></article>' : '';
+  const unboundSources = sourceIds.filter(function(sourceId) {
+    return !records.some(function(record) { return record.source_id === sourceId; }) && sources[sourceId];
+  }).map(function(sourceId) {
+    const source = sources[sourceId];
+    const link = source.url ? '<a href="' + escapeHtml(source.url) + '" target="_blank" rel="noreferrer">链接</a>' : '暂未提供';
+    return '<article class="quality-v2-evidence-record pending"><p><strong>关联来源：</strong>' + escapeHtml(source.title) + '</p><p><strong>查看原始页面：</strong>' + link + '</p><p><strong>当前状态：</strong>' + escapeHtml(evidenceStatus) + '</p><p class="muted">该来源尚未形成当前理由的独立证据摘要。</p></article>';
+  }).join('');
+  const emptyHtml = !recordHtml && !suggestedHtml && !unboundSources ?
+    '<article class="quality-v2-evidence-record pending"><p><strong>当前状态：</strong>' + escapeHtml(evidenceStatus) + '</p><p class="muted">公开证据暂未完成核验。</p></article>' : '';
+  const technicalPayload = [];
+  if (fields.length) technicalPayload.push("evidence_fields: " + fields.join(", "));
+  if (sourceIds.length) technicalPayload.push("source_ids: " + sourceIds.join(", "));
+  if (requestedRecordIds.length) technicalPayload.push("evidence_record_ids: " + requestedRecordIds.join(", "));
+  const technicalHtml = technicalPayload.length ? '<details class="technical-details quality-v2-evidence-technical"><summary>技术详情</summary><pre>' + escapeHtml(technicalPayload.join("\n")) + '</pre></details>' : '';
+  return '<details class="quality-v2-evidence"><summary>查看依据</summary><div class="quality-v2-evidence-list">' + recordHtml + suggestedHtml + unboundSources + emptyHtml + '</div>' + technicalHtml + '</details>';
+}
+
+function qualityV2DimensionScoresHtml(items) {
+  if (!(items || []).length) return '';
+  return '<div class="quality-v2-score-grid">' + items.map(function(item) {
+    const confidence = Math.round(Number(item.evidence_confidence || 0) * 100);
+    return '<article class="quality-v2-score-item"><div><strong>' + escapeHtml(qualityV2Text(item.label, "评分维度")) + '</strong><span>' + Number(item.score || 0).toFixed(1) + ' 分 · 权重 ' + Math.round(Number(item.weight || 0) * 100) + '%</span></div><p>' + escapeHtml(qualityV2Text(item.reasoning, "评分说明待补充")) + '</p><small>' + escapeHtml(qualityV2EvidenceStatusLabel(item.evidence_status)) + ' · 证据可信度 ' + confidence + '%</small></article>';
+  }).join('') + '</div>';
+}
+
+function renderQualityV2Hospitals() {
+  const report = qualityV2HospitalReport;
+  if (!report) {
+    $("qualityV2Hospitals").innerHTML = '<div class="pain-empty compact"><strong>等待生成</strong><span>读取当前病例并补充推荐地区后，可生成医院推荐。</span></div>';
+    return;
+  }
+  if (!(report.recommendations || []).length) {
+    const warning = (report.warnings || []).join("；") || "当前没有可展示候选；请确认当前病例病种，或稍后重试资源发现。";
+    $("qualityV2Hospitals").innerHTML = '<div class="pain-empty compact"><strong>当前没有可展示的医院推荐</strong><span>' + escapeHtml(warning) + '</span></div>';
+    return;
+  }
+  const coverageNotice = (report.warnings || []).length ? '<div class="pain-warning"><strong>当前证据覆盖说明</strong><span>' + escapeHtml(report.warnings.join("；")) + '</span></div>' : '';
+  $("qualityV2Hospitals").innerHTML = coverageNotice + report.recommendations.map(function(item) {
+    const profile = qualityV2CurrentProfile(item.hospital_id);
+    const foundation = profile && profile.institution_foundation || {};
+    const specialty = profile && profile.disease_specialty || {};
+    const history = profile && profile.historical_evidence || {};
+    const reasons = (item.reasons || []).map(function(reason) {
+      return '<li><strong>' + escapeHtml(qualityV2Text(reason.title, "推荐依据")) + '</strong><span>' + escapeHtml(qualityV2Text(reason.explanation, "依据说明待补充")) + '</span>' + qualityV2EvidenceHtml(profile, reason) + '</li>';
+    }).join('');
+    return '<article class="quality-v2-hospital-card"><div class="quality-v2-card-head"><div><h3>' + escapeHtml(item.rank + ' · ' + item.hospital_name) + '</h3><p>' + escapeHtml([foundation.city, foundation.hospital_level, foundation.hospital_type].filter(Boolean).join(' · ') || '机构基础信息待补充') + '</p><span class="status-pill ' + (item.evidence_status === 'verified' ? 'ready' : item.evidence_status === 'contradicted' ? 'review' : 'neutral') + '">' + escapeHtml(qualityV2EvidenceStatusLabel(item.evidence_status)) + '</span></div><div class="quality-v2-score"><strong>' + Number(item.recommendation_score).toFixed(1) + '</strong><span>当前推荐分</span></div></div>' +
+      '<div class="quality-v2-meta"><span>可信度 ' + (Number(item.recommendation_confidence) * 100).toFixed(0) + '%</span><span>' + escapeHtml(qualityV2Text(item.accessibility && item.accessibility.accessibility_level, "地理未知")) + '</span><span>相关科室 ' + escapeHtml((specialty.related_departments || []).join('、') || '待补充') + '</span>' +
+      (history.historical_case_count ? '<span>历史病例 ' + history.historical_case_count + ' 例</span>' : '<span>暂无可关联历史病例</span>') + '</div>' +
+      '<strong>固定五维评分</strong>' + qualityV2DimensionScoresHtml(item.dimension_scores) +
+      '<strong>为什么适合当前患者</strong><ol class="quality-v2-reasons">' + reasons + '</ol>' +
+      '<div class="quality-v2-limitations"><strong>当前限制</strong><br>' + escapeHtml((item.limitations || []).join('；') || '暂无额外限制说明') + '</div>' +
+      '<div class="quality-v2-actions"><button class="btn secondary small" type="button" data-quality-profile="' + escapeHtml(item.hospital_id) + '">查看完整画像</button></div></article>';
+  }).join('');
+}
+
+function qualityV2AssessmentHtml(title, assessment, detailHtml, extraClass) {
+  const current = assessment || {status:"insufficient_evidence", reasoning:"暂无足够公开证据", limitations:[]};
+  const score = current.status === "evaluated" && current.score !== null && current.score !== undefined ? '<p>能力证据评分：' + Number(current.score).toFixed(1) + ' · 置信度 ' + (Number(current.confidence || 0) * 100).toFixed(0) + '%</p>' : '';
+  return '<article class="quality-v2-dimension ' + (extraClass || '') + '"><h3>' + escapeHtml(title) + '</h3><span class="status-pill ' + qualityV2StatusTone(current.status) + '">' + escapeHtml(qualityV2StatusLabel(current.status)) + '</span>' + (detailHtml || '') + score + '<p>' + escapeHtml(qualityV2Text(current.reasoning, "暂无足够公开证据")) + '</p>' + ((current.limitations || []).length ? '<p><strong>限制：</strong>' + escapeHtml(current.limitations.join('；')) + '</p>' : '') + '</article>';
+}
+
+function renderQualityV2HospitalProfile() {
+  const recommendation = qualityV2HospitalReport && (qualityV2HospitalReport.recommendations || []).find(function(item) { return item.hospital_id === qualityV2SelectedHospitalId; });
+  const profile = qualityV2CurrentProfile(qualityV2SelectedHospitalId);
+  if (!profile || !recommendation) {
+    $("qualityV2ProfileTitle").textContent = "选择医院查看能力画像";
+    $("qualityV2HospitalProfile").innerHTML = '<div class="pain-empty compact"><strong>尚未选择医院</strong><span>推荐结果生成后，可查看六个维度及当前推荐情境。</span></div>';
+    return;
+  }
+  const foundation = profile.institution_foundation;
+  const specialty = profile.disease_specialty;
+  const resources = profile.medical_resources;
+  const regional = profile.regional_service;
+  const feedback = profile.patient_service_feedback;
+  const history = profile.historical_evidence;
+  const accessibility = recommendation.accessibility || {};
+  $("qualityV2ProfileTitle").textContent = foundation.hospital_name;
+  $("qualityV2HospitalProfile").innerHTML =
+    qualityV2AssessmentHtml("机构基础能力", foundation.assessment, '<p>等级：' + escapeHtml(qualityV2Text(foundation.hospital_level)) + '</p><p>类型：' + escapeHtml(qualityV2Text(foundation.hospital_type)) + '</p><p>教学属性：' + escapeHtml(foundation.teaching_hospital === true ? '是' : foundation.teaching_hospital === false ? '否' : '暂无足够公开证据') + '</p><p>区域角色：' + escapeHtml(qualityV2Text(foundation.institution_role)) + '</p>' + qualityV2EvidenceHtml(profile, foundation.assessment)) +
+    qualityV2AssessmentHtml("病种专科能力", specialty.assessment, '<p>对应科室：' + escapeHtml((specialty.related_departments || []).join('、') || '暂无足够公开证据') + '</p><p>重点专科：' + escapeHtml((specialty.key_specialties || []).join('、') || '暂无足够公开证据') + '</p><p>能力说明：' + escapeHtml(qualityV2Text(specialty.specialty_capability_description)) + '</p><p>匹配等级：' + escapeHtml(qualityV2Text(specialty.specialty_match_level)) + '</p>' + qualityV2EvidenceHtml(profile, specialty.assessment)) +
+    qualityV2AssessmentHtml("医疗资源能力", resources.assessment, '<p>关键专家：' + escapeHtml((resources.key_experts || []).join('、') || '暂无足够公开证据') + '</p><p>重症能力：' + escapeHtml(qualityV2Text(resources.critical_care_capability)) + '</p><p>多学科能力：' + escapeHtml(qualityV2Text(resources.multidisciplinary_capability)) + '</p><p>技术/设备：' + escapeHtml((resources.key_equipment_or_technology || []).join('、') || qualityV2Text(resources.surgery_or_intervention_capability)) + '</p>' + qualityV2EvidenceHtml(profile, resources.assessment)) +
+    qualityV2AssessmentHtml("区域服务能力", regional.assessment, '<p>本地服务角色：' + escapeHtml(qualityV2Text(regional.local_service_role)) + '</p><p>区域转诊角色：' + escapeHtml(qualityV2Text(regional.regional_referral_role)) + '</p><p>复杂病例承接：' + escapeHtml(qualityV2Text(regional.complex_case_capability)) + '</p>' + qualityV2EvidenceHtml(profile, regional.assessment)) +
+    qualityV2AssessmentHtml("患者服务与反馈", feedback.assessment, feedback.feedback_count ? '<p>可关联真实反馈：' + feedback.feedback_count + ' 例 · ' + escapeHtml(qualityV2Text(feedback.overall_feedback_level)) + '</p>' : '<p>暂无足够患者服务反馈数据</p>') +
+    qualityV2AssessmentHtml("历史案例支撑", history.assessment, history.historical_case_count ? '<p>历史病例：' + history.historical_case_count + ' 例 · 同病种 ' + history.disease_specific_case_count + ' 例</p><p>' + escapeHtml(history.history_summary) + '</p><p>可观察字段：' + escapeHtml((history.supported_metrics || []).join('、') || '暂无') + '</p>' : '<p>暂无可关联历史理赔案例</p>') +
+    qualityV2AssessmentHtml("当前推荐情境", accessibility.assessment, '<p>患者所在地：' + escapeHtml(qualityV2Text(accessibility.patient_city, "尚未提供")) + '</p><p>医院所在地：' + escapeHtml(qualityV2Text(accessibility.hospital_city)) + '</p><p>地理层级：' + escapeHtml(qualityV2Text(accessibility.accessibility_level, "未知")) + '</p><p>当前策略：' + escapeHtml(qualityV2Text(qualityV2HospitalReport.strategy, "等待后端计算")) + '</p>', 'context');
+}
+
+function renderQualityV2Clinicians() {
+  if (!qualityV2ClinicianRecommendations.length) {
+    $("qualityV2Clinicians").innerHTML = '<div class="pain-empty compact"><strong>当前缺少足够可追溯医生资料</strong><span>系统不会根据医院等级或医生职称生成假医生推荐；医院能力推荐仍可正常使用。</span></div>';
+    return;
+  }
+  $("qualityV2Clinicians").innerHTML = qualityV2ClinicianRecommendations.map(function(item) {
+    const profile = qualityV2ClinicianProfiles.find(function(row) { return row.clinician_id === item.clinician_id; }) || {};
+    const basic = profile.basic_qualification || {};
+    const disease = profile.disease_expertise || {};
+    const treatment = profile.treatment_expertise || {};
+    const history = profile.historical_evidence || {};
+    const detail = profile.clinician_id ? '<details class="quality-v2-evidence"><summary>查看医生完整画像</summary><div class="quality-v2-profile-grid">' +
+      qualityV2AssessmentHtml("基础资质", basic.assessment, '<p>医院：' + escapeHtml(qualityV2Text(basic.hospital_name)) + '</p><p>科室：' + escapeHtml(qualityV2Text(basic.department)) + '</p><p>职称：' + escapeHtml(qualityV2Text(basic.title)) + '</p>' + qualityV2EvidenceHtml(profile, basic.assessment)) +
+      qualityV2AssessmentHtml("病种专长", disease.assessment, '<p>' + escapeHtml((disease.disease_expertise || []).join('、') || '暂无足够公开证据') + '</p>' + qualityV2EvidenceHtml(profile, disease.assessment)) +
+      qualityV2AssessmentHtml("技术 / 治疗专长", treatment.assessment, '<p>' + escapeHtml((treatment.treatment_expertise || []).concat(treatment.surgery_expertise || []).join('、') || '暂无足够公开证据') + '</p>' + qualityV2EvidenceHtml(profile, treatment.assessment)) +
+      qualityV2AssessmentHtml("所属平台能力", profile.platform_capability && profile.platform_capability.assessment, '<p>' + escapeHtml(qualityV2Text(profile.platform_capability && profile.platform_capability.department_strength)) + '</p>' + qualityV2EvidenceHtml(profile, profile.platform_capability && profile.platform_capability.assessment)) +
+      qualityV2AssessmentHtml("当前病例匹配", profile.current_case_match && profile.current_case_match.assessment, '<p>' + escapeHtml(qualityV2Text(profile.current_case_match && profile.current_case_match.overall_case_match)) + '</p>' + qualityV2EvidenceHtml(profile, profile.current_case_match && profile.current_case_match.assessment)) +
+      qualityV2AssessmentHtml("历史案例支撑", history.assessment, history.historical_case_count ? '<p>可关联历史病例 ' + history.historical_case_count + ' 例</p>' : '<p>暂无可关联历史案例</p>') + '</div></details>' : '';
+    return '<article class="quality-v2-clinician-card"><div class="quality-v2-card-head"><div><h3>' + escapeHtml(item.clinician_name) + '</h3><p>' + escapeHtml([basic.hospital_name, basic.department, basic.title].filter(Boolean).join(' · ') || '医生基础资料待补充') + '</p><span class="status-pill ' + (item.evidence_status === 'verified' ? 'ready' : item.evidence_status === 'contradicted' ? 'review' : 'neutral') + '">' + escapeHtml(qualityV2EvidenceStatusLabel(item.evidence_status)) + '</span></div><div class="quality-v2-score"><strong>' + Number(item.recommendation_score).toFixed(1) + '</strong><span>当前匹配分</span></div></div>' +
+      '<div class="quality-v2-meta"><span>病种专长 ' + escapeHtml((disease.disease_expertise || []).join('、') || '见推荐依据') + '</span><span>技术专长 ' + escapeHtml((treatment.treatment_expertise || []).concat(treatment.surgery_expertise || []).join('、') || '见推荐依据') + '</span><span>' + (history.historical_case_count ? '历史案例 ' + history.historical_case_count + ' 例' : '暂无可关联历史案例') + '</span></div>' +
+      '<strong>固定四维评分</strong>' + qualityV2DimensionScoresHtml(item.dimension_scores) +
+      '<strong>为什么适合当前患者</strong><ol class="quality-v2-reasons">' + (item.reasons || []).map(function(reason) { return '<li><strong>' + escapeHtml(reason.title) + '</strong><span>' + escapeHtml(reason.explanation) + '</span>' + qualityV2EvidenceHtml(profile, reason) + '</li>'; }).join('') + '</ol>' +
+      '<div class="quality-v2-limitations"><strong>当前限制</strong><br>' + escapeHtml((item.limitations || []).join('；') || '暂无额外限制说明') + '</div>' + detail + '</article>';
+  }).join('');
+}
+
+function qualityV2TreatmentSummary(evaluation) {
+  const dimensions = [evaluation.treatment_diagnosis_match,evaluation.medication_rationality,evaluation.procedure_rationality,evaluation.treatment_completeness,evaluation.discharge_continuity,evaluation.risk_management];
+  const reviews = dimensions.filter(function(item) { return item.status === "needs_review"; }).length;
+  const missing = dimensions.filter(function(item) { return item.status === "insufficient_evidence"; }).length;
+  const evaluated = dimensions.filter(function(item) { return item.status === "evaluated"; }).length;
+  if (reviews || missing) return "目前记录可以帮助我们了解这次治疗的大致过程，已有 " + evaluated + " 项可以评价；另有 " + (reviews + missing) + " 项仍需结合完整病历和医生意见进一步确认。";
+  if (evaluated) return "从现有记录看，本次治疗过程已有较完整的可评价信息。您可以结合下方依据，在复诊时与医生确认后续安排。";
+  return "目前记录中的关键信息还不完整，建议结合完整病历和医生意见进一步确认。";
+}
+
+function renderQualityV2Treatment() {
+  const evaluation = qualityV2TreatmentEvaluation;
+  if (!evaluation) {
+    const demo = $("qualityV2ContextMode").value === "demo";
+    $("qualityV2Treatment").innerHTML = '<div class="pain-empty compact"><strong>' + (demo ? '演示上下文不生成治疗评价' : '等待评价') + '</strong><span>' + (demo ? '演示模式没有虚构治疗记录；切回当前病例后读取真实结构化材料。' : '当前病例完成结构化后，可查看六维治疗过程评价。') + '</span></div>';
+    return;
+  }
+  const dimensions = [
+    ["诊断与治疗匹配",evaluation.treatment_diagnosis_match], ["用药合理性",evaluation.medication_rationality],
+    ["操作 / 手术合理性",evaluation.procedure_rationality], ["治疗完整性",evaluation.treatment_completeness],
+    ["出院连续照护",evaluation.discharge_continuity], ["风险管理",evaluation.risk_management]
+  ];
+  const history = evaluation.historical_reference || {};
+  $("qualityV2Treatment").innerHTML = '<article class="quality-v2-treatment-head"><h3>' + escapeHtml(qualityV2Text(evaluation.pattern && evaluation.pattern.readable_pattern_name, "当前病例治疗过程")) + '</h3><p>' + escapeHtml(qualityV2Text(evaluation.pattern && evaluation.pattern.treatment_description, "现有材料尚不足以形成完整治疗过程描述")) + '</p><div class="quality-v2-meta"><span>证据覆盖 ' + (Number(evaluation.evidence_coverage || 0) * 100).toFixed(0) + '%</span><span>评价置信度 ' + (Number(evaluation.overall_confidence || 0) * 100).toFixed(0) + '%</span></div></article>' +
+    '<div class="quality-v2-treatment-grid">' + dimensions.map(function(row) {
+      const item = row[1] || {status:"insufficient_evidence",reasoning:"证据不足",limitations:[]};
+      const score = item.status === "evaluated" && item.score !== null && item.score !== undefined ? ' · ' + Number(item.score).toFixed(1) + '分' : '';
+      return '<article class="quality-v2-treatment-item ' + qualityV2StatusTone(item.status) + '"><h3>' + escapeHtml(row[0]) + '</h3><span class="status-pill ' + qualityV2StatusTone(item.status) + '">' + escapeHtml(qualityV2StatusLabel(item.status)) + score + '</span><p>' + escapeHtml(qualityV2Text(item.reasoning, "当前证据不足")) + '</p>' + ((item.evidence_fields || []).length ? '<details class="quality-v2-evidence"><summary>查看依据</summary><p>依据来自当前病例的结构化医疗记录。</p><details class="technical-details quality-v2-evidence-technical"><summary>技术详情</summary><pre>' + escapeHtml("evidence_fields: " + item.evidence_fields.join(", ")) + '</pre></details></details>' : '') + ((item.limitations || []).length ? '<p><strong>当前限制：</strong>' + escapeHtml(item.limitations.join('；')) + '</p>' : '') + (item.status === "needs_review" ? '<p><strong>该项目建议医疗专业人员复核。</strong></p>' : '') + '</article>';
+    }).join('') + '</div>' +
+    '<article class="quality-v2-patient-summary"><strong>给患者的一句话总结</strong><p>' + escapeHtml(qualityV2TreatmentSummary(evaluation)) + '</p></article>' +
+    '<article class="quality-v2-history"><h3>相似历史治疗模式参考</h3>' + (history.available ? '<p>相似历史病例：' + history.similar_historical_case_count + ' 例</p><p>平均费用：' + escapeHtml(qualityV2Text(history.average_fee, "暂无")) + ' · 平均住院日：' + escapeHtml(qualityV2Text(history.average_length_of_stay, "暂无")) + '</p><p>常见痛点：' + escapeHtml((history.common_pain_points || []).join('、') || '暂无') + '</p><p>治疗规范性观察：' + escapeHtml(qualityV2Text(history.treatment_standardization_observation)) + '</p><p>再入院观察：' + escapeHtml(qualityV2Text(history.readmission_observation)) + '</p>' : '<p>暂无足够相似历史案例，当前评价主要基于本次病例材料。</p>') + '<p><strong>以下为历史案例参考，不代表当前患者治疗效果预测。</strong></p></article>';
+}
+
+function renderQualityV2() {
+  renderQualityV2Context();
+  renderQualityV2Hospitals();
+  renderQualityV2HospitalProfile();
+  renderQualityV2Clinicians();
+  renderQualityV2Treatment();
+}
+
+async function qualityV2Fetch(path, options) {
+  if (!backendUrl) throw new Error("请先连接本地后端");
+  const response = await fetch(backendUrl.replace(/\/$/, "") + path, options);
+  const text = await response.text();
+  let payload = null;
+  try { payload = text ? JSON.parse(text) : null; } catch (error) { payload = null; }
+  if (!response.ok) throw new Error(formatApiDetail(payload && payload.detail || text || "V2 请求失败"));
+  if (payload === null) throw new Error("后端返回了空响应");
+  return payload;
+}
+
+function qualityV2ErrorMessage(error) {
+  const message = String(error && error.message || "");
+  if (/Failed to fetch|NetworkError|fetch failed/i.test(message)) return "无法连接本地后端，请检查服务是否已启动。";
+  if (/Unexpected token|JSON/i.test(message)) return "后端返回内容无法读取，请检查服务版本。";
+  return message || "V2 推荐请求失败，请检查本地后端。";
+}
+
+async function loadQualityV2() {
+  const requestId = ++qualityV2RequestId;
+  const generation = caseGeneration;
+  const context = qualityV2Context();
+  const button = $("refreshQualityV2Button");
+  button.disabled = true; button.textContent = "正在生成…";
+  qualityV2HospitalReport = null; qualityV2ClinicianRecommendations = []; qualityV2TreatmentEvaluation = null; qualityV2SelectedHospitalId = null;
+  renderQualityV2();
+  $("qualityV2Status").innerHTML = '<div class="pain-warning"><strong>正在解析病种所需专科</strong><span>正在根据当前病例与推荐地区准备医疗资源发现条件。</span></div>';
+  try {
+    if (context.mode === "current") {
+      if (!workflowCase || !workflowCase.has_structured_result || result.case_id !== workflowCase.case_id) throw new Error("请先完成当前案件的病例结构化");
+      if (!context.disease_group) throw new Error("当前病例尚未可靠识别明确病种");
+    }
+    if (!context.city) throw new Error("尚未提供患者所在地，请先补充当前推荐地区");
+    const publicContext = Object.assign({}, context); delete publicContext.mode;
+    $("qualityV2Status").innerHTML = '<div class="pain-warning"><strong>正在发现并核验医疗资源</strong><span>正在为当前病种发现并核验权威医疗资源；搜索结果只用于定位，能力证据取自权威原始页面。</span></div>';
+    qualityV2HospitalReport = await qualityV2Fetch("/api/quality/v2/recommendations/hospitals", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({context:publicContext,case:context.mode === "current" ? result : null,top_k:5})});
+    if (requestId !== qualityV2RequestId || generation !== caseGeneration) return;
+    qualityV2ClinicianProfiles = qualityV2HospitalReport.candidate_clinician_profiles || [];
+    $("qualityV2Status").innerHTML = '<div class="pain-warning"><strong>正在计算推荐并匹配医生</strong><span>医院能力证据已返回，正在按当前病例优先级整理医院与医生结果。</span></div>';
+    const allowedHospitalIds = (qualityV2HospitalReport.recommendations || []).map(function(item) { return item.hospital_id; });
+    qualityV2ClinicianRecommendations = await qualityV2Fetch("/api/quality/v2/recommendations/clinicians", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({disease_group:publicContext.disease_group,profiles:qualityV2ClinicianProfiles,allowed_hospital_ids:allowedHospitalIds,recommendation_intent:qualityV2HospitalReport.recommendation_intent || null,top_k:5})});
+    if (context.mode === "current") {
+      qualityV2TreatmentEvaluation = await qualityV2Fetch("/api/quality/v2/treatment-evaluation", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({case:result,disease_group:publicContext.disease_group,pain_report:painReport && painReport.case_id === result.case_id ? painReport : null,historical_reference:null})});
+    }
+    if (requestId !== qualityV2RequestId || generation !== caseGeneration) return;
+    qualityV2SelectedHospitalId = qualityV2HospitalReport.recommendations.length ? qualityV2HospitalReport.recommendations[0].hospital_id : null;
+    renderQualityV2();
+    showToast(context.mode === "demo" ? "演示上下文已按真实 V2 规则计算" : "第四问 V2 推荐已生成");
+  } catch (error) {
+    if (requestId !== qualityV2RequestId || generation !== caseGeneration) return;
+    const userMessage = qualityV2ErrorMessage(error);
+    renderQualityV2();
+    $("qualityV2Status").innerHTML += '<div class="pain-warning">' + escapeHtml(userMessage) + '</div>';
+    showToast("第四问生成失败：" + userMessage);
+  } finally {
+    if (requestId === qualityV2RequestId) {
+      button.disabled = false;
+      button.textContent = qualityV2HospitalReport ? "刷新推荐与证据" : "生成当前推荐";
+    }
+  }
+}
+
 function qualityEntityLabel(value) {
   return ({institution: "医院", clinician: "医生", treatment_plan: "治疗方案"})[value] || value;
 }
@@ -1350,10 +1771,7 @@ function switchView(name) {
   if (name === "care") renderCareReport();
   if (name === 'delivery') {renderDeliveryWorkflow();if(backendUrl&&workflowCase)loadDeliveryWorkflow();}
   if (name === "quality") {
-    renderQualityAudit();
-    if (!qualityAudit && backendUrl) loadQualityAudit(true);
-    renderIntegratedQuality();
-    if (backendUrl) loadIntegratedQuality();
+    renderQualityV2();
   }
 }
 function batchStatusLabel(value) {
@@ -1841,6 +2259,27 @@ $("analyzePainButton").addEventListener("click", analyzeCurrentPain);
 $("exportPainButton").addEventListener("click", exportPainReport);
 $("generateCareButton").addEventListener("click", generateCurrentCare);
 $("exportCareButton").addEventListener("click", exportCareReport);
+$("refreshQualityV2Button").addEventListener("click", loadQualityV2);
+$("qualityV2ContextMode").addEventListener("change", function() {
+  qualityV2RequestId += 1; qualityV2HospitalReport = null; qualityV2ClinicianRecommendations = [];
+  qualityV2TreatmentEvaluation = null; qualityV2SelectedHospitalId = null; renderQualityV2();
+});
+$("qualityV2DemoPreset").addEventListener("change", function() {
+  qualityV2RequestId += 1; qualityV2HospitalReport = null; qualityV2ClinicianRecommendations = [];
+  qualityV2TreatmentEvaluation = null; qualityV2SelectedHospitalId = null; renderQualityV2();
+});
+$("qualityV2CurrentCity").addEventListener("input", function() {
+  qualityV2CurrentCity = $("qualityV2CurrentCity").value.trim();
+  qualityV2RequestId += 1; qualityV2HospitalReport = null; qualityV2ClinicianRecommendations = [];
+  qualityV2TreatmentEvaluation = null; qualityV2SelectedHospitalId = null; renderQualityV2();
+});
+$("qualityV2Hospitals").addEventListener("click", function(event) {
+  const button = event.target.closest ? event.target.closest("[data-quality-profile]") : null;
+  if (!button) return;
+  qualityV2SelectedHospitalId = button.dataset.qualityProfile;
+  renderQualityV2HospitalProfile();
+  $("qualityV2HospitalProfile").scrollIntoView({behavior:"smooth",block:"start"});
+});
 $("loadQualityButton").addEventListener("click", function() { loadQualityAudit(false); });
 $("exportQualityButton").addEventListener("click", exportQualityAudit);
 $("reloadDeliveryButton").addEventListener('click',loadDeliveryWorkflow);
@@ -1883,6 +2322,7 @@ renderPainReport();
 renderCareReport();
 renderQualityAudit();
 renderIntegratedQuality();
+renderQualityV2();
 renderDeliveryWorkflow();
 renderWorkflow();
 const savedWorkflowId = localStorage.getItem("medicalClaimsCaseId");

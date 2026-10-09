@@ -71,6 +71,38 @@ from medical_claims.multisource_quality import (
     build_multisource_candidate_pools,
     load_multisource_inputs,
 )
+from medical_claims.quality_phase1_models import (
+    CapabilityCacheWriteRequest,
+    ClinicianRecommendation,
+    ClinicianRecommendationRequestV2,
+    CurrentTreatmentEvaluation,
+    DiseaseProviderCatalog,
+    HospitalRecommendationReportV2,
+    HospitalRecommendationRequestV2,
+    ProviderDiscoveryQuery,
+    ProviderDiscoveryResult,
+    RecommendationIntent,
+    TreatmentEvaluationRequestV2,
+)
+from medical_claims.quality_phase1_service import (
+    DEFAULT_CATALOG_PATH,
+    run_clinician_recommendation,
+    run_hospital_recommendation,
+    run_provider_discovery,
+    run_treatment_evaluation,
+)
+from medical_claims.recommendation_intent import (
+    build_recommendation_fact_pack,
+    validate_recommendation_intent,
+)
+from medical_claims.recommendation_prompt import build_recommendation_planner_body
+from medical_claims.external_model_policy import (
+    ExternalModelAuthorizationError,
+    ExternalModelPurpose,
+    require_external_model_authorization,
+)
+from medical_claims.disease_provider_catalog import load_catalog
+from medical_claims.provider_discovery import LocalCapabilityCache
 from medical_claims.delivery import prepare_delivery_content, SendDeliveryRequest
 from medical_claims.review_models import ReviewRequest
 from medical_claims.feedback_models import FeedbackRequest, ResolveFollowUpRequest
@@ -625,6 +657,24 @@ def care_guide_with_deepseek(
     return result
 
 
+def recommendation_intent_with_deepseek(
+    case: ClaimCase,
+    context,
+    upstream_primary_disease: str | None = None,
+) -> RecommendationIntent:
+    """LLM 只理解病例和规划检索，不生成医院能力结论或最终推荐。"""
+    body = build_recommendation_planner_body(
+        case,
+        context,
+        upstream_primary_disease,
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+        max_output_tokens=int(os.getenv("DEEPSEEK_RECOMMENDATION_INTENT_MAX_OUTPUT_TOKENS", "6000")),
+    )
+    output_text = extract_output_text(post_deepseek(body))
+    intent = RecommendationIntent.model_validate_json(normalize_json_output(output_text))
+    return validate_recommendation_intent(intent, case, context, upstream_primary_disease)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str | bool | int]:
     try:
@@ -820,6 +870,10 @@ def generate_case_care_guide(request: CareGuideRequest) -> CareGuideReport:
     method = GenerationMethod.RULES_FALLBACK
     if request.use_llm:
         try:
+            require_external_model_authorization(
+                storage.get_case(case.case_id),
+                ExternalModelPurpose.CARE_GUIDE,
+            )
             draft = care_guide_with_deepseek(case, pain_report, disease_topic, card)
             method = GenerationMethod.LLM
         except Exception as exc:
@@ -892,6 +946,99 @@ def get_quality_recommendations(request: RecommendationRequest) -> Recommendatio
     )
     report.warnings.append("PREVIEW ONLY：此请求自行提供portfolio；正式案件推荐请使用案件级接口和已保存数据")
     return report
+
+
+@app.get("/api/quality/v2/catalog", response_model=DiseaseProviderCatalog)
+def get_phase1_provider_catalog() -> DiseaseProviderCatalog:
+    """读取已核验比赛基准目录；该目录不是病种支持白名单。"""
+    try:
+        return load_catalog(DEFAULT_CATALOG_PATH)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Phase 1 候选医院目录不可用") from exc
+
+
+@app.post("/api/quality/v2/provider-discovery", response_model=ProviderDiscoveryResult)
+def discover_phase1_providers(request: ProviderDiscoveryQuery) -> ProviderDiscoveryResult:
+    """按任意明确病种查询可信缓存，并在部署层可用时调用动态发现 provider。"""
+    try:
+        return run_provider_discovery(request)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="医疗机构能力发现服务不可用") from exc
+
+
+@app.post("/api/quality/v2/provider-cache/verified")
+def write_verified_phase1_provider_cache(request: CapabilityCacheWriteRequest) -> dict[str, int]:
+    """仅接收已经通过统一证据门槛的能力画像，供后续病例复用。"""
+    try:
+        return LocalCapabilityCache().write_verified(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="本地可信能力缓存不可用") from exc
+
+
+@app.post(
+    "/api/quality/v2/recommendations/hospitals",
+    response_model=HospitalRecommendationReportV2,
+)
+def get_phase1_hospital_recommendations(
+    request: HospitalRecommendationRequestV2,
+) -> HospitalRecommendationReportV2:
+    """能力证据主导的新医院推荐；旧记录只作为可选历史事实补充。"""
+    try:
+        intent = request.recommendation_intent
+        if request.case is not None:
+            if request.case.case_id != request.context.case_id:
+                raise ValueError("推荐案件与当前上下文 case_id 不一致")
+            storage = get_case_storage()
+            storage.require_current(request.context.case_id, request.case)
+            require_external_model_authorization(
+                storage.get_case(request.context.case_id),
+                ExternalModelPurpose.RECOMMENDATION_INTENT,
+            )
+            saved_results = storage.get_results(request.context.case_id)
+            saved_care = saved_results.get("care_result")
+            upstream_primary_disease = None
+            if saved_care:
+                care_report = CareGuideReport.model_validate(saved_care)
+                if care_report.case_id == request.context.case_id:
+                    upstream_primary_disease = care_report.guide.disease_topic
+            intent = recommendation_intent_with_deepseek(
+                request.case,
+                request.context,
+                upstream_primary_disease=upstream_primary_disease,
+            )
+            request = request.model_copy(update={"recommendation_intent": intent})
+        records = get_case_storage().load_profile_records()
+        return run_hospital_recommendation(request, historical_records=records)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="RecommendationIntent 外部模型调用失败") from exc
+    except ExternalModelAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Phase 1 推荐所需目录不可用") from exc
+
+
+@app.post(
+    "/api/quality/v2/recommendations/clinicians",
+    response_model=list[ClinicianRecommendation],
+)
+def get_phase1_clinician_recommendations(
+    request: ClinicianRecommendationRequestV2,
+) -> list[ClinicianRecommendation]:
+    return run_clinician_recommendation(request)
+
+
+@app.post(
+    "/api/quality/v2/treatment-evaluation",
+    response_model=CurrentTreatmentEvaluation,
+)
+def get_phase1_treatment_evaluation(
+    request: TreatmentEvaluationRequestV2,
+) -> CurrentTreatmentEvaluation:
+    return run_treatment_evaluation(request)
 
 
 @app.get("/api/quality/multisource-candidate-pools", response_model=MultiSourceCandidatePools)
