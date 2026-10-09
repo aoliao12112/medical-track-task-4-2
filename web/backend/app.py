@@ -184,6 +184,12 @@ class DetailedCaseProcessingResult(StrictModel):
     documents: list[OcrDocumentPayload]
 
 
+class OcrOnlyProcessingResult(StrictModel):
+    case_id: str
+    documents: list[OcrDocumentPayload]
+    external_model_called: bool = False
+
+
 class MobilePreviewCreateRequest(StrictModel):
     expires_in_minutes: int = Field(default=30, ge=5, le=240)
 
@@ -232,6 +238,31 @@ def _qr_svg_data_url(value: str) -> str:
 class OcrRestructureRequest(StrictModel):
     case_id: str
     documents: list[OcrDocumentPayload] = Field(min_length=1)
+    deidentification_confirmed: bool = False
+    manual_override_confirmed: bool = False
+    sensitive_pattern_findings: list[str] = Field(default_factory=list)
+
+
+class OcrReviewSaveRequest(StrictModel):
+    case_id: str
+    documents: list[OcrDocumentPayload] = Field(min_length=1)
+
+
+SENSITIVE_OCR_PATTERNS = (
+    ("身份证号", re.compile(r"身份证(?:号|号码)?\s*[:：]?\s*\d{6,18}[0-9Xx]?")),
+    ("18位证件号码", re.compile(r"(^|\D)\d{17}[0-9Xx](?=\D|$)", re.MULTILINE)),
+    ("手机号", re.compile(r"(^|\D)1\d{10}(?=\D|$)", re.MULTILINE)),
+    ("联系电话", re.compile(r"(?:联系|手机|电话)(?:方式|号码)?\s*[:：]?\s*\d{7,}")),
+    ("住址或地址", re.compile(r"(?:家庭|详细|联系|通讯|医院)?(?:住址|地址)\s*[:：]?\s*[^\n]{4,}")),
+    ("个人医疗编号", re.compile(r"(?:病历号|病例号|门诊号|住院号|影像号|标本号|ID号)\s*[:：]?\s*[A-Za-z0-9-]{4,}", re.IGNORECASE)),
+)
+
+
+def sensitive_ocr_findings(documents: list[dict[str, Any]]) -> list[str]:
+    """Return warning categories only; a human may explicitly override false positives."""
+
+    text = "\n".join(str(document.get("full_text") or "") for document in documents)
+    return [label for label, pattern in SENSITIVE_OCR_PATTERNS if pattern.search(text)]
 
 
 def normalize_document_id(value: str) -> str:
@@ -749,6 +780,9 @@ async def process_case(
     if not files:
         raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
     storage = get_case_storage()
+    metadata = storage.get_case(case_id)
+    if metadata["consent_status"] != "authorized" or metadata["deidentification_status"] != "confirmed":
+        raise WorkflowConflict("OCR文本进入外部模型前必须确认已授权并完成脱敏")
     storage.begin_processing(case_id)
     try:
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
@@ -788,6 +822,9 @@ async def process_case_detailed(
     if not files:
         raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
     storage = get_case_storage()
+    metadata = storage.get_case(case_id)
+    if metadata["consent_status"] != "authorized" or metadata["deidentification_status"] != "confirmed":
+        raise WorkflowConflict("OCR文本进入外部模型前必须确认已授权并完成脱敏")
     storage.begin_processing(case_id)
     try:
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
@@ -819,14 +856,64 @@ async def process_case_detailed(
             storage.finish_failed_processing(case_id)
 
 
+@app.post("/api/cases/ocr-only", response_model=OcrOnlyProcessingResult)
+async def run_local_ocr_only(
+    case_id: str = Form(...),
+    files: list[UploadFile] = File(...),
+) -> OcrOnlyProcessingResult:
+    """Run local OCR and persist its result without calling the external LLM."""
+
+    if not files:
+        raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
+    storage = get_case_storage()
+    metadata = storage.get_case(case_id)
+    if metadata["consent_status"] != "authorized":
+        raise WorkflowConflict("运行本地OCR前必须先确认材料使用授权")
+    storage.begin_processing(case_id)
+    try:
+        with tempfile.TemporaryDirectory(prefix="medical-claim-ocr-") as tmp:
+            documents = await recognize_uploaded_documents(files, Path(tmp))
+            storage.save_ocr(case_id, documents)
+            storage.finish_failed_processing(case_id)
+            return OcrOnlyProcessingResult(
+                case_id=case_id,
+                documents=[OcrDocumentPayload.model_validate(item) for item in documents],
+            )
+    except Exception as exc:
+        logger.exception("Local OCR-only processing failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if storage.get_case(case_id)["status"] == "PROCESSING":
+            storage.finish_failed_processing(case_id)
+
+
 @app.post("/api/cases/restructure-from-ocr", response_model=ClaimCase)
 def restructure_case_from_ocr(request: OcrRestructureRequest) -> ClaimCase:
     """使用人工校正后的逐页OCR文本重新结构化，不再次识别图片。"""
 
     storage = get_case_storage()
+    documents = [document.model_dump() for document in request.documents]
+    server_findings = sensitive_ocr_findings(documents)
+    if request.deidentification_confirmed:
+        if server_findings and not request.manual_override_confirmed:
+            raise WorkflowConflict(
+                "脱敏规则仍检测到疑似身份格式：" + "、".join(server_findings)
+                + "；请继续修改，或完成逐项人工复核后明确确认规则覆核"
+            )
+        fingerprint_source = json.dumps(
+            documents, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        storage.confirm_deidentification(
+            request.case_id,
+            review_method="manual_override" if server_findings else "rule_clear",
+            findings=server_findings,
+            document_fingerprint=hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
+        )
+    metadata = storage.get_case(request.case_id)
+    if metadata["consent_status"] != "authorized" or metadata["deidentification_status"] != "confirmed":
+        raise WorkflowConflict("OCR文本进入外部模型前必须确认已授权并完成脱敏")
     storage.begin_processing(request.case_id)
     try:
-        documents = [document.model_dump() for document in request.documents]
         storage.save_ocr(request.case_id, documents)
         case = structure_case_with_long_document_support(request.case_id, documents)
         storage.save_structured(request.case_id, case)
@@ -849,6 +936,16 @@ def restructure_case_from_ocr(request: OcrRestructureRequest) -> ClaimCase:
     finally:
         if storage.get_case(request.case_id)["status"] == "PROCESSING":
             storage.finish_failed_processing(request.case_id)
+
+
+@app.post("/api/cases/save-reviewed-ocr")
+def save_reviewed_ocr(request: OcrReviewSaveRequest) -> dict[str, Any]:
+    """Persist edited OCR locally without confirming deidentification or calling an LLM."""
+
+    storage = get_case_storage()
+    documents = [document.model_dump() for document in request.documents]
+    storage.save_ocr_review_draft(request.case_id, documents)
+    return storage.get_case(request.case_id)
 
 
 @app.post("/api/cases/analyze-pain-points", response_model=PainPointReport)

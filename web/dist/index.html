@@ -6,7 +6,7 @@
   <meta name="description" content="理赔医疗记录结构化、事件重建与批量评测工作台">
   <title>医护洞察 · 病历结构化工作台</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2307111f'/%3E%3Cpath d='M20 15h24a5 5 0 0 1 5 5v24a5 5 0 0 1-5 5H20a5 5 0 0 1-5-5V20a5 5 0 0 1 5-5Z' fill='%230f9f91'/%3E%3Cpath d='M28 22h8v6h6v8h-6v6h-8v-6h-6v-8h6Z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=20261007-recommendation-ui">
+  <link rel="stylesheet" href="./styles.css?v=20261009-manual-deid-v4">
 </head>
 <body>
   <div class="app-shell">
@@ -25,6 +25,7 @@
         <button class="view-tab" data-view="evaluation">效果评测</button>
       </nav>
       <div class="top-actions">
+        <a class="btn secondary" href="./roles.html">角色门户</a>
         <button class="provider-chip" id="providerButton" type="button"><span class="provider-dot demo"></span><span id="providerLabel">演示模式</span></button>
         <button class="btn secondary" id="jsonButton" type="button">查看 JSON</button>
         <button class="btn primary" id="exportButton" type="button">导出结果</button>
@@ -41,7 +42,8 @@
           <div class="command-actions">
             <button class="btn ghost" id="demoButton" type="button">载入演示案件</button>
             <label class="btn secondary file-button">添加图片<input id="fileInput" type="file" multiple accept=".jpg,.jpeg,.png,.bmp,.webp" hidden></label>
-            <button class="btn primary" id="runButton" type="button"><span class="button-icon">✦</span>运行OCR与结构化</button>
+            <button class="btn secondary" id="localOcrButton" type="button">① 仅运行本地OCR</button>
+            <button class="btn primary" id="runButton" type="button"><span class="button-icon">✦</span>② 使用脱敏文本结构化</button>
           </div>
         </section>
 
@@ -50,9 +52,11 @@
             <div id="workflowSummary">创建新案件或读取已有案件，即可开始查看处理进展。</div></div>
             <div class="workflow-confirmations" role="group" aria-label="医疗材料使用确认">
               <label><input id="workflowConsent" type="checkbox" value="authorized"><span>我确认已获得相关医疗材料的使用授权</span></label>
-              <label><input id="workflowDeidentified" type="checkbox" value="confirmed" aria-describedby="deidentificationHelp"><span>我确认已对材料中的个人身份信息完成脱敏处理<span class="confirmation-explanation">（即遮盖可识别个人身份的信息）</span></span></label>
-              <p class="workflow-hint">请仅上传已获授权并完成脱敏的医疗材料。</p>
-              <p class="confirmation-help" id="deidentificationHelp">脱敏是指遮盖姓名、身份证号、手机号、住址、条码/二维码等可识别个人身份的信息。</p>
+              <label><input id="workflowDeidentified" type="checkbox" value="confirmed" aria-describedby="deidentificationHelp"><span>我确认发送给外部模型的OCR文本已完成脱敏<span class="confirmation-explanation">（原图只在本地OCR时使用）</span></span></label>
+              <label><input id="workflowSensitivePatternReviewed" type="checkbox" value="manual_override"><span>若规则仍有提示，我已逐项复核，确认命中内容为虚构占位符或非患者身份信息</span></label>
+              <p class="workflow-hint">未完成脱敏时只能运行本地OCR，不能执行DeepSeek结构化。</p>
+              <p class="confirmation-help" id="deidentificationHelp">请逐页删除姓名、身份证号、手机号、住址、条码/二维码内容等身份信息，再勾选确认。</p>
+              <p class="confirmation-help" id="sensitivePatternNotice">尚未检查当前OCR文本中的疑似身份格式。</p>
             </div>
             <details class="workflow-help"><summary>使用说明</summary><p>授权及脱敏状态由操作者核实并声明。初始页面展示固定演示样例，并未执行实际模型处理；创建或读取案件后，才能处理真实材料。演示样例不会保存为真实案件。</p><p>页面可信度来自字段、OCR 块、模型或规则的原始数值，尚未校准，不能替代 F1 等正式效果评测指标。</p></details>
           </div>
@@ -89,7 +93,7 @@
             <div class="document-inspector">
               <div class="inspector-head"><strong id="selectedDocName">出院记录 · 第1页</strong><span id="selectedDocType">出院小结</span></div>
               <div class="preview" id="documentPreview"></div>
-              <details class="ocr-editor"><summary>查看或修正 OCR 文本</summary><textarea id="ocrText" rows="10" placeholder="完成OCR后将显示本页识别文本；请对照原图修正模糊字、数字、单位和日期。"></textarea><div class="ocr-actions"><button class="btn secondary small" id="saveOcrButton" type="button">保存本页修正</button><button class="btn primary small" id="applyOcrCorrectionsButton" type="button">应用修正并重新结构化</button></div><small class="ocr-note" id="ocrCorrectionStatus">修正先保存在当前浏览器会话；点击重新结构化后才会更新右侧字段。</small></details>
+              <details class="ocr-editor"><summary>查看、脱敏或修正 OCR 文本</summary><textarea id="ocrText" rows="10" placeholder="先运行本地OCR；请逐页删除姓名、身份证号、手机号和住址，并核对模糊字、数字、单位和日期。"></textarea><div class="ocr-actions"><button class="btn secondary small" id="saveOcrButton" type="button">保存本页修正</button><button class="btn primary small" id="applyOcrCorrectionsButton" type="button">应用脱敏文本并重新结构化</button></div><small class="ocr-note" id="ocrCorrectionStatus">原始图片只送本机RapidOCR；只有你确认后的OCR文本才能进入DeepSeek。</small></details>
             </div>
           </aside>
 
@@ -267,6 +271,6 @@
   </div><div class="dialog-actions"><button class="btn secondary" id="clearBackendButton">清除配置</button><button class="btn primary" id="saveBackendButton">保存配置</button></div></dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="./app.js?v=20261007-mobile-preview-v1"></script>
+  <script src="./app.js?v=20261009-manual-deid-v4"></script>
 </body>
 </html>

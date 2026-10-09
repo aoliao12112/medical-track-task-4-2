@@ -94,6 +94,7 @@ let deliveryFeedback = [];
 let deliveryFollowUps = [];
 let activeDeliveryId = null;
 let caseGeneration = 0;
+let localOcrReady = false;
 
 function clearDeliveryState() {
   deliveryReadiness = null; inboxDeliveries = []; deliveryFeedback = []; deliveryFollowUps = []; activeDeliveryId = null;
@@ -105,8 +106,9 @@ function resetCaseState(caseId) {
   caseGeneration += 1;
   documents.forEach(function(doc){if(doc.previewUrl)URL.revokeObjectURL(doc.previewUrl);});
   workflowCase=null; documents=[]; selectedDocId=null; result=emptyWorkflowResult(caseId);
-  painReport=null; careReport=null; qualityAudit=null; isDemoCase=false;
+  painReport=null; careReport=null; qualityAudit=null; isDemoCase=false; localOcrReady=false;
   $("caseId").value=caseId;
+  $("workflowSensitivePatternReviewed").checked=false;
   $("careTopic").value='';
   setCaseStatus('未加载当前案件结果', 'review');
   setPipelineState(0);
@@ -137,7 +139,7 @@ async function workflowFetch(path, options) {
 
 // 仅用于展示；接口、枚举值与保存数据保持原值。
 function uiLabel(value) {
-  return ({extracted:'已提取',derived:'已计算',review_required:'需要人工复核',missing:'信息缺失',conflict:'信息待核验',insufficient_sample:'样本不足',data_unavailable:'数据不可用',not_required:'无需复核',approved:'已通过',rejected:'已驳回',pending:'待确认',none:'尚未复核', RECEIVED:'材料待上传',PROCESSING:'正在处理',STRUCTURED:'病例已结构化',PAIN_READY:'痛点分析已完成',CARE_READY:'关怀指引已生成',DELIVERY_READY:'可以发送',AUTO_DELIVER:'可自动发送',REVIEW_REQUIRED:'需要人工复核',BLOCKED:'已阻止发送',APPROVED:'已通过',REJECTED:'已驳回',DELIVERED_MOCK:'已模拟触达',FEEDBACK_RECEIVED:'已收到反馈',FOLLOWUP_PENDING:'待处理',RESOLVED:'已完成',OPEN:'待处理',AUTO:'自动发送',HUMAN_APPROVED:'人工确认后发送',PENDING:'待确认',NOT_REQUIRED:'无需复核',NONE:'尚未复核',not_evaluated:'尚未评估',insufficient_evidence:'数据不足，暂无法推荐',available:'数据可用',unavailable:'暂不可用',calculated:'已计算',insufficient_samples:'样本不足',missing_data:'数据缺失',sufficient:'证据充足',partially_sufficient:'证据部分充足',insufficient:'证据不足',READY:'已就绪',NOT_READY:'尚未就绪',NOT_EVALUATED:'尚未评估',overall_service:'整体服务',care_guide:'关怀内容',recommendation:'推荐结果',combined_delivery:'本次发送的全部内容',clear:'内容清楚',not_clear:'内容不够清楚',not_personalized:'不够个性化',cost_question:'费用说明不清楚',recovery_question:'康复建议有疑问',medication_question:'用药内容有疑问',recommendation_question:'推荐结果有疑问',other:'其他',attending_physician:'主治医生',treating_physician:'经治医生',surgeon:'手术医生',reporting_physician:'报告医生',examining_physician:'检查医生',user_upload:'用户上传',authorized_historical:'已授权历史记录',synthetic_test:'工程测试数据',unknown:'来源未确认',mock_web_inbox:'模拟用户收件箱'})[value] || '待核验';
+  return ({extracted:'已提取',derived:'已计算',review_required:'需要人工复核',missing:'信息缺失',conflict:'信息待核验',insufficient_sample:'样本不足',data_unavailable:'数据不可用',not_required:'无需复核',approved:'已通过',rejected:'已驳回',pending:'待确认',none:'尚未复核', RECEIVED:'材料待上传',PROCESSING:'正在处理',OCR_READY:'本地OCR已完成，待脱敏复核',STRUCTURED:'病例已结构化',PAIN_READY:'痛点分析已完成',CARE_READY:'关怀指引已生成',DELIVERY_READY:'可以发送',AUTO_DELIVER:'可自动发送',REVIEW_REQUIRED:'需要人工复核',BLOCKED:'已阻止发送',APPROVED:'已通过',REJECTED:'已驳回',DELIVERED_MOCK:'已模拟触达',FEEDBACK_RECEIVED:'已收到反馈',FOLLOWUP_PENDING:'待处理',RESOLVED:'已完成',OPEN:'待处理',AUTO:'自动发送',HUMAN_APPROVED:'人工确认后发送',PENDING:'待确认',NOT_REQUIRED:'无需复核',NONE:'尚未复核',not_evaluated:'尚未评估',insufficient_evidence:'数据不足，暂无法推荐',available:'数据可用',unavailable:'暂不可用',calculated:'已计算',insufficient_samples:'样本不足',missing_data:'数据缺失',sufficient:'证据充足',partially_sufficient:'证据部分充足',insufficient:'证据不足',READY:'已就绪',NOT_READY:'尚未就绪',NOT_EVALUATED:'尚未评估',overall_service:'整体服务',care_guide:'关怀内容',recommendation:'推荐结果',combined_delivery:'本次发送的全部内容',clear:'内容清楚',not_clear:'内容不够清楚',not_personalized:'不够个性化',cost_question:'费用说明不清楚',recovery_question:'康复建议有疑问',medication_question:'用药内容有疑问',recommendation_question:'推荐结果有疑问',other:'其他',attending_physician:'主治医生',treating_physician:'经治医生',surgeon:'手术医生',reporting_physician:'报告医生',examining_physician:'检查医生',user_upload:'用户上传',authorized_historical:'已授权历史记录',synthetic_test:'工程测试数据',unknown:'来源未确认',mock_web_inbox:'模拟用户收件箱'})[value] || '待核验';
 }
 function uiReason(value) { return String(value).replaceAll('care_guide.review_required=true','关怀内容需要人工复核').replaceAll('knowledge_review_status','知识内容审核状态').replaceAll('review_required','需要人工复核').replaceAll('confidence','可信度').replaceAll('Care Guide','关怀指引').replaceAll('BLOCKED','已阻止发送').replaceAll('REVIEW_REQUIRED','需要人工复核').replaceAll('APPROVED','已通过').replaceAll('REJECTED','已驳回'); }
 function uiStatus(value) {
@@ -174,16 +176,12 @@ async function createWorkflowCase() {
     showToast("请先确认已获得材料使用授权");
     return;
   }
-  if (!$("workflowDeidentified").checked) {
-    showToast("请先确认材料已完成脱敏处理");
-    return;
-  }
   resetCaseState("");
   try {
     const created = await workflowFetch("/api/workflow/cases", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ claim_event_id: "claim-demo-" + crypto.randomUUID(), data_source: "user_upload",
-        consent_status: $("workflowConsent").checked ? "authorized" : "unknown", deidentification_status: $("workflowDeidentified").checked ? "confirmed" : "unknown" })
+        consent_status: $("workflowConsent").checked ? "authorized" : "unknown", deidentification_status: $("workflowDeidentified").checked ? "confirmed" : "pending_review" })
     });
     workflowCase = created;
     clearCaseQuality();
@@ -211,6 +209,11 @@ async function restoreWorkflowCase(caseId) {
     clearDeliveryState();
     localStorage.setItem("medicalClaimsCaseId", metadata.case_id);
     $("caseId").value = metadata.case_id;
+    $("caseId").title = metadata.case_id;
+    // 数据库才是授权和脱敏状态的真实来源；不能沿用浏览器里上一个案件的勾选状态。
+    $("workflowConsent").checked = metadata.consent_status === "authorized";
+    $("workflowDeidentified").checked = metadata.deidentification_status === "confirmed";
+    $("workflowSensitivePatternReviewed").checked = false;
     result = saved.structured_result || emptyWorkflowResult(metadata.case_id);
     painReport = saved.pain_result; careReport = saved.care_result; isDemoCase = false;
     documents = (saved.ocr_result || []).map(function(doc) {
@@ -218,9 +221,25 @@ async function restoreWorkflowCase(caseId) {
         text: doc.full_text, originalOcrText: doc.full_text, ocrBlocks: doc.blocks || [],
         humanCorrected: doc.human_corrected, ocrConfidence:null };
     });
+    localOcrReady = documents.length > 0;
     selectedDocId = documents.length ? documents[0].id : null;
-    renderAll(); renderPainReport(); renderCareReport(); renderWorkflow();
-    showToast("已从SQLite恢复案件；原始图片未保存");
+    renderAll(); renderPainReport(); renderCareReport(); renderWorkflow(); updateSensitivePatternNotice();
+    if (saved.structured_result) {
+      setPipelineState(6);
+      setCaseStatus(result.quality_flags && result.quality_flags.length ? "结构化完成，需要复核" : "结构化完成", result.quality_flags && result.quality_flags.length ? "review" : "ready");
+      showToast("已从SQLite恢复结构化结果；原始图片未保存");
+    } else if (documents.length) {
+      setPipelineState(3, true);
+      $("pipelineSummary").textContent = metadata.deidentification_status === "confirmed"
+        ? "本地OCR已完成，等待结构化"
+        : "本地OCR已完成，等待逐页脱敏复核";
+      setCaseStatus(metadata.deidentification_status === "confirmed" ? "本地OCR完成，等待结构化" : "本地OCR完成，待脱敏复核", "review");
+      showToast("已恢复本地OCR文本；原始图片未保存，请继续脱敏复核");
+    } else {
+      setPipelineState(0);
+      setCaseStatus("案件已创建，等待添加材料", "review");
+      showToast("已从SQLite恢复案件；当前还没有OCR或结构化结果");
+    }
   } catch (error) { showToast("恢复案件失败：" + error.message); }
 }
 function requireWorkflowCase() {
@@ -320,6 +339,7 @@ function addFiles(fileList) {
   caseGeneration += 1; qualityAudit=null; clearCaseQuality(); clearDeliveryState();
   documents.forEach(function(x) { if (x.previewUrl) URL.revokeObjectURL(x.previewUrl); });
   documents = incoming;
+  localOcrReady = false;
   selectedDocId = incoming[0].id;
   isDemoCase = false;
   result = emptyCase($("caseId").value || "CASE-" + Date.now());
@@ -468,7 +488,7 @@ function renderDocuments() {
       '<span class="doc-state ' + (doc.text ? "" : "pending") + '">' + (doc.humanCorrected ? "人工修正" : (doc.text ? "OCR " + (doc.ocrConfidence != null ? Math.round(doc.ocrConfidence * 100) + "%" : "已识别") : "待OCR")) + '</span></button>';
   }).join("");
   $("documentList").querySelectorAll(".document-item").forEach(function(button) {
-    button.addEventListener("click", function() { selectedDocId = button.dataset.id; renderDocuments(); });
+    button.addEventListener("click", function() { commitActiveOcrEditor(); selectedDocId = button.dataset.id; renderDocuments(); updateSensitivePatternNotice(); });
   });
   renderSelectedDocument();
 }
@@ -555,21 +575,116 @@ function mergeOcrDocuments(ocrDocuments) {
     });
   });
   selectedDocId = documents.length ? documents[0].id : null;
+  localOcrReady = documents.length > 0 && documents.every(function(doc) { return Boolean(doc.text); });
 }
+
+function sensitiveOcrFindings() {
+  const text = documents.map(function(doc) { return doc.text || ""; }).join("\n");
+  const checks = [
+    ["身份证号", /身份证(?:号|号码)?\s*[:：]?\s*\d{6,18}[0-9Xx]?/],
+    ["18位证件号码", /(^|\D)\d{17}[0-9Xx](?=\D|$)/m],
+    ["手机号", /(^|\D)1\d{10}(?=\D|$)/m],
+    ["联系电话", /(?:联系|手机|电话)(?:方式|号码)?\s*[:：]?\s*\d{7,}/],
+    ["住址或地址", /(?:家庭|详细|联系|通讯|医院)?(?:住址|地址)\s*[:：]?\s*[^\n]{4,}/],
+    ["个人医疗编号", /(?:病历号|病例号|门诊号|住院号|影像号|标本号|ID号)\s*[:：]?\s*[A-Za-z0-9-]{4,}/i],
+  ];
+  return checks.filter(function(item) { return item[1].test(text); }).map(function(item) { return item[0]; });
+}
+
+function commitActiveOcrEditor() {
+  const doc = documents.find(function(x) { return x.id === selectedDocId; });
+  if (!doc) return null;
+  const revisedText = $("ocrText").value.trim();
+  doc.text = revisedText;
+  doc.humanCorrected = revisedText !== (doc.originalOcrText == null ? "" : doc.originalOcrText.trim());
+  return doc;
+}
+
+function reviewedOcrPayload() {
+  return documents.map(function(doc, index) {
+    return {
+      document_id: doc.name || doc.id,
+      page: doc.page || index + 1,
+      full_text: doc.text || "",
+      blocks: doc.ocrBlocks || [],
+      human_corrected: Boolean(doc.humanCorrected)
+    };
+  });
+}
+
+function updateSensitivePatternNotice() {
+  const findings = sensitiveOcrFindings();
+  const override = $("workflowSensitivePatternReviewed");
+  override.disabled = findings.length === 0;
+  if (!findings.length) override.checked = false;
+  $("sensitivePatternNotice").textContent = findings.length
+    ? "自动规则仍提示：" + findings.join("、") + "。这只是预警；若均为虚构占位符或非患者信息，可逐项人工复核后勾选上一项。"
+    : "自动规则未发现常见身份格式；仍需人工逐页确认。";
+  return findings;
+}
+
+function assertOcrSafeForExternalModel() {
+  commitActiveOcrEditor();
+  if (!$("workflowDeidentified").checked) throw new Error("请逐页检查OCR文本，完成脱敏后再勾选脱敏确认");
+  const findings = updateSensitivePatternNotice();
+  const manualOverride = $("workflowSensitivePatternReviewed").checked;
+  if (findings.length && !manualOverride) throw new Error("OCR文本仍疑似包含" + findings.join("、") + "；请继续修改，或逐项核对后勾选人工覆核确认");
+  return { findings: findings, manualOverride: manualOverride };
+}
+
+async function runLocalOcrOnly() {
+  const generation = caseGeneration;
+  const button = $("localOcrButton");
+  try {
+    requireWorkflowCase();
+    if (!backendUrl) throw new Error("请先连接本地后端");
+    if (!documents.some(function(doc) { return doc.file; })) throw new Error("请先添加病例图片");
+    button.disabled = true;
+    button.textContent = "正在本地OCR…";
+    setCaseStatus("正在本地OCR，不调用外部模型", "processing");
+    const form = new FormData();
+    form.append("case_id", workflowCase.case_id);
+    documents.forEach(function(doc) { if (doc.file) form.append("files", doc.file, doc.name); });
+    const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/ocr-only", { method: "POST", body: form });
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = null; }
+    if (!response.ok) throw new Error(payload && payload.detail ? formatApiDetail(payload.detail) : (text || "无错误详情"));
+    if (!payload || !Array.isArray(payload.documents) || payload.external_model_called !== false) throw new Error("本地OCR响应格式不正确");
+    assertCurrentGeneration(generation);
+    mergeOcrDocuments(payload.documents);
+    setPipelineState(3);
+    setCaseStatus("本地OCR完成，等待逐页脱敏复核", "review");
+    renderAll();
+    updateSensitivePatternNotice();
+    showToast("本地OCR完成；尚未调用DeepSeek，请逐页检查并删除身份信息");
+  } catch (error) {
+    if (generation !== caseGeneration) return;
+    setCaseStatus("本地OCR失败", "error");
+    showToast("本地OCR失败：" + (error.message || "请检查后端"));
+  } finally {
+    button.disabled = false;
+    button.textContent = "① 仅运行本地OCR";
+    await refreshWorkflow().catch(function(error) { showToast(error.message); });
+  }
+}
+
 async function processWithBackend() {
   const generation = caseGeneration;
   const expectedId = $("caseId").value;
   requireWorkflowCase();
-  if (!documents.some(function(doc) { return doc.file; })) {
+  if (localOcrReady || !documents.some(function(doc) { return doc.file; })) {
     if (!documents.length || documents.some(function(doc) { return !doc.text; })) throw new Error("请上传图片或提供完整OCR文本");
+    const deidentificationReview = assertOcrSafeForExternalModel();
     return workflowFetch("/api/cases/restructure-from-ocr", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ case_id: workflowCase.case_id, documents: documents.map(function(doc, index) {
-        return { document_id: doc.name || doc.id, page: doc.page || index + 1,
-          full_text: doc.text, blocks: doc.ocrBlocks || [], human_corrected: Boolean(doc.humanCorrected) };
-      }) })
+      body: JSON.stringify({ case_id: workflowCase.case_id, documents: reviewedOcrPayload(),
+        deidentification_confirmed: true,
+        manual_override_confirmed: deidentificationReview.manualOverride,
+        sensitive_pattern_findings: deidentificationReview.findings })
     });
   }
+  assertOcrSafeForExternalModel();
   const form = new FormData();
   form.append("case_id", $("caseId").value || "LOCAL-CASE");
   documents.forEach(function(doc) { if (doc.file) form.append("files", doc.file, doc.name); });
@@ -591,6 +706,7 @@ async function restructureFromCorrectedOcr() {
   const generation = caseGeneration;
   const expectedId = $("caseId").value;
   if (!backendUrl) { showToast("请先连接本地后端"); return; }
+  commitActiveOcrEditor();
   const correctedCount = documents.filter(function(doc) { return doc.humanCorrected; }).length;
   if (!correctedCount) { showToast("请先修改OCR文本并保存本页修正"); return; }
   if (documents.some(function(doc) { return !doc.text; })) { showToast("仍有页面没有OCR文本，不能重新结构化"); return; }
@@ -600,17 +716,13 @@ async function restructureFromCorrectedOcr() {
   setCaseStatus("应用OCR修正中", "processing");
   try {
     requireWorkflowCase();
+    const deidentificationReview = assertOcrSafeForExternalModel();
     const payload = {
       case_id: $("caseId").value || result.case_id,
-      documents: documents.map(function(doc, index) {
-        return {
-          document_id: doc.name || doc.id,
-          page: doc.page || index + 1,
-          full_text: doc.text || "",
-          blocks: doc.ocrBlocks || [],
-          human_corrected: Boolean(doc.humanCorrected)
-        };
-      })
+      deidentification_confirmed: true,
+      manual_override_confirmed: deidentificationReview.manualOverride,
+      sensitive_pattern_findings: deidentificationReview.findings,
+      documents: reviewedOcrPayload()
     };
     const response = await fetch(backendUrl.replace(/\/$/, "") + "/api/cases/restructure-from-ocr", {
       method: "POST",
@@ -1879,25 +1991,43 @@ function clearBackend() {
 }
 
 $("fileInput").addEventListener("change", function(e) { addFiles(e.target.files); });
+$("localOcrButton").addEventListener("click", runLocalOcrOnly);
 $("dropZone").addEventListener("click", function() { $("fileInput").click(); });
 $("dropZone").addEventListener("keydown", function(e) { if (e.key === "Enter" || e.key === " ") $("fileInput").click(); });
 ["dragenter", "dragover"].forEach(function(name) { $("dropZone").addEventListener(name, function(e) { e.preventDefault(); $("dropZone").classList.add("dragging"); }); });
 ["dragleave", "drop"].forEach(function(name) { $("dropZone").addEventListener(name, function(e) { e.preventDefault(); $("dropZone").classList.remove("dragging"); }); });
 $("dropZone").addEventListener("drop", function(e) { addFiles(e.dataTransfer.files); });
-$("saveOcrButton").addEventListener("click", function() {
-  const doc = documents.find(function(x) { return x.id === selectedDocId; });
-  if (doc) {
-    const revisedText = $("ocrText").value.trim();
-    doc.text = revisedText;
-    doc.humanCorrected = revisedText !== (doc.originalOcrText == null ? "" : doc.originalOcrText.trim());
-  }
+$("saveOcrButton").addEventListener("click", async function() {
+  const doc = commitActiveOcrEditor();
   painReport = null;
   careReport = null;
+  $("workflowDeidentified").checked = false;
+  $("workflowSensitivePatternReviewed").checked = false;
   setCaseStatus("OCR修正待应用", "review");
   renderDocuments();
   renderPainReport();
   renderCareReport();
-  showToast(doc && doc.humanCorrected ? "本页修正已保存；还需点击重新结构化" : "本页文本与原OCR一致");
+  updateSensitivePatternNotice();
+  if (!doc || !workflowCase) { showToast("当前没有可保存的案件OCR"); return; }
+  try {
+    const saved = await workflowFetch("/api/cases/save-reviewed-ocr", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case_id: workflowCase.case_id, documents: reviewedOcrPayload() })
+    });
+    assertCaseResponse(saved, workflowCase.case_id);
+    workflowCase = saved;
+    result = emptyWorkflowResult(saved.case_id);
+    renderWorkflow(); renderAll();
+    showToast(doc.humanCorrected ? "本页修正已保存到SQLite；请继续逐页复核" : "当前OCR文本已保存到SQLite");
+  } catch (error) {
+    showToast("本页修正仅保留在当前页面，写入SQLite失败：" + error.message);
+  }
+});
+$("ocrText").addEventListener("input", function() {
+  commitActiveOcrEditor();
+  $("workflowDeidentified").checked = false;
+  $("workflowSensitivePatternReviewed").checked = false;
+  updateSensitivePatternNotice();
 });
 $("applyOcrCorrectionsButton").addEventListener("click", restructureFromCorrectedOcr);
 $("runButton").addEventListener("click", runPipeline);
@@ -1987,6 +2117,7 @@ renderQualityAudit();
 renderIntegratedQuality();
 renderDeliveryWorkflow();
 renderWorkflow();
+updateSensitivePatternNotice();
 const savedWorkflowId = localStorage.getItem("medicalClaimsCaseId");
 if (backendUrl && savedWorkflowId) restoreWorkflowCase(savedWorkflowId);
 const initialView = new URLSearchParams(window.location.search).get("view");

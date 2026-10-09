@@ -1,6 +1,6 @@
 """Persisted user feedback and deterministic service follow-up."""
 from enum import Enum
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from .models import StrictModel
 
 
@@ -18,6 +18,11 @@ class FeedbackCategory(str, Enum):
     RECOVERY_QUESTION = "recovery_question"
     MEDICATION_QUESTION = "medication_question"
     RECOMMENDATION_QUESTION = "recommendation_question"
+    CLAIM_PROGRESS = "claim_progress"
+    CLAIM_MATERIAL = "claim_material"
+    COVERAGE_RULE = "coverage_rule"
+    VALUE_ADDED_SERVICE = "value_added_service"
+    HUMAN_SERVICE_REQUEST = "human_service_request"
     OTHER = "other"
 
 
@@ -42,19 +47,50 @@ class FeedbackRecord(FeedbackRequest):
 
 class FollowUpStatus(str, Enum):
     OPEN = "OPEN"
+    PROCESSING = "PROCESSING"
     RESOLVED = "RESOLVED"
+    CLOSED = "CLOSED"
+
+
+class FollowUpSourceType(str, Enum):
+    DELIVERY_FEEDBACK = "delivery_feedback"
+    SERVICE_SESSION = "service_session"
+    MANUAL = "manual"
+
+
+class FollowUpPriority(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    URGENT = "urgent"
 
 
 class FollowUpTask(StrictModel):
     task_id: str
-    case_id: str
-    feedback_id: str
+    case_id: str | None = None
+    feedback_id: str | None = None
+    service_analysis_id: str | None = None
+    source_type: FollowUpSourceType = FollowUpSourceType.DELIVERY_FEEDBACK
     category: FeedbackCategory
+    priority: FollowUpPriority = FollowUpPriority.MEDIUM
     status: FollowUpStatus = FollowUpStatus.OPEN
+    assignee: str | None = None
     note: str
     resolution: str | None = None
     created_at: str
     resolved_at: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "FollowUpTask":
+        if self.source_type == FollowUpSourceType.DELIVERY_FEEDBACK:
+            if not self.feedback_id or self.service_analysis_id is not None:
+                raise ValueError("delivery_feedback 待办必须且只能关联 feedback_id")
+        elif self.source_type == FollowUpSourceType.SERVICE_SESSION:
+            if not self.service_analysis_id or self.feedback_id is not None:
+                raise ValueError("service_session 待办必须且只能关联 service_analysis_id")
+        elif self.feedback_id is not None or self.service_analysis_id is not None:
+            raise ValueError("manual 待办不能冒充反馈或会话分析来源")
+        return self
 
 
 class ResolveFollowUpRequest(StrictModel):

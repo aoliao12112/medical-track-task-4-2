@@ -84,6 +84,7 @@ $env:DEEPSEEK_MODEL='deepseek-flash'
 打开：
 
 - 网页：<http://127.0.0.1:8765>
+- 角色门户：<http://127.0.0.1:8765/roles.html>
 - FastAPI 交互文档：<http://127.0.0.1:8000/docs>
 - 健康检查：<http://127.0.0.1:8000/api/health>
 
@@ -94,8 +95,9 @@ $env:DEEPSEEK_MODEL='deepseek-flash'
 | 顺序 | 接口 | 输入 | 输出 | 是否调用 DeepSeek |
 |---:|---|---|---|:---:|
 | 0 | `GET /api/health` | 无 | OCR、LLM与各引擎状态 | 否 |
-| 1 | `POST /api/cases/process-detailed` | 案件号 + 多张图片 | `ClaimCase` + 逐页OCR | 是 |
-| 1b | `POST /api/cases/restructure-from-ocr` | 修正后的OCR文本 | 新 `ClaimCase` | 是 |
+| 1a | `POST /api/cases/ocr-only` | 案件号 + 多张图片 | 逐页OCR待复核稿 | 否 |
+| 1b | `POST /api/cases/save-reviewed-ocr` | 人工修改后的OCR文本 | 本地保存状态 | 否 |
+| 1c | `POST /api/cases/restructure-from-ocr` | 已确认脱敏的修改版OCR文本 | 新 `ClaimCase` | 是 |
 | 2 | `POST /api/cases/analyze-pain-points` | `ClaimCase` | `PainPointReport` | 可选 |
 | 3 | `POST /api/cases/generate-care-guide` | 病例 + 痛点 | `CareGuideReport` | 可选 |
 | 4a | `GET /api/quality/audit-summary` | 无 | 机构覆盖安全审计 | 否 |
@@ -117,29 +119,55 @@ Invoke-RestMethod -NoProxy "$BaseUrl/api/health"
 
 `deepseek-ready` 只表示 Key 已载入，不代表余额充足或 Key 一定有效；第一次实际模型调用才会验证远端授权。
 
-### 6.2 第一问：图片 OCR 与结构化
+### 6.2 第一问：只在本机运行图片 OCR
 
 多文件上传使用 `curl.exe` 最稳定：
 
 ```powershell
 curl.exe --noproxy "*" -X POST `
-  -F "case_id=ZWX-CASE-001" `
+  -F "case_id=由案件创建接口或网页生成的UUID" `
   -F "files=@D:\病例\01-门诊病历.jpg" `
   -F "files=@D:\病例\02-检查报告.jpg" `
   -F "files=@D:\病例\03-费用清单.jpg" `
-  "http://127.0.0.1:8000/api/cases/process-detailed" `
-  -o ".\work\ZWX-CASE-001.detailed.json"
+  "http://127.0.0.1:8000/api/cases/ocr-only" `
+  -o ".\work\case-ocr.json"
 ```
 
-返回包含 `case` 和 `documents`；`documents` 保存逐页 OCR 文本、坐标、置信度和人工修正状态。
+返回的 `documents` 包含逐页 OCR 文本、坐标和人工修正状态，`external_model_called` 必须为
+`false`。先在网页逐页删除身份信息，不要直接把原始 OCR 发送到 DeepSeek。
 
-### 6.3 第一问：人工修正 OCR 后重新结构化
+### 6.3 第一问：保存人工修正但不调用模型
+
+网页“保存本页修正”会自动提交当前全部页。API 请求结构为：
+
+```json
+{
+  "case_id": "案件UUID",
+  "documents": [
+    {
+      "document_id": "01-门诊病历.jpg",
+      "page": 1,
+      "full_text": "姓名：[已脱敏]\n诊断：肺炎",
+      "blocks": [],
+      "human_corrected": true
+    }
+  ]
+}
+```
+
+提交到 `POST /api/cases/save-reviewed-ocr`。它只写入本地 SQLite，并把案件状态恢复为
+`OCR_READY`、脱敏状态恢复为 `pending_review`，不会消耗 Token。
+
+### 6.4 第一问：确认脱敏后重新结构化
 
 准备 `work/restructure-request.json`：
 
 ```json
 {
-  "case_id": "ZWX-CASE-001",
+  "case_id": "案件UUID",
+  "deidentification_confirmed": true,
+  "manual_override_confirmed": false,
+  "sensitive_pattern_findings": [],
   "documents": [
     {
       "document_id": "01-门诊病历.jpg",
@@ -152,6 +180,10 @@ curl.exe --noproxy "*" -X POST `
 }
 ```
 
+若自动规则仍命中虚构占位符或非患者信息，必须人工逐项核实后才可将
+`manual_override_confirmed` 改为 `true`。后端会独立扫描修改后的文本，并记录人工覆核审计。
+不要仅为了通过规则而随意填写格式逼真的假身份证号。
+
 ```powershell
 Invoke-RestMethod -NoProxy `
   -Uri "$BaseUrl/api/cases/restructure-from-ocr" `
@@ -159,7 +191,7 @@ Invoke-RestMethod -NoProxy `
   -InFile '.\work\restructure-request.json'
 ```
 
-### 6.4 第二问：多维痛点
+### 6.5 第二问：多维痛点
 
 请求文件结构：
 
@@ -179,7 +211,7 @@ Invoke-RestMethod -NoProxy `
 
 将 `use_llm` 改为 `false` 时只运行本地确定性规则，不消耗 DeepSeek Token。
 
-### 6.5 第三问：温度指引
+### 6.6 第三问：温度指引
 
 ```json
 {
@@ -197,7 +229,7 @@ Invoke-RestMethod -NoProxy `
   -InFile '.\work\care-request.json'
 ```
 
-### 6.6 第四问：真实覆盖审计
+### 6.7 第四问：真实覆盖审计
 
 ```powershell
 Invoke-RestMethod -NoProxy "$BaseUrl/api/quality/audit-summary"
@@ -205,7 +237,7 @@ Invoke-RestMethod -NoProxy "$BaseUrl/api/quality/audit-summary"
 
 该接口只读取安全报告，不读取 `work/provider_audit/private/`。
 
-### 6.7 第四问：品质画像
+### 6.8 第四问：品质画像
 
 请求核心结构：
 
@@ -235,7 +267,7 @@ Invoke-RestMethod -NoProxy `
   -InFile '.\work\quality-profile-request.json'
 ```
 
-### 6.8 第四问：可解释推荐
+### 6.9 第四问：可解释推荐
 
 ```json
 {

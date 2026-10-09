@@ -21,9 +21,10 @@ $env:DEEPSEEK_API_KEY="你的密钥"
 ## 启动
 
 ```powershell
-uvicorn web.backend.app:app --host 127.0.0.1 --port 8000
+& '.\scripts\start_backend.ps1'
 ```
 
+脚本自动加载 `web/backend/.env`，并兼容部分 Windows 中文用户名造成的 venv 启动器损坏。
 网页右上角点击“演示模式”，填写 `http://127.0.0.1:8000` 并检测连接。
 
 ## 手机预览与二维码
@@ -59,23 +60,40 @@ POST /api/quality/recommendations
 机构覆盖审计需先运行 `scripts/audit_provider_coverage.py`。画像接口只接收已经脱敏的医院、
 医生和治疗方案编号；样本量或可计算维度不足时会拒绝生成排行榜。
 
-## OCR人工复核
+## OCR、脱敏与人工复核
 
-网页第一问使用以下详细处理接口，同时返回结构化病例和逐页OCR文本：
+真实医疗材料优先使用两阶段接口。第一阶段只在本机运行 OCR：
 
 ```text
-POST /api/cases/process-detailed
+POST /api/cases/ocr-only
 ```
 
-完成OCR后，可在左侧逐页查看文本。人工对照原图修改模糊字、数字、单位、日期或否定词，
-先点击“保存本页修正”，再点击“应用修正并重新结构化”。重新结构化接口为：
+完成 OCR 后，可在左侧逐页查看并删除身份信息。保存按钮调用以下接口，只把修改版写入本地
+SQLite，不调用 DeepSeek：
+
+```text
+POST /api/cases/save-reviewed-ocr
+```
+
+确认脱敏后，重新结构化接口为：
 
 ```text
 POST /api/cases/restructure-from-ocr
 ```
 
-该接口不会再次运行OCR。长病例缓存按OCR文本哈希区分，因此只会重新处理受修改影响的分块；
+前后端都会对修改版文本进行敏感格式预警。若命中内容已确认属于虚构占位符或非患者信息，
+操作者可以进行明确人工覆核；后端将覆核方式、命中类别和修改版文本指纹写入审计日志。
+该接口不会再次运行OCR，且只把修改后的 `documents[].full_text` 发送给 DeepSeek。
+长病例缓存按OCR文本哈希区分，因此只会重新处理受修改影响的分块；
 第二问和第三问的旧结果会自动清空，避免继续使用修正前的病例事实。
+
+完整说明见 [`docs/ocr-deidentification-workflow.md`](../../docs/ocr-deidentification-workflow.md)。
+
+## 角色页面
+
+启动前端后访问 <http://127.0.0.1:8765/roles.html>。当前提供用户、理赔客服、医学审核、
+运营和系统管理五类页面。页面按最小必要信息展示，但正式认证仍需企业身份系统和后端鉴权
+中间件，不能把前端隐藏视为真实权限。
 
 完成第一问后，可在网页的“痛点洞察”页点击“分析当前病例”。对应接口为：
 

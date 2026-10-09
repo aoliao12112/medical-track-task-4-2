@@ -15,6 +15,7 @@ from medical_claims.workflow_models import CreateCaseRequest, WorkflowCase, Work
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "outputs" / "competition.db"
+CURRENT_SCHEMA_VERSION = 5
 
 
 class CaseNotFound(KeyError):
@@ -41,6 +42,12 @@ class CaseStorage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.executescript("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    migration_name TEXT NOT NULL,
+                    checksum TEXT,
+                    applied_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS cases (
                     case_id TEXT PRIMARY KEY, claim_event_id TEXT NOT NULL,
                     status TEXT NOT NULL, data_source TEXT NOT NULL,
@@ -79,10 +86,113 @@ class CaseStorage:
                     feedback_id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(delivery_id),
                     case_id TEXT NOT NULL REFERENCES cases(case_id), record_json TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS service_sessions (
+                    session_id_hash TEXT PRIMARY KEY,
+                    channel TEXT NOT NULL,
+                    session_time TEXT NOT NULL,
+                    deidentified_text TEXT,
+                    text_fingerprint TEXT NOT NULL,
+                    data_source TEXT NOT NULL,
+                    consent_status TEXT NOT NULL,
+                    deidentification_status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS service_analysis_results (
+                    analysis_id TEXT PRIMARY KEY,
+                    session_id_hash TEXT NOT NULL REFERENCES service_sessions(session_id_hash),
+                    primary_intent TEXT NOT NULL,
+                    secondary_intents_json TEXT NOT NULL,
+                    has_friction INTEGER NOT NULL CHECK(has_friction IN (0, 1)),
+                    friction_types_json TEXT NOT NULL,
+                    severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high', 'critical')),
+                    severity_score INTEGER NOT NULL CHECK(severity_score BETWEEN 0 AND 100),
+                    confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+                    evidence_json TEXT NOT NULL,
+                    recommended_action TEXT,
+                    engine_version TEXT NOT NULL,
+                    review_status TEXT NOT NULL CHECK(review_status IN ('pending', 'reviewed', 'rejected')),
+                    reviewer TEXT,
+                    analysis_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS case_service_links (
+                    link_id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL REFERENCES cases(case_id),
+                    session_id_hash TEXT NOT NULL REFERENCES service_sessions(session_id_hash),
+                    link_method TEXT NOT NULL,
+                    confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+                    reviewed INTEGER NOT NULL CHECK(reviewed IN (0, 1)),
+                    reviewer TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(case_id, session_id_hash)
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    external_subject TEXT UNIQUE,
+                    display_name TEXT NOT NULL,
+                    identity_source TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('active', 'disabled')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS roles (
+                    role_code TEXT PRIMARY KEY,
+                    role_name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    is_system INTEGER NOT NULL CHECK(is_system IN (0, 1)),
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS user_roles (
+                    user_id TEXT NOT NULL REFERENCES users(user_id),
+                    role_code TEXT NOT NULL REFERENCES roles(role_code),
+                    assigned_by TEXT REFERENCES users(user_id),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, role_code)
+                );
+                CREATE TABLE IF NOT EXISTS case_access_grants (
+                    grant_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(user_id),
+                    case_id TEXT NOT NULL REFERENCES cases(case_id),
+                    access_reason TEXT NOT NULL,
+                    granted_by TEXT REFERENCES users(user_id),
+                    expires_at TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, case_id)
+                );
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    audit_id TEXT PRIMARY KEY,
+                    actor_user_id TEXT REFERENCES users(user_id),
+                    actor_role_code TEXT,
+                    action TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT,
+                    result TEXT NOT NULL CHECK(result IN ('allowed', 'denied', 'error')),
+                    request_id TEXT,
+                    ip_hash TEXT,
+                    detail_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS follow_up_tasks (
-                    task_id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(case_id),
-                    feedback_id TEXT NOT NULL UNIQUE REFERENCES feedback(feedback_id),
-                    status TEXT NOT NULL, record_json TEXT NOT NULL, created_at TEXT NOT NULL
+                    task_id TEXT PRIMARY KEY,
+                    case_id TEXT REFERENCES cases(case_id),
+                    feedback_id TEXT UNIQUE REFERENCES feedback(feedback_id),
+                    service_analysis_id TEXT REFERENCES service_analysis_results(analysis_id),
+                    source_type TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    priority TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    assignee TEXT,
+                    note TEXT NOT NULL,
+                    record_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    resolution TEXT,
+                    CHECK (
+                        (source_type='delivery_feedback' AND feedback_id IS NOT NULL AND service_analysis_id IS NULL)
+                        OR (source_type='service_session' AND feedback_id IS NULL AND service_analysis_id IS NOT NULL)
+                        OR (source_type='manual' AND feedback_id IS NULL AND service_analysis_id IS NULL)
+                    )
                 );
                 CREATE TABLE IF NOT EXISTS mobile_previews (
                     token_hash TEXT PRIMARY KEY,
@@ -91,7 +201,109 @@ class CaseStorage:
                     expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_service_sessions_channel_time
+                    ON service_sessions(channel, session_time);
+                CREATE INDEX IF NOT EXISTS idx_service_analysis_intent_severity
+                    ON service_analysis_results(primary_intent, severity);
+                CREATE INDEX IF NOT EXISTS idx_case_service_links_session
+                    ON case_service_links(session_id_hash);
+                CREATE INDEX IF NOT EXISTS idx_user_roles_role
+                    ON user_roles(role_code);
+                CREATE INDEX IF NOT EXISTS idx_case_access_user_case
+                    ON case_access_grants(user_id, case_id);
+                CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_time
+                    ON audit_logs(actor_user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_time
+                    ON audit_logs(resource_type, resource_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_follow_up_tasks_case_status
+                    ON follow_up_tasks(case_id, status);
             """)
+            self._upgrade_follow_up_tasks(db)
+            now = datetime.now(timezone.utc).isoformat()
+            migrations = (
+                (1, "initial_competition_schema"),
+                (2, "add_mobile_previews"),
+                (3, "add_service_analysis_tables"),
+                (4, "generalize_follow_up_sources"),
+                (5, "add_role_scope_and_audit_tables"),
+            )
+            db.executemany(
+                "INSERT OR IGNORE INTO schema_migrations(version, migration_name, checksum, applied_at) "
+                "VALUES (?, ?, NULL, ?)",
+                [(version, name, now) for version, name in migrations],
+            )
+            role_rows = (
+                ("patient", "用户/患者", "仅访问本人获授权的关怀内容、推荐和反馈入口", 1),
+                ("claims_service", "理赔客服", "处理理赔进度、材料状态和服务待办，只查看必要摘要", 1),
+                ("medical_reviewer", "医学审核员", "审核脱敏病历、痛点证据和温度指引", 1),
+                ("operations", "运营/产品", "查看聚合统计、触达效果和反馈分类", 1),
+                ("system_admin", "系统管理员", "管理账号角色与审计配置，不默认获得病历浏览权", 1),
+            )
+            db.executemany(
+                "INSERT OR IGNORE INTO roles(role_code, role_name, description, is_system, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(*row, now) for row in role_rows],
+            )
+
+    @staticmethod
+    def _upgrade_follow_up_tasks(db):
+        """Upgrade the original feedback-only task table without losing rows."""
+
+        columns = {
+            row["name"]: row
+            for row in db.execute("PRAGMA table_info(follow_up_tasks)").fetchall()
+        }
+        required = {
+            "service_analysis_id", "source_type", "category", "priority", "assignee",
+            "note", "resolved_at", "resolution",
+        }
+        if required.issubset(columns) and not columns["case_id"]["notnull"] and not columns["feedback_id"]["notnull"]:
+            return
+
+        legacy_rows = db.execute("SELECT * FROM follow_up_tasks").fetchall()
+        db.execute("ALTER TABLE follow_up_tasks RENAME TO follow_up_tasks_legacy")
+        db.executescript("""
+            CREATE TABLE follow_up_tasks (
+                task_id TEXT PRIMARY KEY,
+                case_id TEXT REFERENCES cases(case_id),
+                feedback_id TEXT UNIQUE REFERENCES feedback(feedback_id),
+                service_analysis_id TEXT REFERENCES service_analysis_results(analysis_id),
+                source_type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                status TEXT NOT NULL,
+                assignee TEXT,
+                note TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                resolution TEXT,
+                CHECK (
+                    (source_type='delivery_feedback' AND feedback_id IS NOT NULL AND service_analysis_id IS NULL)
+                    OR (source_type='service_session' AND feedback_id IS NULL AND service_analysis_id IS NOT NULL)
+                    OR (source_type='manual' AND feedback_id IS NULL AND service_analysis_id IS NULL)
+                )
+            );
+        """)
+        for row in legacy_rows:
+            record = json.loads(row["record_json"])
+            db.execute(
+                "INSERT INTO follow_up_tasks(task_id, case_id, feedback_id, service_analysis_id, "
+                "source_type, category, priority, status, assignee, note, record_json, created_at, "
+                "resolved_at, resolution) VALUES (?, ?, ?, NULL, 'delivery_feedback', ?, 'medium', "
+                "?, NULL, ?, ?, ?, ?, ?)",
+                (
+                    row["task_id"], row["case_id"], row["feedback_id"],
+                    record.get("category", "other"), row["status"], record.get("note", ""),
+                    row["record_json"], row["created_at"], record.get("resolved_at"),
+                    record.get("resolution"),
+                ),
+            )
+        db.execute("DROP TABLE follow_up_tasks_legacy")
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_follow_up_tasks_case_status "
+            "ON follow_up_tasks(case_id, status)"
+        )
 
     @contextmanager
     def _connect(self):
@@ -159,7 +371,8 @@ class CaseStorage:
             db.execute("BEGIN IMMEDIATE")
             row = self._row(db, case_id)
             status = WorkflowStatus.RECEIVED
-            for kind, stage in (("structured", WorkflowStatus.STRUCTURED),
+            for kind, stage in (("ocr", WorkflowStatus.OCR_READY),
+                                ("structured", WorkflowStatus.STRUCTURED),
                                 ("pain", WorkflowStatus.PAIN_READY), ("care", WorkflowStatus.CARE_READY)):
                 if row[f"{kind}_result_json"] is not None:
                     status = stage
@@ -172,6 +385,52 @@ class CaseStorage:
             db.execute("UPDATE case_results SET ocr_result_json=?, updated_at=? WHERE case_id=?",
                        (encode(documents), now, case_id))
             db.execute("UPDATE cases SET updated_at=? WHERE case_id=?", (now, case_id))
+
+    def save_ocr_review_draft(self, case_id, documents):
+        """Save locally reviewed OCR and invalidate all downstream results."""
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._row(db, case_id)
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE case_results SET ocr_result_json=?, structured_result_json=NULL, "
+                "pain_result_json=NULL, care_result_json=NULL, updated_at=? WHERE case_id=?",
+                (encode(documents), now, case_id),
+            )
+            db.execute(
+                "UPDATE cases SET status=?, deidentification_status='pending_review', updated_at=? WHERE case_id=?",
+                (WorkflowStatus.OCR_READY.value, now, case_id),
+            )
+            self._invalidate_profile(db, case_id, clear_context=True)
+
+    def confirm_deidentification(self, case_id, review_method="manual_confirmation", findings=None,
+                                 document_fingerprint=None):
+        """Confirm that the reviewed OCR text, not necessarily the source image, is safe to send."""
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            if row["consent_status"] != "authorized":
+                raise WorkflowConflict("外部模型处理前必须先确认材料使用授权")
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE cases SET deidentification_status='confirmed', updated_at=? WHERE case_id=?",
+                (now, case_id),
+            )
+            db.execute(
+                "INSERT INTO audit_logs(audit_id, actor_user_id, actor_role_code, action, resource_type, "
+                "resource_id, result, request_id, ip_hash, detail_json, created_at) "
+                "VALUES(?,NULL,?,?,?,?,?,NULL,NULL,?,?)",
+                (
+                    str(uuid4()), "medical_reviewer", "confirm_deidentification", "case", case_id,
+                    "allowed", encode({
+                        "review_method": review_method,
+                        "sensitive_pattern_findings": list(findings or []),
+                        "document_fingerprint": document_fingerprint,
+                    }), now,
+                ),
+            )
 
     def save_structured(self, case_id, result):
         payload = json.loads(encode(result))
@@ -538,7 +797,10 @@ class CaseStorage:
             return self._delivery_row(db, delivery_id)
 
     def save_feedback(self, delivery_id, request):
-        from .feedback_models import FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpTask
+        from .feedback_models import (
+            FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpPriority,
+            FollowUpSourceType, FollowUpTask,
+        )
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             delivery = self._delivery_row(db, delivery_id)
@@ -553,9 +815,18 @@ class CaseStorage:
             task = None
             if needs_followup:
                 task = FollowUpTask(task_id=str(uuid4()), case_id=feedback.case_id, feedback_id=feedback.feedback_id,
-                                    category=feedback.category, note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
-                db.execute("INSERT INTO follow_up_tasks VALUES (?, ?, ?, ?, ?, ?)",
-                           (task.task_id, task.case_id, task.feedback_id, task.status.value, encode(task), now))
+                                    source_type=FollowUpSourceType.DELIVERY_FEEDBACK,
+                                    category=feedback.category,
+                                    priority=FollowUpPriority.HIGH if feedback.rating <= 2 else FollowUpPriority.MEDIUM,
+                                    note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
+                db.execute(
+                    "INSERT INTO follow_up_tasks(task_id, case_id, feedback_id, service_analysis_id, "
+                    "source_type, category, priority, status, assignee, note, record_json, created_at, "
+                    "resolved_at, resolution) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL)",
+                    (task.task_id, task.case_id, task.feedback_id, task.source_type.value,
+                     task.category.value, task.priority.value, task.status.value, task.note,
+                     encode(task), now),
+                )
             if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
                 if db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (feedback.case_id,)).fetchone():
@@ -591,8 +862,12 @@ class CaseStorage:
             task.status = FollowUpStatus.RESOLVED
             task.resolution = resolution
             task.resolved_at = datetime.now(timezone.utc).isoformat()
-            db.execute("UPDATE follow_up_tasks SET status='RESOLVED', record_json=? WHERE task_id=?", (encode(task), task_id))
-            if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+            db.execute(
+                "UPDATE follow_up_tasks SET status='RESOLVED', record_json=?, resolved_at=?, resolution=? "
+                "WHERE task_id=?",
+                (encode(task), task.resolved_at, task.resolution, task_id),
+            )
+            if task.case_id is not None and self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 open_task = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (task.case_id,)).fetchone()
                 self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
             return task

@@ -1,6 +1,7 @@
 """Phase A persistence and API integration, without external medical services."""
 import os
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -105,8 +106,105 @@ class CompetitionWorkflowTest(unittest.TestCase):
             response = self.client.post("/api/cases/process-detailed", data={"case_id": self.case.case_id},
                                         files={"files": ("sample.png", b"stub", "image/png")})
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(self.storage.get_case(self.case.case_id)["status"], "RECEIVED")
+        self.assertEqual(self.storage.get_case(self.case.case_id)["status"], "OCR_READY")
         self.assertEqual(self.storage.get_results(self.case.case_id)["ocr_result"], documents)
+
+    def test_ocr_only_never_calls_structuring_service(self):
+        pending = self.storage.create_case(CreateCaseRequest(
+            claim_event_id="claim-pending-ocr",
+            data_source="official_dataset",
+            consent_status="authorized",
+            deidentification_status="pending_review",
+        ))
+        documents = [{"document_id": "sample.png", "page": 1, "full_text": "仅本地OCR", "blocks": []}]
+        with patch("web.backend.app.recognize_uploaded_documents", return_value=documents), \
+             patch("web.backend.app.structure_case_with_long_document_support") as structure:
+            response = self.client.post(
+                "/api/cases/ocr-only",
+                data={"case_id": pending.case_id},
+                files={"files": ("sample.png", b"stubbed-image", "image/png")},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["external_model_called"])
+        structure.assert_not_called()
+        self.assertEqual(self.storage.get_case(pending.case_id)["status"], "OCR_READY")
+
+    def test_external_structuring_requires_deidentification_confirmation(self):
+        pending = self.storage.create_case(CreateCaseRequest(
+            claim_event_id="claim-pending-structure",
+            data_source="official_dataset",
+            consent_status="authorized",
+            deidentification_status="pending_review",
+        ))
+        payload = {
+            "case_id": pending.case_id,
+            "documents": [{"document_id": "reviewed", "page": 1, "full_text": "脱敏医疗文本"}],
+        }
+        denied = self.client.post("/api/cases/restructure-from-ocr", json=payload)
+        self.assertEqual(denied.status_code, 409, denied.text)
+        payload["deidentification_confirmed"] = True
+        linked_case = self.case.model_copy(update={"case_id": pending.case_id})
+        with patch("web.backend.app.structure_case_with_long_document_support", return_value=linked_case):
+            allowed = self.client.post("/api/cases/restructure-from-ocr", json=payload)
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        metadata = self.storage.get_case(pending.case_id)
+        self.assertEqual(metadata["deidentification_status"], "confirmed")
+        self.assertEqual(metadata["status"], "STRUCTURED")
+
+    def test_flagged_placeholder_requires_explicit_manual_override_and_is_audited(self):
+        pending = self.storage.create_case(CreateCaseRequest(
+            claim_event_id="claim-manual-deidentification",
+            data_source="official_dataset",
+            consent_status="authorized",
+            deidentification_status="pending_review",
+        ))
+        payload = {
+            "case_id": pending.case_id,
+            "deidentification_confirmed": True,
+            "documents": [{
+                "document_id": "reviewed",
+                "page": 1,
+                "full_text": "身份证号：000000000000000000（虚构占位符）",
+            }],
+        }
+        denied = self.client.post("/api/cases/restructure-from-ocr", json=payload)
+        self.assertEqual(denied.status_code, 409, denied.text)
+
+        payload["manual_override_confirmed"] = True
+        linked_case = self.case.model_copy(update={"case_id": pending.case_id})
+        with patch("web.backend.app.structure_case_with_long_document_support", return_value=linked_case) as structure:
+            allowed = self.client.post("/api/cases/restructure-from-ocr", json=payload)
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertEqual(structure.call_args.args[1][0]["full_text"], payload["documents"][0]["full_text"])
+        with self.storage._connect() as db:
+            audit = db.execute(
+                "SELECT detail_json FROM audit_logs WHERE resource_id=? AND action='confirm_deidentification'",
+                (pending.case_id,),
+            ).fetchone()
+        self.assertIsNotNone(audit)
+        self.assertEqual(json.loads(audit[0])["review_method"], "manual_override")
+
+    def test_save_reviewed_ocr_persists_modified_text_without_calling_llm(self):
+        self.storage.save_structured(self.case.case_id, self.case)
+        documents = [{
+            "document_id": "reviewed-page",
+            "page": 1,
+            "full_text": "患者姓名：[已脱敏]，诊断：肺炎",
+            "human_corrected": True,
+        }]
+        with patch("web.backend.app.structure_case_with_long_document_support") as structure:
+            response = self.client.post("/api/cases/save-reviewed-ocr", json={
+                "case_id": self.case.case_id,
+                "documents": documents,
+            })
+        self.assertEqual(response.status_code, 200, response.text)
+        structure.assert_not_called()
+        metadata = self.storage.get_case(self.case.case_id)
+        saved = self.storage.get_results(self.case.case_id)
+        self.assertEqual(metadata["status"], "OCR_READY")
+        self.assertEqual(metadata["deidentification_status"], "pending_review")
+        self.assertEqual(saved["ocr_result"][0]["full_text"], documents[0]["full_text"])
+        self.assertIsNone(saved["structured_result"])
 
     def test_stale_or_unlinked_results_rejected(self):
         self.storage.save_structured(self.case.case_id, self.case)

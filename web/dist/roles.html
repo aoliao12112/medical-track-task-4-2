@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>医护洞察 · 角色门户</title>
+  <link rel="stylesheet" href="./role-pages.css?v=20261009-rbac-v1">
+</head>
+<body data-role="portal">
+  <header class="role-topbar"><a class="role-brand" href="./index.html"><span>十</span><div><strong>医护洞察</strong><small>理赔后的医护关怀服务</small></div></a><div class="environment-badge">比赛原型 · 模拟角色</div></header>
+  <main class="portal-shell">
+    <section class="portal-hero"><div><span class="eyebrow">ROLE PORTAL</span><h1>选择业务工作台</h1><p>不同角色只看到完成工作所必需的信息。页面入口用于原型演示，真正权限仍由后端API和案件访问范围共同判断。</p></div><a class="button secondary" href="./index.html">返回综合工作台</a></section>
+    <section class="role-grid" aria-label="角色入口">
+      <a class="role-entry patient" href="./patient.html"><span class="role-icon">患</span><div><small>用户 / 患者</small><h2>我的医护关怀</h2><p>查看自己的温度指引、康复行动和复诊准备，提交反馈或申请客服。</p><strong>进入用户端 →</strong></div></a>
+      <a class="role-entry claims" href="./claims-service.html"><span class="role-icon">赔</span><div><small>理赔客服</small><h2>理赔服务工作台</h2><p>查看案件进度、材料状态和服务待办，不展示完整病历原文。</p><strong>进入客服端 →</strong></div></a>
+      <a class="role-entry medical" href="./medical-review.html"><span class="role-icon">医</span><div><small>医学审核员</small><h2>医疗内容审核台</h2><p>核对脱敏病例、痛点证据、温度指引及医学安全边界。</p><strong>进入审核端 →</strong></div></a>
+      <a class="role-entry operations" href="./operations.html"><span class="role-icon">营</span><div><small>运营 / 产品</small><h2>服务运营看板</h2><p>查看聚合覆盖、触达效果和反馈趋势，不进入单份病历原文。</p><strong>进入运营端 →</strong></div></a>
+      <a class="role-entry admin" href="./system-admin.html"><span class="role-icon">管</span><div><small>系统管理员</small><h2>权限与审计中心</h2><p>管理身份、角色和审计元数据；管理员默认没有病历查看权。</p><strong>进入管理端 →</strong></div></a>
+    </section>
+    <section class="boundary-callout"><strong>权限边界</strong><span>前端分角色只是信息呈现。正式上线必须接入企业身份、后端权限校验、案件范围授权与审计日志。</span></section>
+  </main>
+</body>
+</html>

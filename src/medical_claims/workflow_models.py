@@ -9,6 +9,7 @@ from medical_claims.models import StrictModel
 class WorkflowStatus(str, Enum):
     RECEIVED = "RECEIVED"
     PROCESSING = "PROCESSING"
+    OCR_READY = "OCR_READY"
     STRUCTURED = "STRUCTURED"
     PAIN_READY = "PAIN_READY"
     CARE_READY = "CARE_READY"

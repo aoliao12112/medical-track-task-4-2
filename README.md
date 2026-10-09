@@ -1,26 +1,61 @@
 # Medical Track Task 4-2
 
-基于理赔医护记录的“医护洞察与温度指引”引擎原型。
+基于理赔医护记录的“医护洞察与温度指引”端到端比赛原型。当前版本覆盖病历结构化、
+多维痛点识别、个性化温度指引、品质画像与可解释推荐，以及审核、模拟触达和反馈闭环。
 
 团队安装、共享 DeepSeek Key、本地启动以及全部接口调用示例见
 [`docs/team-setup-and-api-guide.md`](docs/team-setup-and-api-guide.md)。真实密钥、病例、OCR缓存和
 身份映射禁止上传 GitHub。
 
-## 团队
+## 当前实现
 
-- 1 名医学生
-- 2 名软件相关专业学生
+| 业务阶段 | 当前能力 | 关键边界 |
+|---|---|---|
+| 第一问 | RapidOCR、本地逐页复核、字段级证据、事件重建和 F1 评测 | 原图只在本机处理；外部模型只接收确认后的脱敏文本 |
+| 第二问 | 临床、费用、体验三类规则与 DeepSeek 语义候选合并 | 结论必须带证据，不判定医疗事故或医生责任 |
+| 第三问 | 病种知识卡、个性化温度指引、安全校验和人工盲评 | 知识卡与最终指引仍需医学审核 |
+| 第四问 | 医院/医生/治疗方案画像、样本门槛、覆盖审计和可解释推荐 | 样本不足时明确拒绝推荐，不用 LLM 虚构评分 |
+| 服务闭环 | SQLite 持久化、人工审核、模拟触达、手机预览、反馈与待办 | 比赛原型不发送真实短信或企微消息 |
+| 角色视图 | 用户、理赔客服、医学审核、运营、系统管理五类页面 | 正式认证仍需接企业统一身份系统，前端隐藏不等于权限控制 |
 
-## 初步计划
+数据库共 19 张业务表，结构与关系见
+[`docs/database-schema.md`](docs/database-schema.md)。角色入口为
+[`http://127.0.0.1:8765/roles.html`](http://127.0.0.1:8765/roles.html)。
+本次交付内容、演示顺序和剩余人工任务见
+[`docs/current-version-2026-10-09.md`](docs/current-version-2026-10-09.md)。
 
-- 周期：7 天
-- 阶段 1：完成 A
-- 阶段 2：并行完成 B、C
-- 阶段 3：完成 D，并进行整合与交付
+## 快速启动
 
-后续将在明确题目需求后补充技术方案、任务分工与每日里程碑。
+要求 Python 3.11 或更高版本。首次安装：
 
-## 当前范围：第一问
+```powershell
+py -3.12 -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -e '.[api,dev]'
+Copy-Item '.\web\backend\.env.example' '.\web\backend\.env'
+notepad '.\web\backend\.env'
+```
+
+在 `.env` 中只填写本机使用的 `DEEPSEEK_API_KEY`，禁止提交。随后分别打开两个终端：
+
+```powershell
+& '.\scripts\start_backend.ps1'
+```
+
+```powershell
+& '.\scripts\start_frontend.ps1'
+```
+
+访问：
+
+- 综合工作台：<http://127.0.0.1:8765/>
+- 角色门户：<http://127.0.0.1:8765/roles.html>
+- API 文档：<http://127.0.0.1:8000/docs>
+- 健康检查：<http://127.0.0.1:8000/api/health>
+
+启动脚本可以兼容部分 Windows 中文用户名导致的 venv 启动器损坏问题。完整安装、API 请求和
+队友协作说明见 [`docs/team-setup-and-api-guide.md`](docs/team-setup-and-api-guide.md)。
+
+## 第一问：病历结构化与医疗事件重建
 
 当前骨架实现“病历结构化与医疗事件重建”的领域模型和编排接口：
 
@@ -68,11 +103,18 @@
 它不判断“医生诊断不合理”“医生错误”或“治疗不当”。确有证据冲突时，仅生成
 `DIAGNOSIS_DOCUMENT_CONFLICT` / `DIAGNOSIS_EVIDENCE_REVIEW` 复核标记；临床合理性分析属于后续痛点识别模块。
 
-### OCR人工复核闭环
+### OCR、脱敏与人工复核闭环
 
-真实材料处理后，网页会保留每页OCR文本和平均置信度。复核人员可对照原图修正模糊字、
-数字、单位、日期和否定词，再使用修正文本重新结构化；此过程不会重复运行OCR。任何OCR修正
-都会清空旧的痛点报告和温度指引，要求基于更新后的病例重新生成，避免下游继续引用旧事实。
+真实材料必须走“两阶段”流程：先使用 `POST /api/cases/ocr-only` 在本机生成逐页 OCR，
+再逐页删除或替换姓名、身份证号、手机号、住址和个人医疗编号。点击“保存本页修正”会把
+当前修改版写入 SQLite，但不会调用 DeepSeek；保存修正会把脱敏状态重置为待复核，并清空
+旧的结构化、痛点和温度指引结果。
+
+结构化前，前后端都会对修改后的 OCR 文本运行敏感格式预警。预警是辅助规则，不是事实判断；
+对于已核实的虚构占位符或非患者信息，可以进行明确的人工覆核。系统会记录覆核方式、命中类别
+和文本指纹。`POST /api/cases/restructure-from-ocr` 只把同一份已确认的修改版文本发送给
+DeepSeek，原始图片不离开本机。完整流程见
+[`docs/ocr-deidentification-workflow.md`](docs/ocr-deidentification-workflow.md)。
 
 ## 本地开发
 
@@ -114,8 +156,10 @@ src/medical_claims/quality_engine.py # 六维画像聚合、准入门槛和解�
 knowledge/care_guides/ # 三个验收病种知识卡 + 肺结节演示卡（医学审核前均为草稿）
 tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
-web/dist/                         # 第一问网页演示与批量评测界面
+web/dist/                         # 四问综合工作台、角色页面、用户端和评测界面
 web/backend/app.py                # RapidOCR + DeepSeek 本地接口
+src/medical_claims/storage.py     # 19张SQLite表、工作流和审计持久化
+src/medical_claims/access_control.py # 五类角色的固定最小权限矩阵
 ```
 
 ## 第二问：多维痛点识别
@@ -185,9 +229,20 @@ OCR 缓存只留在其 `private/` 子目录。完整边界、输出说明和人�
 后端同时提供 `/api/quality/profiles/build` 和 `/api/quality/recommendations`。六维口径、拒绝推荐
 规则、离线批处理命令及还需人工完成的内容见 `docs/fourth-question-quality-profile.md`。
 
-## 网页演示
+## 网页演示与角色入口
 
 网页保留明确标记的固定演示样例；真实处理需连接后端并创建/读取案件，图片由 RapidOCR 在本机识别，DeepSeek 接收 OCR 文本。Phase D 已禁用未接后端的 Batch，不再用本地模板冒充图片处理成功；PDF/Word 未启用。
+
+`roles.html` 提供五类演示入口：
+
+- 用户端：只查看已审核、已发布的本人关怀内容并提交反馈；
+- 理赔客服端：查看案件进度、材料状态和服务待办，不读取完整 OCR 原文；
+- 医学审核端：查看脱敏结构化记录、痛点证据和关怀安全检查；
+- 运营端：只读取聚合覆盖、画像和服务待办；
+- 系统管理端：展示角色、案件范围和审计边界，管理员默认没有病历查看权。
+
+这些页面用于验证信息边界，不代表已经完成生产级登录。后端固定权限矩阵、企业身份接入、
+案件授权与审计要求见 [`docs/database-schema.md`](docs/database-schema.md)。
 
 具体启动方式见 `web/backend/README.md`。真实 API Key 只能放在后端环境变量中，禁止写入前端或提交到仓库。
 
@@ -216,3 +271,12 @@ outputs/<case_id>/
 ```
 
 只有已独立复核、状态为 `reviewed` 的 `gold.final.json` 才用于对外报告正式 F1。
+
+## 当前限制
+
+- 官方数据中部分医院只有单病例，第四问只能展示样本门槛、证据和拒绝推荐机制，不能宣称形成稳定排行榜；
+- OCR、结构化结果和知识卡都需要医学人员抽样或逐例复核，模型输出不构成诊疗建议；
+- PDF/Word 尚未直接接入，需先转换为图片；
+- SQLite 保存当前结果快照，不保存每次生成的完整历史版本；
+- 原始图片不写入 SQLite，刷新后如需对照原图必须重新选择本地文件；
+- 角色页面已按最小必要信息拆分，但生产级认证、令牌校验和 API 权限中间件仍属于上线工作。
