@@ -614,3 +614,15 @@ knowledge/quality/disease_provider_catalog.json
 - 前端医院和医生卡显示“已核验 / 部分核验 / 待核验”，逐维状态不再直接显示内部英文值；空状态不再声称“0 家通过证据门槛”。
 - 新增故意抛出 `httpx.ConnectTimeout` 的回归：DeepSeek 返回 5 家医院和 5 名医生时，后端仍返回全部候选且均为待核验；前端模拟 DOM/API 同样渲染 5 张医院卡。
 - 回归：Python **241 passed**；前端模拟 DOM/API **113 checks passed**。首次沙箱内全量测试因 Windows Temp 权限造成 SQLite 建库失败，设置仓库内 `TEMP/TMP` 后全量通过；该环境错误不是业务回归。
+
+# 数据库基础重构 — 品质画像与推荐分层（2026-10-10）
+
+- 引入 `database_migrations.py` 和 `schema_migrations`，将现有 SQLite 从启动时临时建表改为版本化 migration；当前版本为 5。
+- 原有 `case_profile_contexts`、`profile_case_records`、`quality_portfolios` 三张第四问画像表完整保留，旧接口和旧写入路径继续兼容。新链路完成双写、历史迁移和一致性验证前禁止删除。
+- 新增独立品质画像层：`provider_quality_observations` 保存历史病例原子质量事实，`provider_profile_snapshots` 保存对象 × 病种的版本化画像，`provider_metric_scores` 保存费用效率、用药合理性、治疗规范性、再入院、患者反馈和数据质量等指标。
+- 新增独立推荐层：`recommendation_reports`、`recommendation_items`、`recommendation_scores`、`recommendation_evidence` 保存当前案件的推荐输出、匹配分和证据链。推荐项可通过 `profile_snapshot_id` 明确关联当时使用的历史品质画像。
+- 新增用户、角色、权限、案件参与关系表，以及客服会话、会话分析、案件关联、系统日志和 Batch 持久化表。当前完成的是数据层；正式登录鉴权、客服业务 API、Batch 服务端恢复尚未接入，不把建表写成业务功能已经完成。
+- `CaseStorage` 增加迁移、Schema 查询、案件范围权限判断、新品质画像读写和推荐报告版本化读写。结构化或痛点结果变化时，旧推荐报告会失效。
+- 已先创建 SQLite 一致性备份，再将当前 `outputs/competition.db` 从 9 表迁移到 28 表；原案件、结果、旧画像、复核、触达、反馈和待办记录数保持不变，`PRAGMA foreign_key_check` 为 0 项异常。备份保存在被 Git 忽略的 `outputs/backups/`。
+- 新增 `tests/test_database_design.py`，覆盖新库建表、旧库兼容、旧画像表保留、角色案件范围、画像/推荐分层和推荐版本化。
+- 回归：Python **247 passed**；前端模拟 DOM/API **130 checks passed**。测试证明 Schema 兼容性与现有工程行为未回归，不代表新画像指标已用正式历史病例完成医学有效性验证。
