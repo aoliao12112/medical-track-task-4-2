@@ -58,7 +58,7 @@ DeepSeek 结构化和审计。比赛演示和团队联调都应遵循本流程�
 确认命中内容属于虚构占位符、医院公共信息或其他非患者身份信息。人工覆核不是“一键忽略”，
 后端会重新扫描请求中的修改版文本；存在规则命中但请求未明确人工覆核时返回 `409`。
 
-确认成功后，`audit_logs` 会记录：
+确认成功后，`system_logs` 会记录：
 
 - `action=confirm_deidentification`；
 - `review_method=rule_clear` 或 `manual_override`；

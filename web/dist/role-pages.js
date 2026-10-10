@@ -219,7 +219,7 @@
       {label:"审计接入",value:"待接API",note:"不能用前端隐藏替代"},
     ]);
     setPanel("primary", "角色矩阵", "最小权限配置", `<table class="data-table"><thead><tr><th>角色</th><th>必要权限</th><th>可查看脱敏病历</th></tr></thead><tbody>${roles.map(r => `<tr><td><strong>${r[0]}</strong></td><td>${r[1]}</td><td class="${r[2] === "是" ? "permission-yes" : "permission-no"}">${r[2]}</td></tr>`).join("")}</tbody></table>`);
-    setPanel("secondary", "安全边界", "管理员也受限制", `<div class="list">${listItem("身份来源", "正式上线应接企业统一登录；本地表不保存密码。", "设计完成", "")}${listItem("案件范围", "角色决定能做什么，case_access_grants决定能看哪个案件。", "待接API", "warn")}${listItem("审计日志", "查看、审核、触达和拒绝都应记录允许或拒绝结果。", "待接API", "warn")}</div>`);
+    setPanel("secondary", "安全边界", "管理员也受限制", `<div class="list">${listItem("身份来源", "本地原型使用密码哈希和会话；正式上线应接企业统一登录。", "已接本地认证", "")}${listItem("案件范围", "角色决定能做什么，case_participants决定能看哪个案件。", "已接数据层", "")}${listItem("审计日志", "敏感操作统一写入system_logs，不保存完整医疗原文。", "持续完善", "warn")}</div>`);
   }
 
   async function load() {

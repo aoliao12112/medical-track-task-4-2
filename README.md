@@ -16,10 +16,10 @@
 | 第三问 | 病种知识卡、个性化温度指引、安全校验和人工盲评 | 知识卡与最终指引仍需医学审核 |
 | 第四问 | 医院/医生/治疗方案画像、样本门槛、覆盖审计和可解释推荐 | 样本不足时明确拒绝推荐，不用 LLM 虚构评分 |
 | 服务闭环 | SQLite 持久化、人工审核、模拟触达、手机预览、反馈与待办 | 比赛原型不发送真实短信或企微消息 |
-| 角色视图 | 用户、理赔客服、医学审核、运营、系统管理五类页面 | 正式认证仍需接企业统一身份系统，前端隐藏不等于权限控制 |
+| 角色视图 | 用户、理赔客服、医学审核、运营、系统管理五类页面 | 本地登录、Session 与接口鉴权已接入；生产仍需企业统一身份系统 |
 
-数据库共 19 张业务表，结构与关系见
-[`docs/database-schema.md`](docs/database-schema.md)。角色入口为
+当前数据库基线为 Schema Version 5、共 28 张表，结构与关系见
+[`DATABASE_OVERVIEW.md`](DATABASE_OVERVIEW.md)。角色入口为
 [`http://127.0.0.1:8765/roles.html`](http://127.0.0.1:8765/roles.html)。
 本次交付内容、演示顺序和剩余人工任务见
 [`docs/current-version-2026-10-09.md`](docs/current-version-2026-10-09.md)。
@@ -158,8 +158,9 @@ tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
 web/dist/                         # 四问综合工作台、角色页面、用户端和评测界面
 web/backend/app.py                # RapidOCR + DeepSeek 本地接口
-src/medical_claims/storage.py     # 19张SQLite表、工作流和审计持久化
-src/medical_claims/access_control.py # 五类角色的固定最小权限矩阵
+src/medical_claims/database_migrations.py # Schema 5、28张表及迁移唯一权威来源
+src/medical_claims/storage.py     # 运行时数据访问、范围过滤和状态流转
+src/medical_claims/auth.py        # 本地登录、密码哈希与Session
 ```
 
 ## 第二问：多维痛点识别
@@ -279,4 +280,4 @@ outputs/<case_id>/
 - PDF/Word 尚未直接接入，需先转换为图片；
 - SQLite 保存当前结果快照，不保存每次生成的完整历史版本；
 - 原始图片不写入 SQLite，刷新后如需对照原图必须重新选择本地文件；
-- 角色页面已按最小必要信息拆分，但生产级认证、令牌校验和 API 权限中间件仍属于上线工作。
+- 角色页面已按最小必要信息拆分，本地登录、Session、角色与案件权限校验已接入；企业级 SSO、集中式会话和生产安全加固仍属于上线工作。

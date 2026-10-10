@@ -419,3 +419,210 @@ Date：2026-10-07。移除 Phase D 为避免假结果而采用的 Batch 禁用�
 - 修改 `tests/frontend_hardening.test.cjs`：在无当前案件条件下扫描三个病例并自动创建三个不同 `case_id`，核对图片绑定；第一例 OCR 失败后其余病例继续，工作台可打开结果，单例重试复用原编号，导出来自后端重读结果。前端回归 **37 checks passed**。
 - 更新 `README1.md` 与本日志。后端 API、SQLite schema 和核心算法文件均未修改。
 - 全量 Python 回归：**181 passed / 0 failed**，仅 1 条既有 Starlette/httpx 弃用提示。前端 Node 模拟 DOM/API：**37 passed / 0 failed**。未在测试中调用 OCR、DeepSeek 或写入默认比赛数据库。
+
+# 第四问 Phase 1 — 独立多源能力画像与可解释推荐（2026-10-07）
+
+## 范围与病种选择
+
+- 本轮只实现统一数据结构、候选医院目录、能力画像、当前治疗方案评价、推荐评分、地理、历史证据规则、V2 服务/API、测试和文档。
+- 最终选择肺炎、流感和高血压，候选医院分别为 9、7、5 家。公开数据审计中糖尿病仅约 3 家满足可追溯证据要求，因此没有降低门槛或生成假候选。
+- 未改 OCR、前三问、Batch 和现有前端，未重新处理 70 例，也未调用外部模型进行医院排名。
+
+## 新的独立主流程
+
+```text
+knowledge/quality/disease_provider_catalog.json
+  + PatientRecommendationContext
+  + 可选的 ProfileCaseRecord 事实
+→ quality_phase1_service.py
+→ quality_phase1_adapters.py（仅历史事实转换）
+→ quality_phase1_engine.py（评分/地理/历史/医生/治疗规则）
+→ HospitalRecommendationReportV2 / ClinicianRecommendation / CurrentTreatmentEvaluation
+```
+
+新增 V2 接口：
+
+- `GET /api/quality/v2/catalog`
+- `POST /api/quality/v2/recommendations/hospitals`
+- `POST /api/quality/v2/recommendations/clinicians`
+- `POST /api/quality/v2/treatment-evaluation`
+
+## 新旧边界
+
+- **保留兼容**：`quality_models.py`、`quality_engine.py`、`quality_integration.py`、`multisource_quality.py`、旧 candidate pool 和旧 API，现有页面可以继续使用。
+- **仅复用数据**：旧 `ProfileCaseRecord` 与 SQLite `profile_case_records` 中的费用、用药、治疗、住院、痛点、结局和反馈事实；已审计公开 JSON 仅用于离线生成新版目录。
+- **不再进入新主流程**：旧画像分、旧候选排序、`recommend_profiles` 和旧 `RecommendationReport`。未知病种也不会回退到旧推荐。
+- **独立新模块**：`quality_phase1_models.py`、`disease_provider_catalog.py`、`quality_phase1_adapters.py`、`quality_phase1_engine.py`、`quality_phase1_service.py` 和跟踪目录 JSON。
+
+## 规则落地
+
+- 医院画像六维：机构基础、病种专科、医疗资源、区域服务、患者服务/反馈、历史案例支撑。
+- 医生画像六维：基础资质、病种专长、技术/治疗专长、所属平台能力、当前病例匹配、历史案例支撑。
+- 当前治疗评价六维：诊疗匹配、用药合理性、操作/手术合理性、治疗完整性、出院连续照护、风险管理；没有历史病例仍可评价。
+- 医院推荐权重：病种专科 35%、地理 25%、专业能力 25%、历史证据 10%、偏好/费用 5%。缺失的可选维度不计 0，按可用权重归一化。
+- 地理规则：同等能力本地优先；复杂病例、本地无合格能力或明确转诊需求时升级排序。
+- 历史规则：0 例不计 0；1 例只称单病例观察；2–4 例为有限参考；5 例及以上为较充分参考，仍不等于长期质量结论。
+
+## 文件
+
+- 新增：`src/medical_claims/quality_phase1_models.py`
+- 新增：`src/medical_claims/disease_provider_catalog.py`
+- 新增：`src/medical_claims/quality_phase1_adapters.py`
+- 新增：`src/medical_claims/quality_phase1_engine.py`
+- 新增：`src/medical_claims/quality_phase1_service.py`
+- 新增：`scripts/build_phase1_provider_catalog.py`
+- 新增：`knowledge/quality/disease_provider_catalog.json`
+- 新增：`tests/test_quality_phase1.py`
+- 新增：`QUALITY_RECOMMENDATION_STANDARD.md`
+- 修改：`web/backend/app.py`、`README1.md`、`IMPLEMENTATION_LOG.md`
+
+## 验证
+
+- Phase 1 单元测试覆盖目录规模、来源追溯、跨病种隔离、地理排序、核心能力门槛、历史缺失、单病例边界、推荐理由、医生非职称排序、当前治疗无历史评价和 V2 服务不回退旧推荐。
+- Phase 1 单元测试：**17 passed**；新旧第四问定向回归：**28 passed**。
+- 全量 Python 回归：**204 passed / 0 failed**，仅 1 条既有 Starlette/httpx 弃用提示。
+- 前端模拟 DOM/API 回归：**49 checks passed**；本轮未修改前端。
+- 工程测试不等于正式医学效果、真实用户 E2E 或 KR4 达标。
+
+## 仍缺数据
+
+- 经人工核验的医生公开资料和排班/可就诊信息；
+- 患者真实城市、复杂度、合并症和明确偏好；
+- 可稳定关联医院/医生的足量历史费用、结局、再入院和反馈；
+- 当前治疗合理性的正式医学规则或专家复核结果；
+- 独立正式 KR4 数据与验收结论。
+
+# 第四问 Phase 2 — V2 正式前端（2026-10-07）
+
+## 页面结构
+
+- 将“品质推荐”正式页面切换为五块：当前患者就医需求、推荐医院、医院完整画像、医生推荐、当前治疗方案评价。
+- 视觉复用第三问的页面标题、白色卡片、青绿色强调、状态标签和折叠证据；桌面端分块展示，760px 以下改为单列。
+- 增加常驻但不遮挡内容的小型合规说明，不宣称系统自动完成脱敏。
+
+## 推荐上下文
+
+- 默认“当前病例”：病种和合并症来自当前结构化诊断，复杂度来自已有痛点严重程度及病例结构规则；城市仅为推荐情境临时输入，不修改原始病例。
+- “演示病例”：肺炎+上海、流感+上海、高血压+苏州。只生成临时 V2 请求，不写当前案件或 SQLite，不固定医院结果和转诊结论。
+- 切换病例立即清除第四问结果；切出演示模式后重新使用当前病例事实。
+
+## V2 展示
+
+- 正式页面调用 V2 医院推荐、医生推荐和当前治疗评价接口；候选能力画像随医院推荐响应返回，不再把 catalog 当作前端准入白名单。
+- 医院卡按后端返回顺序展示当前推荐分、置信度、地理层级、至少两条真实理由、来源与限制；不在前端重算分数。
+- 医院详情展示六个能力维度，并将地理可达性放在独立“当前推荐情境”。
+- 当前没有可靠医生目录数据，页面显示资料不足，不生成假医生；若 V2 后续返回真实资料，卡片结构支持对应六维信息。
+- 治疗区展示六维评价、证据、限制、人工复核提示、只基于状态生成的患者总结及历史治疗参考空状态。
+
+## 旧版兼容边界
+
+- 旧覆盖审计、旧 candidate pool、旧历史画像与旧 RecommendationReport 前端代码仍保留在 `legacyQualityUi` 隐藏容器。
+- 普通演示入口不加载旧第四问接口，不同时展示两套推荐结果。
+- 旧后端接口未删除，供兼容或开发调试使用。
+
+## 修改文件
+
+- `web/dist/index.html`
+- `web/dist/app.js`
+- `web/dist/styles.css`
+- `tests/frontend_hardening.test.cjs`
+- `README1.md`
+- `IMPLEMENTATION_LOG.md`
+- `QUALITY_RECOMMENDATION_STANDARD.md`
+
+## 验证
+
+- 前端专项覆盖 V2 API、三个基准演示病种、目录外明确病种、低置信诊断、地区缺失、理由来源、六维画像、医生空状态、治疗六维、中文状态、历史缺失、演示隔离和切案清理。
+- 全量 Python 回归：**204 passed / 0 failed**，仅 1 条既有 Starlette/httpx 弃用提示。
+- 前端模拟 DOM/API：**92 checks passed**；新增检查覆盖 V2 四接口、三个演示上下文、真实病例限制、医院/医生六维画像、治疗总结、旧入口隐藏和移动端 CSS。
+- 当前未执行真实浏览器 E2E；模拟 DOM/API 测试不能替代真实病例或医学效果验证。
+
+# 第四问 V2 — 通用病种准入与候选发现修正（2026-10-07）
+
+## 修正后的主线
+
+- 当前病例中可靠识别的明确疾病均可进入 V2，不再要求病种预先存在于固定目录。前端以结构化诊断状态、置信度和诊断语境选择病种，不允许用户覆盖真实病例病种。
+- 新增独立 `provider_discovery.py`，按“已核验基准目录 / 本地可信缓存 → 可插拔动态 provider → 统一证据门槛”的顺序发现医院与医生。
+- `disease_provider_catalog` 改为已核验能力缓存与比赛基准数据集；肺炎、流感、高血压仅代表当前已有 9/7/5 家完成覆盖验证的基准病种。
+- 动态 provider 必须返回统一医院/医生能力画像。医院身份、病种相关科室或能力、核心来源链接未通过门槛的资料会被拒绝，搜索摘要和无来源常识不能直接进入推荐。
+- 通过门槛的画像可写入本地 `outputs/provider_capability_cache.json`，再由后续病例复用。不同病种下的同一机构分别保存，避免能力画像互相覆盖。
+- 可靠候选不足时按实际数量返回并披露限制；没有合格资料时返回空结果和明确原因，不再使用“目录外病种不支持”的结论。
+
+## 接口与边界
+
+- 新增 `POST /api/quality/v2/provider-discovery`：查询可信资源并触发部署层配置的动态发现 provider。
+- 新增 `POST /api/quality/v2/provider-cache/verified`：仅保存通过统一证据门槛的能力画像。
+- 现有医院推荐接口已改为消费通用发现结果；评分权重、地理规则、历史证据规则均未修改。
+- 本节初版只实现动态发现插件协议和 fallback 编排；后续“在线发现与证据链”修正已补充真实联网适配器，见下节。
+- 前三问、Batch、SQLite schema 和旧第四问兼容接口均未修改。
+
+## 验证
+
+- 新增回归覆盖：目录外明确病种进入动态发现、合格资料可推荐、病种证据错配被拒绝、少于 5 家时不凑数、本地可信缓存写入与复用、无证据画像拒绝写入、V2 新接口注册。
+- 前端回归覆盖：固定白名单已移除、糖尿病等目录外明确病种会调用真实 V2 接口、低置信诊断不会被提升为推荐事实。
+- 全量 Python 回归：**208 passed / 0 failed**，仅 1 条既有 Starlette/httpx 弃用提示。
+- 前端模拟 DOM/API 回归：**95 checks passed**。这些结果验证当时的工程行为，不代表动态联网来源、真实病例推荐质量或 KR4 已正式达标。
+
+# 第四问 V2 — 在线动态发现与证据链（2026-10-07）
+
+- 新增 `online_provider_discovery.py`。配置 Key 时优先使用 Serper；无 Key 时使用搜狗网页检索并以 Bing RSS 降级发现候选链接。搜索标题和摘要不写入能力证据。
+- 系统随后抓取候选权威原始页面，只接受卫健委、政府、大学/医学院或能够自证身份的医院官网页面，并拒绝内网地址、非网页内容和无法确认来源的站点。
+- 发现顺序为当前城市、同省、周边区域医疗中心；复杂病例或明确转诊情境再扩大到国家临床重点专科范围。
+- 病种能力需求由病例明确诊断生成。三个基准病种使用已验证科室词；其他病种使用病例诊断名称作为能力检索事实，不凭大模型常识猜测所属专科。
+- 动态医院画像沿用统一 `HospitalCapabilityProfile`；动态医生画像沿用统一 `ClinicianCapabilityProfile`。没有历史病例不影响公开能力准入。
+- 新增结构化 `CapabilityEvidenceRecord`，保存 `source_name`、`source_type`、`source_url`、`query_date`、必要短 `evidence_text`、`evidence_field` 和 `supported_claim`。正式推荐理由必须关联具体 evidence record 或真实历史病例字段。
+- 医院评分完成后，再对前列医院发现医生；医生职称只展示，现有医生推荐权重未修改。
+- 核验成功的医院和医生自动写入 `outputs/provider_capability_cache.json`。相同病种与机构优先复用，默认 90 天刷新周期；缓存过期时保留本次可用资料并同时尝试在线核验。
+- 前端等待状态依次说明病种能力解析、权威资源发现/核验、推荐与医生匹配。医院卡、医院关键画像和医生卡可展开查看理由、短证据、来源机构、来源类型、原始网址与查询日期。
+- 网络或搜索 provider 不可用时返回明确降级原因；不会回退旧推荐、不会把目录外病种标记为不支持、不会用搜索摘要或固定结果补位。
+- 隐私边界：在线发现只发送病种名称和推荐地区，不发送 OCR 文本、病例正文或患者身份字段。
+- 未修改前三问、Batch、医院评分权重、缺失维度归一化或当前治疗六维。
+
+验证：在线医院/医生发现、原始页面证据、搜索摘要隔离、自动缓存、网络失败降级、推荐理由证据关联均有回归。随后完成了真实联网排查：修复中文医疗查询质量不足、第三方聚合页误判、名单标题误当医院、营销句误当医院名、医生统计语句误当姓名等问题；旧版在线缓存会按新版证据规则失效重核。以目录外病种“白内障 + 上海市”实际运行，生成 5 条查询、取得 30 条搜索结果、读取 20 个原始页面，最终有 2 家医院和 2 名医生通过权威证据门槛并进入 V2 结果。诊断文件为 `outputs/live_cataract_shanghai_discovery_verified.json`，最终含医生结果的验收文件为 `outputs/live_cataract_shanghai_acceptance.json`。全量 Python **216 passed**，前端模拟 DOM/API **100 checks passed**；这些结果不等于全国医疗资源已完成预采集或 KR4 已正式达标。
+
+# 第四问 V2 — 推荐意图与重庆白内障验收（2026-10-08）
+
+- 第三问温度指引和第四问 `RecommendationIntent` 共用 `external_model_policy.py`：只有案件同时满足已授权、已确认脱敏和外部模型处理开关时才允许调用，不要求重复确认。
+- 第四问发送给 DeepSeek 的内容限定为主/次诊断、住院科室、手术/操作、必要医疗事件和推荐地区，不发送 case_id、OCR 全文、原始图片或直接身份信息。
+- 第四问优先读取当前案件已保存的第三问 `care_guide.disease_topic`，并把它作为锁定的上游核心病种；DeepSeek 不再重新选择主病种，只补充治疗目标、专科能力需求、复杂度、地域策略和检索计划。仅在第三问尚不存在时，才降级为从结构化病例判断。
+
+# 第四问 V2 — 固定权重评分与轻量事实核验（2026-10-08）
+
+- DeepSeek 推荐规划统一输出 3–5 家候选医院、每院 2–3 条理由、固定五维分数，并尽量输出 1–3 名可核验医生及固定四维分数；提示词集中在 `recommendation_prompt.py`。
+- 医院固定权重：病种/专科匹配 35%、地理与就医便利 20%、医院专业能力 20%、医生/专家资源 15%、技术与治疗能力 10%。
+- 医生固定权重：当前病种匹配 35%、治疗/手术专长 30%、所属医院/科室平台 20%、临床资历与公开能力 15%。
+- 后端忽略 DeepSeek 的 `total_score`，按固定权重重新计算；地理分使用案件城市与医院城市的确定性规则纠正。
+- 联网资料只用于核验医院/医生身份、地区、科室/专业方向和推荐理由。A/B 级证据可进入正式展示；资料不足时保留候选、降低 `evidence_confidence` 并标记“公开资料有限”，只有明确病种或身份事实冲突才移除。
+- 历史病例、患者反馈、完整六维画像和多个官方来源不再参与医院/医生准入，也不进入本轮固定权重总分。
+- 第四问医院卡和医生卡展示后端总分、逐维分数、固定权重、理由、来源链接、证据可信度和核验状态。
+- 重庆白内障授权病例真实验收：DeepSeek 锁定第三问病种，后端返回 5 家医院；前三家为重庆本地，后两家为成都/西安；医生公开资料本次未形成可靠结果，按“公开资料有限”处理，未生成占位医生。
+- 五病种公开资源流程验收结果保存于 `outputs/scoring_v2_five_disease_validation_summary.json`：肺炎 5 家/1 名医生，流感 5 家/2 名医生，高血压 5 家/0 名医生，白内障 5 家/1 名医生，屈光不正 2 家/0 名医生。所有医院均带理由和证据链接；高血压与屈光不正暴露出本地候选覆盖不足，不能把工程返回数量解释为推荐质量已达标。
+- 回归：Python **241 passed**；前端模拟 DOM/API **108 checks passed**。测试证明固定权重、总分重算、地理纠偏、资料不足降级和既有流程未回归，不代表正式医学推荐效果达标。
+- 前端第四问同样优先显示第三问核心病种，不再自行从诊断列表重新选一次；后端仍校验该病种确实存在于当前结构化病例，防止跨案件或无依据传递。
+- 常规病例采用本地优先。本地推荐最多 3 家，再补充 LLM 规划的周边一二线/区域中心城市；周边机构必须有公立三级甲等和当前病种能力证据。医院评分权重与缺失维度归一化未修改。
+- 新增 `knowledge/quality/verified_provider_capability_cache.json`，保存已联网核验的白内障机构能力和来源证据，不保存最终名次。V2 运行时优先复用这层可信缓存，覆盖不足时仍进入在线动态发现。
+- 重庆白内障实案最终由 V2 规则返回 3 家重庆医院，并补充成都四川大学华西医院和西安交通大学第一附属医院。每条正式理由均关联具体 evidence record 和权威原始网址。
+- 验收输出：`outputs/chongqing_cataract_upstream_acceptance.json`。实案中的第四问病种为“皮质型老年性白内障左眼”，来源明确记录为 `care_guide.disease_topic`；医生动态资料本次未达到证据门槛，保持为空，不用职称或搜索摘要补位。
+- 全量 Python：**235 passed / 0 failed**；前端模拟 DOM/API：**101 checks passed**。首次沙箱内全量运行因 Windows 系统 Temp 权限导致 SQLite 无法建库，改用宿主环境复跑后全部通过。
+
+# 第四问 V2 — 联网失败保留模型候选（2026-10-08）
+
+- DeepSeek 已成功输出的医院和医生候选不再依赖联网核验成功才能展示。权威页面核验结果优先合并；没有命中缓存或联网超时的候选转换为统一的待核验能力画像，继续进入既有固定权重重算与地理排序。
+- 证据状态统一为 `verified`、`partially_verified`、`pending_verification`、`contradicted`。只有明确事实冲突才移除候选；`ConnectTimeout`、搜索服务不可用、单页读取失败、暂未找到公开资料，以及缺少历史病例、患者反馈或完整六维画像均不会删除候选。
+- 待核验候选的置信度降低，并明确显示“推荐基于当前病例与模型综合判断，公开证据暂未完成核验。”待核验画像不会写入可信缓存；后续重新生成时仍会优先读取有效缓存并再次尝试联网补证。
+- 修复本地优先排序对同城候选的截断：前三家本地优先，其余本地候选仍保留在周边候选之后，不会因显示顺序规则被直接丢弃。
+- 前端医院和医生卡显示“已核验 / 部分核验 / 待核验”，逐维状态不再直接显示内部英文值；空状态不再声称“0 家通过证据门槛”。
+- 新增故意抛出 `httpx.ConnectTimeout` 的回归：DeepSeek 返回 5 家医院和 5 名医生时，后端仍返回全部候选且均为待核验；前端模拟 DOM/API 同样渲染 5 张医院卡。
+- 回归：Python **241 passed**；前端模拟 DOM/API **113 checks passed**。首次沙箱内全量测试因 Windows Temp 权限造成 SQLite 建库失败，设置仓库内 `TEMP/TMP` 后全量通过；该环境错误不是业务回归。
+
+# 数据库基础重构 — 品质画像与推荐分层（2026-10-10）
+
+- 引入 `database_migrations.py` 和 `schema_migrations`，将现有 SQLite 从启动时临时建表改为版本化 migration；当前版本为 5。
+- 原有 `case_profile_contexts`、`profile_case_records`、`quality_portfolios` 三张第四问画像表完整保留，旧接口和旧写入路径继续兼容。新链路完成双写、历史迁移和一致性验证前禁止删除。
+- 新增独立品质画像层：`provider_quality_observations` 保存历史病例原子质量事实，`provider_profile_snapshots` 保存对象 × 病种的版本化画像，`provider_metric_scores` 保存费用效率、用药合理性、治疗规范性、再入院、患者反馈和数据质量等指标。
+- 新增独立推荐层：`recommendation_reports`、`recommendation_items`、`recommendation_scores`、`recommendation_evidence` 保存当前案件的推荐输出、匹配分和证据链。推荐项可通过 `profile_snapshot_id` 明确关联当时使用的历史品质画像。
+- 新增用户、角色、权限、案件参与关系表，以及客服会话、会话分析、案件关联、系统日志和 Batch 持久化表。当前完成的是数据层；正式登录鉴权、客服业务 API、Batch 服务端恢复尚未接入，不把建表写成业务功能已经完成。
+- `CaseStorage` 增加迁移、Schema 查询、案件范围权限判断、新品质画像读写和推荐报告版本化读写。结构化或痛点结果变化时，旧推荐报告会失效。
+- 已先创建 SQLite 一致性备份，再将当前 `outputs/competition.db` 从 9 表迁移到 28 表；原案件、结果、旧画像、复核、触达、反馈和待办记录数保持不变，`PRAGMA foreign_key_check` 为 0 项异常。备份保存在被 Git 忽略的 `outputs/backups/`。
+- 新增 `tests/test_database_design.py`，覆盖新库建表、旧库兼容、旧画像表保留、角色案件范围、画像/推荐分层和推荐版本化。
+- 回归：Python **247 passed**；前端模拟 DOM/API **130 checks passed**。测试证明 Schema 兼容性与现有工程行为未回归，不代表新画像指标已用正式历史病例完成医学有效性验证。

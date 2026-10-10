@@ -178,7 +178,8 @@ class CompetitionWorkflowTest(unittest.TestCase):
         self.assertEqual(structure.call_args.args[1][0]["full_text"], payload["documents"][0]["full_text"])
         with self.storage._connect() as db:
             audit = db.execute(
-                "SELECT detail_json FROM audit_logs WHERE resource_id=? AND action='confirm_deidentification'",
+                "SELECT request_params_json FROM system_logs "
+                "WHERE case_id=? AND action='confirm_deidentification'",
                 (pending.case_id,),
             ).fetchone()
         self.assertIsNotNone(audit)

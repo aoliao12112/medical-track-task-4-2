@@ -21,9 +21,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    Depends, FastAPI, File, Form, Header, HTTPException, Query, Request,
+    Response, UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import Field
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from pydantic import Field, field_validator
 
 from medical_claims.json_utils import normalize_json_output
 from medical_claims.long_case import chunk_documents, document_text_size, merge_claim_cases
@@ -62,6 +66,7 @@ from medical_claims.evaluation import evaluate
 from dataclasses import asdict
 from medical_claims.storage import CaseStorage, CaseNotFound, WorkflowConflict, WorkflowItemNotFound
 from medical_claims.workflow_models import CreateCaseRequest, WorkflowCase
+from medical_claims.auth import SessionStore, hash_password, verify_password
 from medical_claims.profile_records import (
     HistoricalProfileImport, CaseProfileContextRequest, StoredPortfolioBuildRequest,
     ConfirmedProviderContext, build_profile_case_record, resolve_disease_group,
@@ -75,15 +80,46 @@ from medical_claims.multisource_quality import (
     build_multisource_candidate_pools,
     load_multisource_inputs,
 )
+from medical_claims.quality_phase1_models import (
+    CapabilityCacheWriteRequest,
+    ClinicianRecommendation,
+    ClinicianRecommendationRequestV2,
+    CurrentTreatmentEvaluation,
+    DiseaseProviderCatalog,
+    HospitalRecommendationReportV2,
+    HospitalRecommendationRequestV2,
+    ProviderDiscoveryQuery,
+    ProviderDiscoveryResult,
+    RecommendationIntent,
+    TreatmentEvaluationRequestV2,
+)
+from medical_claims.quality_phase1_service import (
+    DEFAULT_CATALOG_PATH,
+    run_clinician_recommendation,
+    run_hospital_recommendation,
+    run_provider_discovery,
+    run_treatment_evaluation,
+)
+from medical_claims.recommendation_intent import (
+    build_recommendation_fact_pack,
+    validate_recommendation_intent,
+)
+from medical_claims.recommendation_prompt import build_recommendation_planner_body
+from medical_claims.external_model_policy import (
+    ExternalModelAuthorizationError,
+    ExternalModelPurpose,
+    require_external_model_authorization,
+)
+from medical_claims.disease_provider_catalog import load_catalog
+from medical_claims.provider_discovery import LocalCapabilityCache
 from medical_claims.delivery import prepare_delivery_content, SendDeliveryRequest
 from medical_claims.review_models import ReviewRequest
 from medical_claims.feedback_models import FeedbackRequest, ResolveFollowUpRequest
-from fastapi.responses import JSONResponse
 from urllib.parse import urlencode
 
 
-app = FastAPI(title="Medical Claims Structure API", version="0.5.0")
-BACKEND_REVISION = "2026-10-07-mobile-preview-v1"
+app = FastAPI(title="Medical Claims Structure API", version="0.6.0")
+BACKEND_REVISION = "2026-10-10-main-new-consolidated"
 # 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
 # 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
 LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
@@ -96,8 +132,9 @@ app.add_middleware(
         "https://medical-claims-workbench.zhengwenxi251.chatgpt.site",
     ],
     allow_origin_regex=r"^http://(?:localhost|127\.0\.0\.1|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?$",
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 
@@ -128,10 +165,202 @@ async def limit_remote_mobile_access(request: Request, call_next):
     return await call_next(request)
 
 _ocr_engine: Any | None = None
+_auth_sessions = SessionStore(ttl_hours=int(os.getenv("AUTH_SESSION_TTL_HOURS", "12")))
+AUTH_COOKIE_NAME = "medical_claims_session"
+WEB_DIST = Path(__file__).resolve().parents[1] / "dist"
 
 
 def get_case_storage() -> CaseStorage:
     return CaseStorage()
+
+
+class LoginRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=1, max_length=500)
+
+
+class UpdateOwnProfileRequest(StrictModel):
+    display_name: str | None = Field(default=None, max_length=100)
+    phone: str | None = Field(default=None, max_length=50)
+    email: str | None = Field(default=None, max_length=254)
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("显示名称不能为空")
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not re.fullmatch(r"[+0-9()\-./ ]+", value) or len(re.sub(r"\D", "", value)) < 5:
+            raise ValueError("手机号格式不正确")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+            raise ValueError("邮箱格式不正确")
+        return value
+
+
+class ChangePasswordRequest(StrictModel):
+    current_password: str = Field(min_length=1, max_length=500)
+    new_password: str = Field(min_length=8, max_length=500)
+    confirm_new_password: str = Field(min_length=1, max_length=500)
+
+
+class ClaimCaseCreateRequest(StrictModel):
+    claim_event_id: str = Field(min_length=1, max_length=200)
+    data_source: str = Field(default="user_upload", min_length=1, max_length=200)
+    consent_status: str = Field(default="pending", min_length=1, max_length=100)
+    deidentification_status: str = Field(default="pending", min_length=1, max_length=100)
+
+
+def _public_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    return {key: identity.get(key) for key in (
+        "user_id", "username", "display_name", "phone", "email", "status",
+        "role_code", "role_name", "permissions", "last_login_at",
+    )}
+
+
+def current_user(request: Request) -> dict[str, Any]:
+    user_id = _auth_sessions.resolve(request.cookies.get(AUTH_COOKIE_NAME))
+    identity = get_case_storage().get_user_identity(user_id) if user_id else None
+    if identity is None or identity["status"] != "ACTIVE":
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    return identity
+
+
+def current_claim_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    if identity["role_code"] != "CLAIM":
+        raise HTTPException(status_code=403, detail="当前账号无权进入理赔工作区")
+    return identity
+
+
+def require_permission(identity: dict[str, Any], permission: str) -> None:
+    if permission not in identity["permissions"]:
+        raise HTTPException(status_code=403, detail=f"缺少操作权限：{permission}")
+
+
+def require_case_permission(identity: dict[str, Any], case_id: str, permission: str) -> None:
+    require_permission(identity, permission)
+    if not get_case_storage().user_can_access_case(identity["user_id"], case_id, permission):
+        # Do not disclose whether an unassigned case exists.
+        raise HTTPException(status_code=404, detail="案件不存在或当前账号无权访问")
+
+
+@app.post("/api/auth/login")
+def login(request: LoginRequest, response: Response):
+    storage = get_case_storage()
+    user = storage.get_user_by_username(request.username.strip())
+    if user is None or user["status"] != "ACTIVE" or not verify_password(request.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="账号或密码错误")
+    storage.mark_login(user["user_id"])
+    token = _auth_sessions.create(user["user_id"])
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=os.getenv("AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes"},
+        max_age=int(_auth_sessions.ttl.total_seconds()),
+        path="/",
+    )
+    return _public_identity(storage.get_user_identity(user["user_id"]))
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response):
+    _auth_sessions.revoke(request.cookies.get(AUTH_COOKIE_NAME))
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return {"logged_out": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(identity: dict[str, Any] = Depends(current_user)):
+    return _public_identity(identity)
+
+
+@app.patch("/api/auth/me")
+def update_auth_me(
+    request: UpdateOwnProfileRequest,
+    identity: dict[str, Any] = Depends(current_user),
+):
+    changed_fields = request.model_fields_set
+    if not changed_fields:
+        raise HTTPException(status_code=400, detail="请至少提交一项可修改资料")
+    if "display_name" in changed_fields and request.display_name is None:
+        raise HTTPException(status_code=400, detail="显示名称不能为空")
+    updated = get_case_storage().update_own_profile(
+        identity["user_id"],
+        display_name=request.display_name if "display_name" in changed_fields else identity["display_name"],
+        phone=request.phone if "phone" in changed_fields else identity["phone"],
+        email=request.email if "email" in changed_fields else identity["email"],
+    )
+    return _public_identity(updated)
+
+
+@app.post("/api/auth/change-password")
+def change_own_password(
+    request: ChangePasswordRequest,
+    identity: dict[str, Any] = Depends(current_user),
+):
+    storage = get_case_storage()
+    current_hash = storage.get_user_password_hash(identity["user_id"])
+    if current_hash is None:
+        raise HTTPException(status_code=401, detail="当前账号不可用")
+    if not verify_password(request.current_password, current_hash):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if request.new_password != request.confirm_new_password:
+        raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+    if verify_password(request.new_password, current_hash):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+    new_hash = hash_password(request.new_password)
+    if not storage.update_own_password_hash(
+        identity["user_id"], expected_hash=current_hash, new_hash=new_hash,
+    ):
+        raise HTTPException(status_code=409, detail="密码已被更新，请重新操作")
+    return {"changed": True, "message": "密码已修改"}
+
+
+@app.get("/", include_in_schema=False)
+def portal_root():
+    return RedirectResponse(url="/login", status_code=302)
+
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    return FileResponse(WEB_DIST / "login.html")
+
+
+@app.get("/claim", include_in_schema=False)
+def claim_page():
+    return FileResponse(WEB_DIST / "claim.html")
+
+
+@app.get("/legacy", include_in_schema=False)
+def legacy_workbench():
+    return FileResponse(WEB_DIST / "index.html")
+
+
+@app.get("/{asset_name}", include_in_schema=False)
+def portal_asset(asset_name: str):
+    allowed = {"portal.css", "login.js", "claim.js", "styles.css", "app.js"}
+    if asset_name not in allowed:
+        raise HTTPException(status_code=404, detail="资源不存在")
+    return FileResponse(WEB_DIST / asset_name)
 
 
 @app.exception_handler(CaseNotFound)
@@ -263,6 +492,93 @@ def sensitive_ocr_findings(documents: list[dict[str, Any]]) -> list[str]:
 
     text = "\n".join(str(document.get("full_text") or "") for document in documents)
     return [label for label, pattern in SENSITIVE_OCR_PATTERNS if pattern.search(text)]
+
+
+@app.get("/api/claim/dashboard")
+def claim_dashboard(identity: dict[str, Any] = Depends(current_claim_user)):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().claim_dashboard(identity["user_id"])
+
+
+@app.get("/api/claim/cases")
+def claim_cases(
+    search: str | None = Query(default=None, max_length=200),
+    claim_status: str | None = Query(default=None, max_length=100),
+    consent_status: str | None = Query(default=None, max_length=100),
+    care_status: str | None = Query(default=None, max_length=100),
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().list_claim_cases(
+        identity["user_id"], search=search, claim_status=claim_status,
+        consent_status=consent_status, care_status=care_status,
+    )
+
+
+@app.post("/api/claim/cases", status_code=201)
+def create_claim_case(
+    request: ClaimCaseCreateRequest,
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_permission(identity, "CASE_CREATE")
+    return get_case_storage().create_case(
+        CreateCaseRequest(**request.model_dump()), owner_user_id=identity["user_id"]
+    )
+
+
+@app.get("/api/claim/cases/{case_id}")
+def claim_case_detail(case_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
+    require_case_permission(identity, case_id, "CASE_VIEW")
+    return get_case_storage().get_claim_case_detail(identity["user_id"], case_id)
+
+
+@app.get("/api/claim/tasks")
+def claim_tasks(identity: dict[str, Any] = Depends(current_claim_user)):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().claim_tasks(identity["user_id"])
+
+
+@app.post("/api/claim/cases/{case_id}/care/trigger")
+def claim_trigger_care(case_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
+    require_case_permission(identity, case_id, "CARE_TRIGGER")
+    return get_case_storage().trigger_care(identity["user_id"], case_id)
+
+
+@app.post("/api/claim/cases/{case_id}/documents/process")
+async def claim_process_documents(
+    case_id: str,
+    files: list[UploadFile] = File(...),
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_case_permission(identity, case_id, "DOCUMENT_UPLOAD")
+    if not files:
+        raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
+    storage = get_case_storage()
+    storage.begin_processing(case_id)
+    try:
+        with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
+            documents = await recognize_uploaded_documents(files, Path(tmp))
+            storage.save_ocr(case_id, documents)
+            case = structure_case_with_long_document_support(case_id, documents)
+            storage.save_structured(case_id, case)
+            return {
+                "case_id": case_id,
+                "material_status": "completed",
+                "analysis_ready": True,
+                "message": "材料处理完成，医护分析准备已就绪",
+            }
+    except httpx.HTTPStatusError as exc:
+        logger.exception("DeepSeek API returned an HTTP error")
+        raise HTTPException(status_code=502, detail="材料处理失败，请稍后重试或补充材料") from exc
+    except httpx.TimeoutException as exc:
+        logger.exception("DeepSeek API timed out")
+        raise HTTPException(status_code=504, detail="材料处理超时，请稍后重试") from exc
+    except Exception as exc:
+        logger.exception("Claim document processing failed")
+        raise HTTPException(status_code=500, detail="材料处理失败，请重新上传或补充材料") from exc
+    finally:
+        if storage.get_case(case_id)["status"] == "PROCESSING":
+            storage.finish_failed_processing(case_id)
 
 
 def normalize_document_id(value: str) -> str:
@@ -734,6 +1050,24 @@ def care_guide_with_deepseek(
     return result
 
 
+def recommendation_intent_with_deepseek(
+    case: ClaimCase,
+    context,
+    upstream_primary_disease: str | None = None,
+) -> RecommendationIntent:
+    """LLM 只理解病例和规划检索，不生成医院能力结论或最终推荐。"""
+    body = build_recommendation_planner_body(
+        case,
+        context,
+        upstream_primary_disease,
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+        max_output_tokens=int(os.getenv("DEEPSEEK_RECOMMENDATION_INTENT_MAX_OUTPUT_TOKENS", "6000")),
+    )
+    output_text = extract_output_text(post_deepseek(body))
+    intent = RecommendationIntent.model_validate_json(normalize_json_output(output_text))
+    return validate_recommendation_intent(intent, case, context, upstream_primary_disease)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str | bool | int]:
     try:
@@ -998,6 +1332,10 @@ def generate_case_care_guide(request: CareGuideRequest) -> CareGuideReport:
     method = GenerationMethod.RULES_FALLBACK
     if request.use_llm:
         try:
+            require_external_model_authorization(
+                storage.get_case(case.case_id),
+                ExternalModelPurpose.CARE_GUIDE,
+            )
             draft = care_guide_with_deepseek(case, pain_report, disease_topic, card)
             method = GenerationMethod.LLM
         except Exception as exc:
@@ -1070,6 +1408,99 @@ def get_quality_recommendations(request: RecommendationRequest) -> Recommendatio
     )
     report.warnings.append("PREVIEW ONLY：此请求自行提供portfolio；正式案件推荐请使用案件级接口和已保存数据")
     return report
+
+
+@app.get("/api/quality/v2/catalog", response_model=DiseaseProviderCatalog)
+def get_phase1_provider_catalog() -> DiseaseProviderCatalog:
+    """读取已核验比赛基准目录；该目录不是病种支持白名单。"""
+    try:
+        return load_catalog(DEFAULT_CATALOG_PATH)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Phase 1 候选医院目录不可用") from exc
+
+
+@app.post("/api/quality/v2/provider-discovery", response_model=ProviderDiscoveryResult)
+def discover_phase1_providers(request: ProviderDiscoveryQuery) -> ProviderDiscoveryResult:
+    """按任意明确病种查询可信缓存，并在部署层可用时调用动态发现 provider。"""
+    try:
+        return run_provider_discovery(request)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="医疗机构能力发现服务不可用") from exc
+
+
+@app.post("/api/quality/v2/provider-cache/verified")
+def write_verified_phase1_provider_cache(request: CapabilityCacheWriteRequest) -> dict[str, int]:
+    """仅接收已经通过统一证据门槛的能力画像，供后续病例复用。"""
+    try:
+        return LocalCapabilityCache().write_verified(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="本地可信能力缓存不可用") from exc
+
+
+@app.post(
+    "/api/quality/v2/recommendations/hospitals",
+    response_model=HospitalRecommendationReportV2,
+)
+def get_phase1_hospital_recommendations(
+    request: HospitalRecommendationRequestV2,
+) -> HospitalRecommendationReportV2:
+    """能力证据主导的新医院推荐；旧记录只作为可选历史事实补充。"""
+    try:
+        intent = request.recommendation_intent
+        if request.case is not None:
+            if request.case.case_id != request.context.case_id:
+                raise ValueError("推荐案件与当前上下文 case_id 不一致")
+            storage = get_case_storage()
+            storage.require_current(request.context.case_id, request.case)
+            require_external_model_authorization(
+                storage.get_case(request.context.case_id),
+                ExternalModelPurpose.RECOMMENDATION_INTENT,
+            )
+            saved_results = storage.get_results(request.context.case_id)
+            saved_care = saved_results.get("care_result")
+            upstream_primary_disease = None
+            if saved_care:
+                care_report = CareGuideReport.model_validate(saved_care)
+                if care_report.case_id == request.context.case_id:
+                    upstream_primary_disease = care_report.guide.disease_topic
+            intent = recommendation_intent_with_deepseek(
+                request.case,
+                request.context,
+                upstream_primary_disease=upstream_primary_disease,
+            )
+            request = request.model_copy(update={"recommendation_intent": intent})
+        records = get_case_storage().load_profile_records()
+        return run_hospital_recommendation(request, historical_records=records)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="RecommendationIntent 外部模型调用失败") from exc
+    except ExternalModelAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Phase 1 推荐所需目录不可用") from exc
+
+
+@app.post(
+    "/api/quality/v2/recommendations/clinicians",
+    response_model=list[ClinicianRecommendation],
+)
+def get_phase1_clinician_recommendations(
+    request: ClinicianRecommendationRequestV2,
+) -> list[ClinicianRecommendation]:
+    return run_clinician_recommendation(request)
+
+
+@app.post(
+    "/api/quality/v2/treatment-evaluation",
+    response_model=CurrentTreatmentEvaluation,
+)
+def get_phase1_treatment_evaluation(
+    request: TreatmentEvaluationRequestV2,
+) -> CurrentTreatmentEvaluation:
+    return run_treatment_evaluation(request)
 
 
 @app.get("/api/quality/multisource-candidate-pools", response_model=MultiSourceCandidatePools)

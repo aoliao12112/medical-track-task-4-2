@@ -3,6 +3,9 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 from medical_claims.multisource_quality import (
     EvidenceSufficiency,
     build_multisource_candidate_pools,
@@ -15,7 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def inputs():
-    return load_multisource_inputs(ROOT)
+    try:
+        return load_multisource_inputs(ROOT)
+    except ValueError:
+        pytest.skip("需要本地生成且不得提交的多源审计 JSON")
 
 
 def test_three_priority_diseases_generate_truthful_candidate_pools():
@@ -97,7 +103,12 @@ def test_missing_disease_specialty_evidence_is_excluded():
 
 def test_candidate_pool_api_returns_same_evidence_gate():
     assert "/api/quality/multisource-candidate-pools" in {route.path for route in app.routes}
-    data = get_multisource_candidate_pools()
+    try:
+        data = get_multisource_candidate_pools()
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            pytest.skip("需要本地生成且不得提交的多源审计 JSON")
+        raise
     assert data.generated_final_recommendation is False
     assert {item.disease_group: item.candidate_count for item in data.diseases} == {
         "pneumonia": 9,

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 from unittest.mock import patch
 
@@ -60,7 +61,7 @@ def saved_care_case(path):
     return storage, workflow
 
 
-def test_mobile_preview_uses_hashed_token_and_hides_real_case_id(tmp_path):
+def test_mobile_preview_is_ephemeral_and_hides_real_case_id(tmp_path):
     database = tmp_path / "preview.db"
     storage, workflow = saved_care_case(database)
 
@@ -73,10 +74,12 @@ def test_mobile_preview_uses_hashed_token_and_hides_real_case_id(tmp_path):
     assert publication["report"]["guide"]["case_id"] == publication["case_id"]
 
     with sqlite3.connect(database) as db:
-        stored_hash, stored_json = db.execute(
-            "SELECT token_hash, preview_json FROM mobile_previews"
-        ).fetchone()
-    assert stored_hash == hashlib.sha256(created["token"].encode()).hexdigest()
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )}
+    assert len(tables) == 28
+    stored_hash = hashlib.sha256(created["token"].encode()).hexdigest()
+    stored_json = json.dumps(CaseStorage._preview_cache[stored_hash], ensure_ascii=False)
     assert created["token"] not in stored_json
     assert workflow.case_id not in stored_json
 

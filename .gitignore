@@ -12,6 +12,9 @@ Thumbs.db
 # Common build/cache outputs
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.pytest_tmp_*/
+.test_temp/
 .venv/
 venv/
 node_modules/

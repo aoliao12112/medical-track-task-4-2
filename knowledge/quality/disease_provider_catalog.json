@@ -1,0 +1,3816 @@
+{
+  "diseases": [
+    {
+      "disease_group": "pneumonia",
+      "disease_label": "肺炎",
+      "hospitals": [
+        {
+          "hospital_id": "HOSP-8CDC3780604E",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-8CDC3780604E",
+            "hospital_name": "上海市肺科医院",
+            "province": "上海市",
+            "city": "上海市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "呼吸系统专科医院",
+            "institution_role": "呼吸系统专科医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-8CDC3780604E-S1"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸内科"
+            ],
+            "key_specialties": [
+              "呼吸内科国家临床重点专科"
+            ],
+            "key_specialty_level": "国家级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "医院官网明确公开呼吸内科等国家临床重点专科。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8CDC3780604E-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8CDC3780604E-S1"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-8CDC3780604E-S1",
+              "title": "上海市肺科医院医院简介",
+              "url": "https://www.shanghaipulmonaryhospital.org/about.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-9EA84735E7E0",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-9EA84735E7E0",
+            "hospital_name": "北京市上地医院",
+            "province": "北京市",
+            "city": "北京市",
+            "hospital_level": "二级",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 60.0,
+              "level": "basic",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-9EA84735E7E0-S1"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸内科",
+              "儿科呼吸专业"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "海淀区政府机构介绍公开呼吸内科和儿科呼吸专业。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-9EA84735E7E0-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 59.0,
+              "level": "basic",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-9EA84735E7E0-S1"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-9EA84735E7E0-S1",
+              "title": "北京市上地医院机构介绍",
+              "url": "https://zyk.bjhd.gov.cn/jbdt/auto4504_51799/201810/t20181003_3435472_hd.shtml",
+              "authority_type": "海淀区政府",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-8CC912EAC040",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-8CC912EAC040",
+            "hospital_name": "吉林大学第一医院",
+            "province": "吉林省",
+            "city": "长春市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-8CC912EAC040-S1",
+                "HOSP-8CC912EAC040-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸相关临床科室"
+            ],
+            "key_specialties": [
+              "医院公开共有28个国家临床重点专科建设项目"
+            ],
+            "key_specialty_level": "国家级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "吉林大学官方医院介绍公开科室总量和国家临床重点专科数量；该页面未逐项列明呼吸专科级别。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8CC912EAC040-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8CC912EAC040-S1",
+                "HOSP-8CC912EAC040-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-8CC912EAC040-S1",
+              "title": "吉林大学附属医院介绍",
+              "url": "https://www.jlu.edu.cn/fwzn.htm",
+              "authority_type": "吉林大学",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-8CC912EAC040-S2",
+              "title": "吉林大学第一医院介绍",
+              "url": "https://www.jlu.edu.cn/fwzn/fsyy.htm",
+              "authority_type": "吉林大学",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-E53C29B6381F",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-E53C29B6381F",
+            "hospital_name": "唐山市工人医院",
+            "province": "河北省",
+            "city": "唐山市",
+            "hospital_level": null,
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 55.0,
+              "level": "basic",
+              "confidence": 0.8,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-E53C29B6381F-S1",
+                "HOSP-E53C29B6381F-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸与危重症医学科",
+              "胸外科"
+            ],
+            "key_specialties": [
+              "胸外科等唐山市临床重点专科建设单位"
+            ],
+            "key_specialty_level": "其他公开重点专科",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "卫健委公开重点专科建设名单包含胸外科等相关专科。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E53C29B6381F-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 60.0,
+              "level": "basic",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E53C29B6381F-S1",
+                "HOSP-E53C29B6381F-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-E53C29B6381F-S1",
+              "title": "唐山市临床重点专科建设单位公示",
+              "url": "https://wsjkwyh.tangshan.gov.cn/tswjw/tswjw_wjdt/20231121/1574828.html",
+              "authority_type": "唐山市卫健委",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-E53C29B6381F-S2",
+              "title": "唐山市工人医院机构信息",
+              "url": "https://csp.ncmi.cn/UsersInfo/UserUnit/UserUnitDetailWeb?uid=00139",
+              "authority_type": "国家人口健康科学数据中心",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-91E5AF08C8C3",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-91E5AF08C8C3",
+            "hospital_name": "广东医科大学附属东莞第一医院（东莞市东南部中心医院）",
+            "province": "广东省",
+            "city": "东莞市",
+            "hospital_level": null,
+            "hospital_type": "综合医院",
+            "institution_role": "大学附属医院",
+            "regional_medical_center": null,
+            "teaching_hospital": true,
+            "assessment": {
+              "status": "evaluated",
+              "score": 55.0,
+              "level": "basic",
+              "confidence": 0.8,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S1",
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸与危重症医学科"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "政府公开文件列有呼吸与危重症医学科等临床科室。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 39.0,
+              "level": "basic",
+              "confidence": 0.5,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S1",
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": "危重症",
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": "公开资料支持区域或危重症服务能力",
+            "regional_role_level": "documented",
+            "assessment": {
+              "status": "evaluated",
+              "score": 75.0,
+              "level": "medium",
+              "confidence": 0.7,
+              "reasoning": "仅使用公开能力说明中明确出现的区域、转诊、急救或危重症信息",
+              "evidence_fields": [
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "未公开的信息保持未知，不推断实际转诊范围"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-91E5AF08C8C3-S1",
+              "title": "东莞市公立医院公开预算",
+              "url": "https://dghb.dg.gov.cn/attachment/0/395/395254/4508461.pdf",
+              "authority_type": "市政府公开文件",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-91E5AF08C8C3-S2",
+              "title": "东莞市东南部中心医院公开预算",
+              "url": "https://dghb.dg.gov.cn/attachment/0/189/189294/3883566.pdf",
+              "authority_type": "东莞市政府",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-CE86FE739DFB",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-CE86FE739DFB",
+            "hospital_name": "成都市公共卫生临床医疗中心",
+            "province": "四川省",
+            "city": "成都市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "传染病/公共卫生专科医院",
+            "institution_role": "传染病/公共卫生专科医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-CE86FE739DFB-S1",
+                "HOSP-CE86FE739DFB-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "感染性疾病相关科室"
+            ],
+            "key_specialties": [
+              "感染性疾病临床重点专科建设项目（公开页面未明确国家/省级层级）"
+            ],
+            "key_specialty_level": "其他公开重点专科",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "官网公开感染性疾病科室与临床重点专科建设信息。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-CE86FE739DFB-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-CE86FE739DFB-S1",
+                "HOSP-CE86FE739DFB-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-CE86FE739DFB-S1",
+              "title": "成都市公共卫生临床医疗中心医院简介",
+              "url": "https://www.phcc120.cn/about.aspx?category_id=3",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-CE86FE739DFB-S2",
+              "title": "成都市公共卫生临床医疗中心医院简介",
+              "url": "https://phcc120.cn/about.aspx?category_id=3",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-8F906D501500",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-8F906D501500",
+            "hospital_name": "日照市人民医院",
+            "province": "山东省",
+            "city": "日照市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S1",
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸与危重症医学科"
+            ],
+            "key_specialties": [
+              "呼吸与危重症医学科省级临床重点专科"
+            ],
+            "key_specialty_level": "省级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "高校官方介绍明确呼吸与危重症医学科为省级临床重点专科。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S1",
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": "危重症",
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": "公开资料支持区域或危重症服务能力",
+            "regional_role_level": "documented",
+            "assessment": {
+              "status": "evaluated",
+              "score": 75.0,
+              "level": "medium",
+              "confidence": 0.7,
+              "reasoning": "仅使用公开能力说明中明确出现的区域、转诊、急救或危重症信息",
+              "evidence_fields": [
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "未公开的信息保持未知，不推断实际转诊范围"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-8F906D501500-S1",
+              "title": "日照市人民医院机构信息",
+              "url": "https://csp.ncmi.cn/UsersInfo/UserUnit/UserUnitDetailWeb?uid=02063",
+              "authority_type": "国家人口健康科学数据中心",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-8F906D501500-S2",
+              "title": "日照市人民医院公开介绍",
+              "url": "https://zsbgs.sdmc.edu.cn/info/1013/1503.htm",
+              "authority_type": "山东第二医科大学",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-E503DB34C3FC",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-E503DB34C3FC",
+            "hospital_name": "武汉大学人民医院",
+            "province": "湖北省",
+            "city": "武汉市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S1",
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "呼吸与危重症医学科"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "医院官方团队目录公开呼吸与危重症医学科。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 71.0,
+              "level": "medium",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S1",
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": "危重症",
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": "公开资料支持区域或危重症服务能力",
+            "regional_role_level": "documented",
+            "assessment": {
+              "status": "evaluated",
+              "score": 75.0,
+              "level": "medium",
+              "confidence": 0.7,
+              "reasoning": "仅使用公开能力说明中明确出现的区域、转诊、急救或危重症信息",
+              "evidence_fields": [
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "未公开的信息保持未知，不推断实际转诊范围"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-E503DB34C3FC-S1",
+              "title": "武汉大学人民医院百年巡礼",
+              "url": "https://news.whu.edu.cn/info/1013/445267.htm",
+              "authority_type": "武汉大学",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-E503DB34C3FC-S2",
+              "title": "武汉大学人民医院医疗团队目录",
+              "url": "https://rm.rmhospital.com/c/yltdt/page/8.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-1ADAE3F7C282",
+          "disease_group": "pneumonia",
+          "institution_foundation": {
+            "hospital_id": "HOSP-1ADAE3F7C282",
+            "hospital_name": "湖北省妇幼保健院",
+            "province": "湖北省",
+            "city": "武汉市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "妇幼保健机构",
+            "institution_role": "妇幼保健机构",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-1ADAE3F7C282-S1",
+                "HOSP-1ADAE3F7C282-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "pneumonia",
+            "related_departments": [
+              "儿童呼吸科"
+            ],
+            "key_specialties": [
+              "儿科等省级临床重点专科"
+            ],
+            "key_specialty_level": "省级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "官网公开儿童呼吸科及支气管镜等呼吸专科能力。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-1ADAE3F7C282-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-1ADAE3F7C282-S1",
+                "HOSP-1ADAE3F7C282-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-1ADAE3F7C282-S1",
+              "title": "湖北省妇幼保健院医院简介",
+              "url": "https://www.hbfy.com/index.php/list/1.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-1ADAE3F7C282-S2",
+              "title": "湖北省妇幼保健院儿童呼吸科",
+              "url": "https://hbfy.com/view/7499.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        }
+      ]
+    },
+    {
+      "disease_group": "influenza",
+      "disease_label": "流感",
+      "hospitals": [
+        {
+          "hospital_id": "HOSP-8CDC3780604E",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-8CDC3780604E",
+            "hospital_name": "上海市肺科医院",
+            "province": "上海市",
+            "city": "上海市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "呼吸系统专科医院",
+            "institution_role": "呼吸系统专科医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-8CDC3780604E-S1"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "呼吸内科"
+            ],
+            "key_specialties": [
+              "呼吸内科国家临床重点专科"
+            ],
+            "key_specialty_level": "国家级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "呼吸内科公开专科信息可作为流感相关呼吸专科事实。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8CDC3780604E-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8CDC3780604E-S1"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-8CDC3780604E-S1",
+              "title": "上海市肺科医院医院简介",
+              "url": "https://www.shanghaipulmonaryhospital.org/about.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-9EA84735E7E0",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-9EA84735E7E0",
+            "hospital_name": "北京市上地医院",
+            "province": "北京市",
+            "city": "北京市",
+            "hospital_level": "二级",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 60.0,
+              "level": "basic",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-9EA84735E7E0-S1"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "呼吸内科",
+              "儿科呼吸专业"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "海淀区政府机构介绍公开呼吸内科和儿科呼吸专业。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-9EA84735E7E0-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 59.0,
+              "level": "basic",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-9EA84735E7E0-S1"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-9EA84735E7E0-S1",
+              "title": "北京市上地医院机构介绍",
+              "url": "https://zyk.bjhd.gov.cn/jbdt/auto4504_51799/201810/t20181003_3435472_hd.shtml",
+              "authority_type": "海淀区政府",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-7DA53947E668",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-7DA53947E668",
+            "hospital_name": "北京市顺义区妇幼保健院",
+            "province": "北京市",
+            "city": "北京市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "妇幼保健机构",
+            "institution_role": "妇幼保健机构",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-7DA53947E668-S1",
+                "HOSP-7DA53947E668-S2",
+                "HOSP-7DA53947E668-S3"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "儿科",
+              "呼吸专业"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "医院官网公开儿科及呼吸专业科室页面。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-7DA53947E668-S2",
+                "HOSP-7DA53947E668-S3"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 71.0,
+              "level": "medium",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-7DA53947E668-S1",
+                "HOSP-7DA53947E668-S2",
+                "HOSP-7DA53947E668-S3"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-7DA53947E668-S1",
+              "title": "顺义区妇幼保健院相关公开信息",
+              "url": "https://wjw.beijing.gov.cn/xwzx_20031/jcdt/202211/t20221114_2857735.html",
+              "authority_type": "北京市卫健委",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-7DA53947E668-S2",
+              "title": "顺义区妇幼保健院儿科",
+              "url": "https://www.bch-syfy.cn/Html/Departments/Main/Index_139.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-7DA53947E668-S3",
+              "title": "顺义区妇幼保健院呼吸专业",
+              "url": "https://www.bch-syfy.cn/Html/Departments/Main/Index_376.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-91E5AF08C8C3",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-91E5AF08C8C3",
+            "hospital_name": "广东医科大学附属东莞第一医院（东莞市东南部中心医院）",
+            "province": "广东省",
+            "city": "东莞市",
+            "hospital_level": null,
+            "hospital_type": "综合医院",
+            "institution_role": "大学附属医院",
+            "regional_medical_center": null,
+            "teaching_hospital": true,
+            "assessment": {
+              "status": "evaluated",
+              "score": 55.0,
+              "level": "basic",
+              "confidence": 0.8,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S1",
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "呼吸与危重症医学科"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "政府公开文件列有呼吸与危重症医学科。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 39.0,
+              "level": "basic",
+              "confidence": 0.5,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S1",
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": "危重症",
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": "公开资料支持区域或危重症服务能力",
+            "regional_role_level": "documented",
+            "assessment": {
+              "status": "evaluated",
+              "score": 75.0,
+              "level": "medium",
+              "confidence": 0.7,
+              "reasoning": "仅使用公开能力说明中明确出现的区域、转诊、急救或危重症信息",
+              "evidence_fields": [
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-91E5AF08C8C3-S2"
+              ],
+              "limitations": [
+                "未公开的信息保持未知，不推断实际转诊范围"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-91E5AF08C8C3-S1",
+              "title": "东莞市公立医院公开预算",
+              "url": "https://dghb.dg.gov.cn/attachment/0/395/395254/4508461.pdf",
+              "authority_type": "市政府公开文件",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-91E5AF08C8C3-S2",
+              "title": "东莞市东南部中心医院公开预算",
+              "url": "https://dghb.dg.gov.cn/attachment/0/189/189294/3883566.pdf",
+              "authority_type": "东莞市政府",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-8F906D501500",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-8F906D501500",
+            "hospital_name": "日照市人民医院",
+            "province": "山东省",
+            "city": "日照市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S1",
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "呼吸与危重症医学科"
+            ],
+            "key_specialties": [
+              "呼吸与危重症医学科省级临床重点专科"
+            ],
+            "key_specialty_level": "省级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "省级临床重点专科信息可作为流感相关呼吸专科事实。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-8F906D501500-S1",
+                "HOSP-8F906D501500-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-8F906D501500-S1",
+              "title": "日照市人民医院机构信息",
+              "url": "https://csp.ncmi.cn/UsersInfo/UserUnit/UserUnitDetailWeb?uid=02063",
+              "authority_type": "国家人口健康科学数据中心",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-8F906D501500-S2",
+              "title": "日照市人民医院公开介绍",
+              "url": "https://zsbgs.sdmc.edu.cn/info/1013/1503.htm",
+              "authority_type": "山东第二医科大学",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-E503DB34C3FC",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-E503DB34C3FC",
+            "hospital_name": "武汉大学人民医院",
+            "province": "湖北省",
+            "city": "武汉市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S1",
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "呼吸与危重症医学科"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "医院官方团队目录公开呼吸与危重症医学科。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 71.0,
+              "level": "medium",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S1",
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": "危重症",
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": "公开资料支持区域或危重症服务能力",
+            "regional_role_level": "documented",
+            "assessment": {
+              "status": "evaluated",
+              "score": 75.0,
+              "level": "medium",
+              "confidence": 0.7,
+              "reasoning": "仅使用公开能力说明中明确出现的区域、转诊、急救或危重症信息",
+              "evidence_fields": [
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E503DB34C3FC-S2"
+              ],
+              "limitations": [
+                "未公开的信息保持未知，不推断实际转诊范围"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-E503DB34C3FC-S1",
+              "title": "武汉大学人民医院百年巡礼",
+              "url": "https://news.whu.edu.cn/info/1013/445267.htm",
+              "authority_type": "武汉大学",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-E503DB34C3FC-S2",
+              "title": "武汉大学人民医院医疗团队目录",
+              "url": "https://rm.rmhospital.com/c/yltdt/page/8.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-1ADAE3F7C282",
+          "disease_group": "influenza",
+          "institution_foundation": {
+            "hospital_id": "HOSP-1ADAE3F7C282",
+            "hospital_name": "湖北省妇幼保健院",
+            "province": "湖北省",
+            "city": "武汉市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "妇幼保健机构",
+            "institution_role": "妇幼保健机构",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-1ADAE3F7C282-S1",
+                "HOSP-1ADAE3F7C282-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "influenza",
+            "related_departments": [
+              "儿童呼吸科"
+            ],
+            "key_specialties": [
+              "儿科等省级临床重点专科"
+            ],
+            "key_specialty_level": "省级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "儿童呼吸科可为流感等儿童呼吸道疾病提供公开可核验的专科支撑。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-1ADAE3F7C282-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-1ADAE3F7C282-S1",
+                "HOSP-1ADAE3F7C282-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-1ADAE3F7C282-S1",
+              "title": "湖北省妇幼保健院医院简介",
+              "url": "https://www.hbfy.com/index.php/list/1.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-1ADAE3F7C282-S2",
+              "title": "湖北省妇幼保健院儿童呼吸科",
+              "url": "https://hbfy.com/view/7499.html",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        }
+      ]
+    },
+    {
+      "disease_group": "hypertension",
+      "disease_label": "高血压",
+      "hospitals": [
+        {
+          "hospital_id": "HOSP-5F482ED21E20",
+          "disease_group": "hypertension",
+          "institution_foundation": {
+            "hospital_id": "HOSP-5F482ED21E20",
+            "hospital_name": "上海交通大学医学院附属瑞金医院",
+            "province": "上海市",
+            "city": "上海市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-5F482ED21E20-S1",
+                "HOSP-5F482ED21E20-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "hypertension",
+            "related_departments": [
+              "心脏科"
+            ],
+            "key_specialties": [
+              "心脏科国家临床重点专科"
+            ],
+            "key_specialty_level": "国家级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "心脏科国家临床重点专科可作为高血压相关心血管专科事实。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-5F482ED21E20-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 96.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-5F482ED21E20-S1",
+                "HOSP-5F482ED21E20-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-5F482ED21E20-S1",
+              "title": "国家卫健委直属联系单位信息：瑞金医院",
+              "url": "https://www.nhc.gov.cn/jgdw/wmdw/201511/a3040d62c19c48b4a604f8cb951ef4ef.shtml",
+              "authority_type": "国家卫健委",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-5F482ED21E20-S2",
+              "title": "瑞金医院公开预算中的国家临床重点专科信息",
+              "url": "https://www.shanghai.gov.cn/cmsres/7b/7b1388dfd20f43c19ae3b0fab3f32887/cfdf41a102fe84aa2ad6b3331d587fee.pdf",
+              "authority_type": "上海市政府",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-31048ACA6590",
+          "disease_group": "hypertension",
+          "institution_foundation": {
+            "hospital_id": "HOSP-31048ACA6590",
+            "hospital_name": "上海市东方医院（同济大学附属东方医院）",
+            "province": "上海市",
+            "city": "上海市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "大学附属医院",
+            "regional_medical_center": null,
+            "teaching_hospital": true,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-31048ACA6590-S1",
+                "HOSP-31048ACA6590-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "hypertension",
+            "related_departments": [
+              "心内科"
+            ],
+            "key_specialties": [
+              "心血管病国家临床重点专科",
+              "上海市临床重点专科（心血管相关）"
+            ],
+            "key_specialty_level": "国家级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "官网公开心内科及冠心病、高血压等心血管诊疗能力。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-31048ACA6590-S2"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-31048ACA6590-S1",
+                "HOSP-31048ACA6590-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-31048ACA6590-S1",
+              "title": "上海市东方医院医院简介",
+              "url": "https://www.easthospital.cn/index/about.shtml",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-31048ACA6590-S2",
+              "title": "上海市东方医院心内科",
+              "url": "https://www.easthospital.cn/subject/content/id/285/pid/272/fid/9.shtml",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-E53C29B6381F",
+          "disease_group": "hypertension",
+          "institution_foundation": {
+            "hospital_id": "HOSP-E53C29B6381F",
+            "hospital_name": "唐山市工人医院",
+            "province": "河北省",
+            "city": "唐山市",
+            "hospital_level": null,
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 55.0,
+              "level": "basic",
+              "confidence": 0.8,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-E53C29B6381F-S1",
+                "HOSP-E53C29B6381F-S2"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "hypertension",
+            "related_departments": [
+              "心血管内科"
+            ],
+            "key_specialties": [
+              "心血管内科唐山市临床重点专科建设单位"
+            ],
+            "key_specialty_level": "其他公开重点专科",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "卫健委公开重点专科建设名单包含心血管内科。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E53C29B6381F-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 60.0,
+              "level": "basic",
+              "confidence": 0.75,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E53C29B6381F-S1",
+                "HOSP-E53C29B6381F-S2"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-E53C29B6381F-S1",
+              "title": "唐山市临床重点专科建设单位公示",
+              "url": "https://wsjkwyh.tangshan.gov.cn/tswjw/tswjw_wjdt/20231121/1574828.html",
+              "authority_type": "唐山市卫健委",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-E53C29B6381F-S2",
+              "title": "唐山市工人医院机构信息",
+              "url": "https://csp.ncmi.cn/UsersInfo/UserUnit/UserUnitDetailWeb?uid=00139",
+              "authority_type": "国家人口健康科学数据中心",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-E659F09BD2B2",
+          "disease_group": "hypertension",
+          "institution_foundation": {
+            "hospital_id": "HOSP-E659F09BD2B2",
+            "hospital_name": "重庆市荣军优抚医院（重庆市东南医院）",
+            "province": "重庆市",
+            "city": "重庆市",
+            "hospital_level": null,
+            "hospital_type": "综合医院",
+            "institution_role": "综合医院",
+            "regional_medical_center": null,
+            "teaching_hospital": null,
+            "assessment": {
+              "status": "evaluated",
+              "score": 55.0,
+              "level": "basic",
+              "confidence": 0.8,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-E659F09BD2B2-S1",
+                "HOSP-E659F09BD2B2-S2",
+                "HOSP-E659F09BD2B2-S3"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "hypertension",
+            "related_departments": [
+              "心血管相关内科"
+            ],
+            "key_specialties": [],
+            "key_specialty_level": null,
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "政府公开资料载有心血管介入等服务；官网专家页公开心血管方向。",
+            "specialty_match_level": "medium",
+            "assessment": {
+              "status": "evaluated",
+              "score": 80.0,
+              "level": "medium",
+              "confidence": 0.6666666666666666,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E659F09BD2B2-S2",
+                "HOSP-E659F09BD2B2-S3"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "basic",
+            "assessment": {
+              "status": "evaluated",
+              "score": 35.0,
+              "level": "basic",
+              "confidence": 0.5,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-E659F09BD2B2-S1",
+                "HOSP-E659F09BD2B2-S2",
+                "HOSP-E659F09BD2B2-S3"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-E659F09BD2B2-S1",
+              "title": "重庆市荣军优抚医院（重庆市东南医院）官网",
+              "url": "https://www.cqdongnanhospital.cn/",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-E659F09BD2B2-S2",
+              "title": "重庆市东南医院年度报告",
+              "url": "https://www.cq.gov.cn/zwgk/zfxxgkzt/sydwndbg_1/2022/202406/t20240605_13267165.html",
+              "authority_type": "重庆市政府",
+              "query_date": "2026-10-07"
+            },
+            {
+              "source_id": "HOSP-E659F09BD2B2-S3",
+              "title": "重庆市东南医院专家介绍",
+              "url": "https://www.cqdongnanhospital.cn/zjjs.asp",
+              "authority_type": "医院官网",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        },
+        {
+          "hospital_id": "HOSP-F84BD01F69B4",
+          "disease_group": "hypertension",
+          "institution_foundation": {
+            "hospital_id": "HOSP-F84BD01F69B4",
+            "hospital_name": "首都医科大学附属北京积水潭医院",
+            "province": "北京市",
+            "city": "北京市",
+            "hospital_level": "三级甲等",
+            "hospital_type": "综合医院",
+            "institution_role": "大学附属医院",
+            "regional_medical_center": null,
+            "teaching_hospital": true,
+            "assessment": {
+              "status": "evaluated",
+              "score": 90.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有来源的机构等级、类型和区域字段描述基础能力；医院等级不能单独决定推荐资格",
+              "evidence_fields": [
+                "hospital_name",
+                "province",
+                "city",
+                "hospital_level",
+                "hospital_type"
+              ],
+              "source_ids": [
+                "HOSP-F84BD01F69B4-S1"
+              ],
+              "limitations": [
+                "该分数描述机构基础条件，不等同于疗效或医院综合排名"
+              ]
+            }
+          },
+          "disease_specialty": {
+            "disease_group": "hypertension",
+            "related_departments": [
+              "心血管内科"
+            ],
+            "key_specialties": [
+              "心血管内科等7个国家临床重点专科或建设项目"
+            ],
+            "key_specialty_level": "国家级",
+            "disease_specific_clinic": null,
+            "disease_specific_center": null,
+            "specialty_capability_description": "北京市公开招聘简介列明心血管内科等国家临床重点专科。",
+            "specialty_match_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "只按当前病种的相关科室、重点专科和可公开验证能力计算，不复用其他病种专科",
+              "evidence_fields": [
+                "related_departments",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-F84BD01F69B4-S1"
+              ],
+              "limitations": [
+                "公开专科能力说明不等同于个体治疗效果"
+              ]
+            }
+          },
+          "medical_resources": {
+            "senior_doctor_count": null,
+            "specialist_count": null,
+            "key_experts": [],
+            "critical_care_capability": null,
+            "multidisciplinary_capability": null,
+            "surgery_or_intervention_capability": null,
+            "key_equipment_or_technology": [],
+            "resource_capability_level": "high",
+            "assessment": {
+              "status": "evaluated",
+              "score": 100.0,
+              "level": "high",
+              "confidence": 1.0,
+              "reasoning": "按有权威来源的机构等级、类型、重点专科、公开能力和教学平台信息计算资源能力",
+              "evidence_fields": [
+                "hospital_type",
+                "hospital_level",
+                "key_specialties",
+                "specialty_capability_description"
+              ],
+              "source_ids": [
+                "HOSP-F84BD01F69B4-S1"
+              ],
+              "limitations": [
+                "当前没有统一的医生数量、设备数量和 ICU 容量数据；缺失字段保持未知"
+              ]
+            }
+          },
+          "regional_service": {
+            "local_service_role": null,
+            "regional_referral_role": null,
+            "complex_case_capability": null,
+            "emergency_capability": null,
+            "surrounding_city_coverage": null,
+            "referral_suitability": null,
+            "regional_role_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "公开资料未提供可核验的区域转诊或急救角色",
+              "evidence_fields": [
+                "regional_service"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "patient_service_feedback": {
+            "feedback_count": 0,
+            "communication_score": null,
+            "explanation_score": null,
+            "discharge_guidance_score": null,
+            "cost_transparency_score": null,
+            "follow_up_experience_score": null,
+            "overall_feedback_level": null,
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录没有独立、可关联的真实患者反馈",
+              "evidence_fields": [
+                "patient_feedback"
+              ],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "historical_evidence": {
+            "historical_case_count": 0,
+            "disease_specific_case_count": 0,
+            "available_history": false,
+            "evidence_level": "none",
+            "history_summary": "暂无可关联历史案例",
+            "supported_metrics": [],
+            "evidence_coverage": 0.0,
+            "source_ids": [],
+            "assessment": {
+              "status": "insufficient_evidence",
+              "score": null,
+              "level": null,
+              "confidence": 0.0,
+              "reasoning": "当前目录只保存公开机构能力，尚未附加已确认历史病例",
+              "evidence_fields": [],
+              "source_ids": [],
+              "limitations": [
+                "缺失不等于低质量，不参与推荐分的分子或分母"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "source_id": "HOSP-F84BD01F69B4-S1",
+              "title": "北京积水潭医院公开招聘简介",
+              "url": "https://rsj.beijing.gov.cn/xxgk/gkzp/202607/t20260703_4745256.html",
+              "authority_type": "北京市人社局/卫健委",
+              "query_date": "2026-10-07"
+            }
+          ],
+          "profile_version": "hospital-capability-profile-v1"
+        }
+      ]
+    }
+  ],
+  "generated_from": "权威公开医院资料审计的已确认机构字段；不含病例标识或旧推荐结果",
+  "generated_at": "2026-10-07T10:09:21.911686+00:00",
+  "catalog_version": "disease-provider-catalog-v1"
+}

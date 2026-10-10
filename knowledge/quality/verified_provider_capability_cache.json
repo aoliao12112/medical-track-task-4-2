@@ -1,0 +1,1162 @@
+{
+  "cache_version": "verified-provider-capability-cache-v1",
+  "updated_at": "2026-10-07T23:57:07.821830+00:00",
+  "hospital_profiles": [
+    {
+      "hospital_id": "HOSP-CQ-CQMU1",
+      "disease_group": "cataract",
+      "institution_foundation": {
+        "hospital_id": "HOSP-CQ-CQMU1",
+        "hospital_name": "重庆医科大学附属第一医院",
+        "province": "重庆市",
+        "city": "重庆市",
+        "hospital_level": "三级甲等",
+        "hospital_type": "公立综合医院",
+        "institution_role": "大学附属三级甲等综合医院",
+        "regional_medical_center": true,
+        "teaching_hospital": true,
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方或政府公开资料确认机构身份、公立属性与三级甲等资质",
+          "evidence_fields": [
+            "hospital_name",
+            "province",
+            "city",
+            "hospital_level",
+            "hospital_type"
+          ],
+          "source_ids": [
+            "CQ-CQMU1-BASE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "disease_specialty": {
+        "disease_group": "cataract",
+        "related_departments": [
+          "眼科"
+        ],
+        "key_specialties": [
+          "白内障诊疗与手术能力"
+        ],
+        "key_specialty_level": null,
+        "disease_specific_clinic": "白内障专病或手术单元",
+        "disease_specific_center": null,
+        "specialty_capability_description": "白内障诊疗、白内障手术质量控制及复杂眼病诊疗",
+        "specialty_match_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 95.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网明确公开眼科白内障诊疗、超声乳化或人工晶体植入能力",
+          "evidence_fields": [
+            "related_departments",
+            "key_specialties",
+            "specialty_capability_description"
+          ],
+          "source_ids": [
+            "CQ-CQMU1-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "medical_resources": {
+        "senior_doctor_count": null,
+        "specialist_count": null,
+        "key_experts": [],
+        "critical_care_capability": null,
+        "multidisciplinary_capability": null,
+        "surgery_or_intervention_capability": "白内障诊疗、白内障手术质量控制及复杂眼病诊疗",
+        "key_equipment_or_technology": [
+          "白内障超声乳化",
+          "人工晶体植入"
+        ],
+        "resource_capability_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网公开的白内障手术技术可作为专业资源能力证据",
+          "evidence_fields": [
+            "surgery_or_intervention_capability",
+            "key_equipment_or_technology"
+          ],
+          "source_ids": [
+            "CQ-CQMU1-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "regional_service": {
+        "local_service_role": null,
+        "regional_referral_role": "重庆市眼科医疗质量控制中心依托单位",
+        "complex_case_capability": "公开资料支持疑难或复杂眼病诊疗能力",
+        "emergency_capability": null,
+        "surrounding_city_coverage": null,
+        "referral_suitability": "复杂病例可作为区域转诊备选",
+        "regional_role_level": "documented",
+        "assessment": {
+          "status": "evaluated",
+          "score": 85.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方资料明确说明区域服务或疑难眼病诊疗角色",
+          "evidence_fields": [
+            "regional_referral_role",
+            "complex_case_capability"
+          ],
+          "source_ids": [
+            "CQ-CQMU1-BASE",
+            "CQ-CQMU1-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "patient_service_feedback": {
+        "feedback_count": 0,
+        "communication_score": null,
+        "explanation_score": null,
+        "discharge_guidance_score": null,
+        "cost_transparency_score": null,
+        "follow_up_experience_score": null,
+        "overall_feedback_level": null,
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可关联且口径一致的真实患者反馈",
+          "evidence_fields": [
+            "patient_feedback"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "historical_evidence": {
+        "historical_case_count": 0,
+        "disease_specific_case_count": 0,
+        "available_history": false,
+        "evidence_level": "none",
+        "history_summary": "暂无可关联同病种历史病例",
+        "supported_metrics": [],
+        "evidence_coverage": 0.0,
+        "source_ids": [],
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可追溯的同病种历史病例",
+          "evidence_fields": [
+            "historical_case_count"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "source_id": "CQ-CQMU1-BASE",
+          "title": "重庆医科大学附属第一医院简介",
+          "url": "https://www.fahcqmu.cn/gw_yygk_yyjj",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        },
+        {
+          "source_id": "CQ-CQMU1-EYE",
+          "title": "重庆医科大学附属第一医院眼科简介",
+          "url": "https://www.fahcqmu.cn/gw_ksjs_yk",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        }
+      ],
+      "evidence_records": [
+        {
+          "evidence_id": "HOSP-CQ-CQMU1-E-BASE",
+          "source_id": "CQ-CQMU1-BASE",
+          "source_name": "重庆医科大学附属第一医院简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.fahcqmu.cn/gw_yygk_yyjj",
+          "query_date": "2026-10-08",
+          "evidence_text": "重庆医科大学附属第一医院公开资料确认其为重庆市公立三级甲等综合医院。",
+          "evidence_field": "institution_foundation",
+          "supported_claim": "支持医院身份、地区、公立属性及三级甲等资质。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-CQMU1-E-SPEC",
+          "source_id": "CQ-CQMU1-EYE",
+          "source_name": "重庆医科大学附属第一医院眼科简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.fahcqmu.cn/gw_ksjs_yk",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网介绍眼科在白内障领域达到国内先进水平，并承担重庆市眼科医疗质量控制中心工作。",
+          "evidence_field": "disease_specialty",
+          "supported_claim": "支持该院具有白内障相关眼科与手术能力。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-CQMU1-E-RES",
+          "source_id": "CQ-CQMU1-EYE",
+          "source_name": "重庆医科大学附属第一医院眼科简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.fahcqmu.cn/gw_ksjs_yk",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网介绍眼科在白内障领域达到国内先进水平，并承担重庆市眼科医疗质量控制中心工作。",
+          "evidence_field": "medical_resources",
+          "supported_claim": "支持该院具备白内障超声乳化和人工晶体植入相关技术资源。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-CQMU1-E-REG",
+          "source_id": "CQ-CQMU1-BASE",
+          "source_name": "重庆医科大学附属第一医院简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.fahcqmu.cn/gw_yygk_yyjj",
+          "query_date": "2026-10-08",
+          "evidence_text": "重庆市眼科医疗质量控制中心依托单位",
+          "evidence_field": "regional_service",
+          "supported_claim": "支持该院承担区域医疗或疑难病例服务角色。"
+        }
+      ],
+      "profile_version": "hospital-capability-profile-v1"
+    },
+    {
+      "hospital_id": "HOSP-CQ-CQMU2",
+      "disease_group": "cataract",
+      "institution_foundation": {
+        "hospital_id": "HOSP-CQ-CQMU2",
+        "hospital_name": "重庆医科大学附属第二医院",
+        "province": "重庆市",
+        "city": "重庆市",
+        "hospital_level": "三级甲等",
+        "hospital_type": "公立综合医院",
+        "institution_role": "大学附属三级甲等综合医院",
+        "regional_medical_center": null,
+        "teaching_hospital": true,
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方或政府公开资料确认机构身份、公立属性与三级甲等资质",
+          "evidence_fields": [
+            "hospital_name",
+            "province",
+            "city",
+            "hospital_level",
+            "hospital_type"
+          ],
+          "source_ids": [
+            "CQ-CQMU2-BASE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "disease_specialty": {
+        "disease_group": "cataract",
+        "related_departments": [
+          "眼科"
+        ],
+        "key_specialties": [
+          "白内障诊疗与手术能力"
+        ],
+        "key_specialty_level": null,
+        "disease_specific_clinic": "白内障专病或手术单元",
+        "disease_specific_center": null,
+        "specialty_capability_description": "白内障超声乳化、功能型人工晶体植入及复杂白内障手术",
+        "specialty_match_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 95.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网明确公开眼科白内障诊疗、超声乳化或人工晶体植入能力",
+          "evidence_fields": [
+            "related_departments",
+            "key_specialties",
+            "specialty_capability_description"
+          ],
+          "source_ids": [
+            "CQ-CQMU2-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "medical_resources": {
+        "senior_doctor_count": null,
+        "specialist_count": null,
+        "key_experts": [],
+        "critical_care_capability": null,
+        "multidisciplinary_capability": null,
+        "surgery_or_intervention_capability": "白内障超声乳化、功能型人工晶体植入及复杂白内障手术",
+        "key_equipment_or_technology": [
+          "白内障超声乳化",
+          "人工晶体植入"
+        ],
+        "resource_capability_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网公开的白内障手术技术可作为专业资源能力证据",
+          "evidence_fields": [
+            "surgery_or_intervention_capability",
+            "key_equipment_or_technology"
+          ],
+          "source_ids": [
+            "CQ-CQMU2-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "regional_service": {
+        "local_service_role": null,
+        "regional_referral_role": null,
+        "complex_case_capability": null,
+        "emergency_capability": null,
+        "surrounding_city_coverage": null,
+        "referral_suitability": null,
+        "regional_role_level": null,
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "公开资料不足以单独确认区域转诊角色",
+          "evidence_fields": [
+            "regional_service"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "patient_service_feedback": {
+        "feedback_count": 0,
+        "communication_score": null,
+        "explanation_score": null,
+        "discharge_guidance_score": null,
+        "cost_transparency_score": null,
+        "follow_up_experience_score": null,
+        "overall_feedback_level": null,
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可关联且口径一致的真实患者反馈",
+          "evidence_fields": [
+            "patient_feedback"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "historical_evidence": {
+        "historical_case_count": 0,
+        "disease_specific_case_count": 0,
+        "available_history": false,
+        "evidence_level": "none",
+        "history_summary": "暂无可关联同病种历史病例",
+        "supported_metrics": [],
+        "evidence_coverage": 0.0,
+        "source_ids": [],
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可追溯的同病种历史病例",
+          "evidence_fields": [
+            "historical_case_count"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "source_id": "CQ-CQMU2-BASE",
+          "title": "重庆医科大学附属第二医院简介",
+          "url": "https://www.cqsahcqmu.cn/index.php?c=category&id=11",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        },
+        {
+          "source_id": "CQ-CQMU2-EYE",
+          "title": "重庆医科大学附属第二医院白内障手术技术介绍",
+          "url": "https://www.cqsahcqmu.cn/mobile/index.php?c=show&id=3619",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        }
+      ],
+      "evidence_records": [
+        {
+          "evidence_id": "HOSP-CQ-CQMU2-E-BASE",
+          "source_id": "CQ-CQMU2-BASE",
+          "source_name": "重庆医科大学附属第二医院简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.cqsahcqmu.cn/index.php?c=category&id=11",
+          "query_date": "2026-10-08",
+          "evidence_text": "重庆医科大学附属第二医院公开资料确认其为重庆市公立三级甲等综合医院。",
+          "evidence_field": "institution_foundation",
+          "supported_claim": "支持医院身份、地区、公立属性及三级甲等资质。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-CQMU2-E-SPEC",
+          "source_id": "CQ-CQMU2-EYE",
+          "source_name": "重庆医科大学附属第二医院白内障手术技术介绍",
+          "source_type": "医院官网",
+          "source_url": "https://www.cqsahcqmu.cn/mobile/index.php?c=show&id=3619",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网公开白内障超声乳化联合功能型人工晶体植入技术，并说明相关技术处于重庆领先水平。",
+          "evidence_field": "disease_specialty",
+          "supported_claim": "支持该院具有白内障相关眼科与手术能力。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-CQMU2-E-RES",
+          "source_id": "CQ-CQMU2-EYE",
+          "source_name": "重庆医科大学附属第二医院白内障手术技术介绍",
+          "source_type": "医院官网",
+          "source_url": "https://www.cqsahcqmu.cn/mobile/index.php?c=show&id=3619",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网公开白内障超声乳化联合功能型人工晶体植入技术，并说明相关技术处于重庆领先水平。",
+          "evidence_field": "medical_resources",
+          "supported_claim": "支持该院具备白内障超声乳化和人工晶体植入相关技术资源。"
+        }
+      ],
+      "profile_version": "hospital-capability-profile-v1"
+    },
+    {
+      "hospital_id": "HOSP-CQ-THREE-GORGES",
+      "disease_group": "cataract",
+      "institution_foundation": {
+        "hospital_id": "HOSP-CQ-THREE-GORGES",
+        "hospital_name": "重庆大学附属三峡医院",
+        "province": "重庆市",
+        "city": "重庆市",
+        "hospital_level": "三级甲等",
+        "hospital_type": "公立综合医院",
+        "institution_role": "大学附属三级甲等综合医院",
+        "regional_medical_center": true,
+        "teaching_hospital": true,
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方或政府公开资料确认机构身份、公立属性与三级甲等资质",
+          "evidence_fields": [
+            "hospital_name",
+            "province",
+            "city",
+            "hospital_level",
+            "hospital_type"
+          ],
+          "source_ids": [
+            "CQ-THREE-GORGES-BASE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "disease_specialty": {
+        "disease_group": "cataract",
+        "related_departments": [
+          "眼科"
+        ],
+        "key_specialties": [
+          "白内障诊疗与手术能力"
+        ],
+        "key_specialty_level": null,
+        "disease_specific_clinic": "白内障专病或手术单元",
+        "disease_specific_center": null,
+        "specialty_capability_description": "白内障超声乳化、人工晶体植入与区域眼病诊疗",
+        "specialty_match_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 95.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网明确公开眼科白内障诊疗、超声乳化或人工晶体植入能力",
+          "evidence_fields": [
+            "related_departments",
+            "key_specialties",
+            "specialty_capability_description"
+          ],
+          "source_ids": [
+            "CQ-THREE-GORGES-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "medical_resources": {
+        "senior_doctor_count": null,
+        "specialist_count": null,
+        "key_experts": [],
+        "critical_care_capability": null,
+        "multidisciplinary_capability": null,
+        "surgery_or_intervention_capability": "白内障超声乳化、人工晶体植入与区域眼病诊疗",
+        "key_equipment_or_technology": [
+          "白内障超声乳化",
+          "人工晶体植入"
+        ],
+        "resource_capability_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网公开的白内障手术技术可作为专业资源能力证据",
+          "evidence_fields": [
+            "surgery_or_intervention_capability",
+            "key_equipment_or_technology"
+          ],
+          "source_ids": [
+            "CQ-THREE-GORGES-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "regional_service": {
+        "local_service_role": null,
+        "regional_referral_role": "省级区域医疗中心，承担渝东北及周边地区医疗服务",
+        "complex_case_capability": "公开资料支持疑难或复杂眼病诊疗能力",
+        "emergency_capability": null,
+        "surrounding_city_coverage": null,
+        "referral_suitability": "复杂病例可作为区域转诊备选",
+        "regional_role_level": "documented",
+        "assessment": {
+          "status": "evaluated",
+          "score": 85.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方资料明确说明区域服务或疑难眼病诊疗角色",
+          "evidence_fields": [
+            "regional_referral_role",
+            "complex_case_capability"
+          ],
+          "source_ids": [
+            "CQ-THREE-GORGES-BASE",
+            "CQ-THREE-GORGES-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "patient_service_feedback": {
+        "feedback_count": 0,
+        "communication_score": null,
+        "explanation_score": null,
+        "discharge_guidance_score": null,
+        "cost_transparency_score": null,
+        "follow_up_experience_score": null,
+        "overall_feedback_level": null,
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可关联且口径一致的真实患者反馈",
+          "evidence_fields": [
+            "patient_feedback"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "historical_evidence": {
+        "historical_case_count": 0,
+        "disease_specific_case_count": 0,
+        "available_history": false,
+        "evidence_level": "none",
+        "history_summary": "暂无可关联同病种历史病例",
+        "supported_metrics": [],
+        "evidence_coverage": 0.0,
+        "source_ids": [],
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可追溯的同病种历史病例",
+          "evidence_fields": [
+            "historical_case_count"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "source_id": "CQ-THREE-GORGES-BASE",
+          "title": "重庆大学附属三峡医院简介",
+          "url": "https://sxyy.cqu.edu.cn/yygaikuang/yyjj.htm",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        },
+        {
+          "source_id": "CQ-THREE-GORGES-EYE",
+          "title": "重庆大学附属三峡医院眼科简介",
+          "url": "https://sxyy.cqu.edu.cn/ksdh/wkpq/yk1/ksjj.htm",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        }
+      ],
+      "evidence_records": [
+        {
+          "evidence_id": "HOSP-CQ-THREE-GORGES-E-BASE",
+          "source_id": "CQ-THREE-GORGES-BASE",
+          "source_name": "重庆大学附属三峡医院简介",
+          "source_type": "医院官网",
+          "source_url": "https://sxyy.cqu.edu.cn/yygaikuang/yyjj.htm",
+          "query_date": "2026-10-08",
+          "evidence_text": "重庆大学附属三峡医院公开资料确认其为重庆市公立三级甲等综合医院。",
+          "evidence_field": "institution_foundation",
+          "supported_claim": "支持医院身份、地区、公立属性及三级甲等资质。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-THREE-GORGES-E-SPEC",
+          "source_id": "CQ-THREE-GORGES-EYE",
+          "source_name": "重庆大学附属三峡医院眼科简介",
+          "source_type": "医院官网",
+          "source_url": "https://sxyy.cqu.edu.cn/ksdh/wkpq/yk1/ksjj.htm",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网介绍眼科常规开展白内障超声乳化等技术，并设有白内障相关区域诊疗能力。",
+          "evidence_field": "disease_specialty",
+          "supported_claim": "支持该院具有白内障相关眼科与手术能力。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-THREE-GORGES-E-RES",
+          "source_id": "CQ-THREE-GORGES-EYE",
+          "source_name": "重庆大学附属三峡医院眼科简介",
+          "source_type": "医院官网",
+          "source_url": "https://sxyy.cqu.edu.cn/ksdh/wkpq/yk1/ksjj.htm",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网介绍眼科常规开展白内障超声乳化等技术，并设有白内障相关区域诊疗能力。",
+          "evidence_field": "medical_resources",
+          "supported_claim": "支持该院具备白内障超声乳化和人工晶体植入相关技术资源。"
+        },
+        {
+          "evidence_id": "HOSP-CQ-THREE-GORGES-E-REG",
+          "source_id": "CQ-THREE-GORGES-BASE",
+          "source_name": "重庆大学附属三峡医院简介",
+          "source_type": "医院官网",
+          "source_url": "https://sxyy.cqu.edu.cn/yygaikuang/yyjj.htm",
+          "query_date": "2026-10-08",
+          "evidence_text": "省级区域医疗中心，承担渝东北及周边地区医疗服务",
+          "evidence_field": "regional_service",
+          "supported_claim": "支持该院承担区域医疗或疑难病例服务角色。"
+        }
+      ],
+      "profile_version": "hospital-capability-profile-v1"
+    },
+    {
+      "hospital_id": "HOSP-SC-WCH",
+      "disease_group": "cataract",
+      "institution_foundation": {
+        "hospital_id": "HOSP-SC-WCH",
+        "hospital_name": "四川大学华西医院",
+        "province": "四川省",
+        "city": "成都市",
+        "hospital_level": "三级甲等",
+        "hospital_type": "公立综合医院",
+        "institution_role": "大学附属三级甲等综合医院",
+        "regional_medical_center": true,
+        "teaching_hospital": true,
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方或政府公开资料确认机构身份、公立属性与三级甲等资质",
+          "evidence_fields": [
+            "hospital_name",
+            "province",
+            "city",
+            "hospital_level",
+            "hospital_type"
+          ],
+          "source_ids": [
+            "SC-WCH-BASE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "disease_specialty": {
+        "disease_group": "cataract",
+        "related_departments": [
+          "眼科"
+        ],
+        "key_specialties": [
+          "白内障诊疗与手术能力"
+        ],
+        "key_specialty_level": null,
+        "disease_specific_clinic": "白内障专病或手术单元",
+        "disease_specific_center": null,
+        "specialty_capability_description": "白内障超声乳化、人工晶体植入与复杂白内障诊疗",
+        "specialty_match_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 95.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网明确公开眼科白内障诊疗、超声乳化或人工晶体植入能力",
+          "evidence_fields": [
+            "related_departments",
+            "key_specialties",
+            "specialty_capability_description"
+          ],
+          "source_ids": [
+            "SC-WCH-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "medical_resources": {
+        "senior_doctor_count": null,
+        "specialist_count": null,
+        "key_experts": [],
+        "critical_care_capability": null,
+        "multidisciplinary_capability": null,
+        "surgery_or_intervention_capability": "白内障超声乳化、人工晶体植入与复杂白内障诊疗",
+        "key_equipment_or_technology": [
+          "白内障超声乳化",
+          "人工晶体植入"
+        ],
+        "resource_capability_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网公开的白内障手术技术可作为专业资源能力证据",
+          "evidence_fields": [
+            "surgery_or_intervention_capability",
+            "key_equipment_or_technology"
+          ],
+          "source_ids": [
+            "SC-WCH-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "regional_service": {
+        "local_service_role": null,
+        "regional_referral_role": "西南地区疑难危重眼病诊疗平台",
+        "complex_case_capability": "公开资料支持疑难或复杂眼病诊疗能力",
+        "emergency_capability": null,
+        "surrounding_city_coverage": null,
+        "referral_suitability": "复杂病例可作为区域转诊备选",
+        "regional_role_level": "documented",
+        "assessment": {
+          "status": "evaluated",
+          "score": 85.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方资料明确说明区域服务或疑难眼病诊疗角色",
+          "evidence_fields": [
+            "regional_referral_role",
+            "complex_case_capability"
+          ],
+          "source_ids": [
+            "SC-WCH-BASE",
+            "SC-WCH-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "patient_service_feedback": {
+        "feedback_count": 0,
+        "communication_score": null,
+        "explanation_score": null,
+        "discharge_guidance_score": null,
+        "cost_transparency_score": null,
+        "follow_up_experience_score": null,
+        "overall_feedback_level": null,
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可关联且口径一致的真实患者反馈",
+          "evidence_fields": [
+            "patient_feedback"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "historical_evidence": {
+        "historical_case_count": 0,
+        "disease_specific_case_count": 0,
+        "available_history": false,
+        "evidence_level": "none",
+        "history_summary": "暂无可关联同病种历史病例",
+        "supported_metrics": [],
+        "evidence_coverage": 0.0,
+        "source_ids": [],
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可追溯的同病种历史病例",
+          "evidence_fields": [
+            "historical_case_count"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "source_id": "SC-WCH-BASE",
+          "title": "四川大学华西医院三级医院等级评审信息",
+          "url": "https://www.wchscu.cn/comprehensive/71522.html",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        },
+        {
+          "source_id": "SC-WCH-EYE",
+          "title": "四川大学华西医院白内障专业组",
+          "url": "https://www.wchscu.cn/public/department/yzyz/detail/32256.html",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        }
+      ],
+      "evidence_records": [
+        {
+          "evidence_id": "HOSP-SC-WCH-E-BASE",
+          "source_id": "SC-WCH-BASE",
+          "source_name": "四川大学华西医院三级医院等级评审信息",
+          "source_type": "医院官网",
+          "source_url": "https://www.wchscu.cn/comprehensive/71522.html",
+          "query_date": "2026-10-08",
+          "evidence_text": "四川大学华西医院公开资料确认其为成都市公立三级甲等综合医院。",
+          "evidence_field": "institution_foundation",
+          "supported_claim": "支持医院身份、地区、公立属性及三级甲等资质。"
+        },
+        {
+          "evidence_id": "HOSP-SC-WCH-E-SPEC",
+          "source_id": "SC-WCH-EYE",
+          "source_name": "四川大学华西医院白内障专业组",
+          "source_type": "医院官网",
+          "source_url": "https://www.wchscu.cn/public/department/yzyz/detail/32256.html",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网白内障专业组公开开展白内障超声乳化、人工晶体植入及复杂白内障诊疗。",
+          "evidence_field": "disease_specialty",
+          "supported_claim": "支持该院具有白内障相关眼科与手术能力。"
+        },
+        {
+          "evidence_id": "HOSP-SC-WCH-E-RES",
+          "source_id": "SC-WCH-EYE",
+          "source_name": "四川大学华西医院白内障专业组",
+          "source_type": "医院官网",
+          "source_url": "https://www.wchscu.cn/public/department/yzyz/detail/32256.html",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网白内障专业组公开开展白内障超声乳化、人工晶体植入及复杂白内障诊疗。",
+          "evidence_field": "medical_resources",
+          "supported_claim": "支持该院具备白内障超声乳化和人工晶体植入相关技术资源。"
+        },
+        {
+          "evidence_id": "HOSP-SC-WCH-E-REG",
+          "source_id": "SC-WCH-BASE",
+          "source_name": "四川大学华西医院三级医院等级评审信息",
+          "source_type": "医院官网",
+          "source_url": "https://www.wchscu.cn/comprehensive/71522.html",
+          "query_date": "2026-10-08",
+          "evidence_text": "西南地区疑难危重眼病诊疗平台",
+          "evidence_field": "regional_service",
+          "supported_claim": "支持该院承担区域医疗或疑难病例服务角色。"
+        }
+      ],
+      "profile_version": "hospital-capability-profile-v1"
+    },
+    {
+      "hospital_id": "HOSP-SX-XJTU1",
+      "disease_group": "cataract",
+      "institution_foundation": {
+        "hospital_id": "HOSP-SX-XJTU1",
+        "hospital_name": "西安交通大学第一附属医院",
+        "province": "陕西省",
+        "city": "西安市",
+        "hospital_level": "三级甲等",
+        "hospital_type": "公立综合医院",
+        "institution_role": "大学附属三级甲等综合医院",
+        "regional_medical_center": true,
+        "teaching_hospital": true,
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方或政府公开资料确认机构身份、公立属性与三级甲等资质",
+          "evidence_fields": [
+            "hospital_name",
+            "province",
+            "city",
+            "hospital_level",
+            "hospital_type"
+          ],
+          "source_ids": [
+            "SX-XJTU1-BASE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "disease_specialty": {
+        "disease_group": "cataract",
+        "related_departments": [
+          "眼科"
+        ],
+        "key_specialties": [
+          "白内障诊疗与手术能力"
+        ],
+        "key_specialty_level": null,
+        "disease_specific_clinic": "白内障专病或手术单元",
+        "disease_specific_center": null,
+        "specialty_capability_description": "微切口白内障超声乳化、人工晶体植入与复杂白内障手术",
+        "specialty_match_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 95.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网明确公开眼科白内障诊疗、超声乳化或人工晶体植入能力",
+          "evidence_fields": [
+            "related_departments",
+            "key_specialties",
+            "specialty_capability_description"
+          ],
+          "source_ids": [
+            "SX-XJTU1-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "medical_resources": {
+        "senior_doctor_count": null,
+        "specialist_count": null,
+        "key_experts": [],
+        "critical_care_capability": null,
+        "multidisciplinary_capability": null,
+        "surgery_or_intervention_capability": "微切口白内障超声乳化、人工晶体植入与复杂白内障手术",
+        "key_equipment_or_technology": [
+          "白内障超声乳化",
+          "人工晶体植入"
+        ],
+        "resource_capability_level": "high",
+        "assessment": {
+          "status": "evaluated",
+          "score": 90.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官网公开的白内障手术技术可作为专业资源能力证据",
+          "evidence_fields": [
+            "surgery_or_intervention_capability",
+            "key_equipment_or_technology"
+          ],
+          "source_ids": [
+            "SX-XJTU1-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "regional_service": {
+        "local_service_role": null,
+        "regional_referral_role": "西北地区大型三级甲等综合医院眼科平台",
+        "complex_case_capability": "公开资料支持疑难或复杂眼病诊疗能力",
+        "emergency_capability": null,
+        "surrounding_city_coverage": null,
+        "referral_suitability": "复杂病例可作为区域转诊备选",
+        "regional_role_level": "documented",
+        "assessment": {
+          "status": "evaluated",
+          "score": 85.0,
+          "level": "high",
+          "confidence": 0.95,
+          "reasoning": "医院官方资料明确说明区域服务或疑难眼病诊疗角色",
+          "evidence_fields": [
+            "regional_referral_role",
+            "complex_case_capability"
+          ],
+          "source_ids": [
+            "SX-XJTU1-BASE",
+            "SX-XJTU1-EYE"
+          ],
+          "limitations": [
+            "公开资料证明机构能力存在，不代表个体疗效或医院综合排名"
+          ]
+        }
+      },
+      "patient_service_feedback": {
+        "feedback_count": 0,
+        "communication_score": null,
+        "explanation_score": null,
+        "discharge_guidance_score": null,
+        "cost_transparency_score": null,
+        "follow_up_experience_score": null,
+        "overall_feedback_level": null,
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可关联且口径一致的真实患者反馈",
+          "evidence_fields": [
+            "patient_feedback"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "historical_evidence": {
+        "historical_case_count": 0,
+        "disease_specific_case_count": 0,
+        "available_history": false,
+        "evidence_level": "none",
+        "history_summary": "暂无可关联同病种历史病例",
+        "supported_metrics": [],
+        "evidence_coverage": 0.0,
+        "source_ids": [],
+        "assessment": {
+          "status": "insufficient_evidence",
+          "score": null,
+          "level": null,
+          "confidence": 0.0,
+          "reasoning": "没有可追溯的同病种历史病例",
+          "evidence_fields": [
+            "historical_case_count"
+          ],
+          "source_ids": [],
+          "limitations": [
+            "缺失不等于低质量，不参与推荐分的分子或分母"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "source_id": "SX-XJTU1-BASE",
+          "title": "陕西省三级公立医院名录",
+          "url": "https://sxwjw.shaanxi.gov.cn/sy/tzgg/201906/P020201104551288445130.pdf",
+          "authority_type": "省级卫健委",
+          "query_date": "2026-10-08"
+        },
+        {
+          "source_id": "SX-XJTU1-EYE",
+          "title": "西安交通大学第一附属医院眼科简介",
+          "url": "https://www.dyyy.xjtu.edu.cn/gzbsy/ksdh/wkxt/y_k.htm",
+          "authority_type": "医院官网",
+          "query_date": "2026-10-08"
+        }
+      ],
+      "evidence_records": [
+        {
+          "evidence_id": "HOSP-SX-XJTU1-E-BASE",
+          "source_id": "SX-XJTU1-BASE",
+          "source_name": "陕西省三级公立医院名录",
+          "source_type": "省级卫健委",
+          "source_url": "https://sxwjw.shaanxi.gov.cn/sy/tzgg/201906/P020201104551288445130.pdf",
+          "query_date": "2026-10-08",
+          "evidence_text": "西安交通大学第一附属医院公开资料确认其为西安市公立三级甲等综合医院。",
+          "evidence_field": "institution_foundation",
+          "supported_claim": "支持医院身份、地区、公立属性及三级甲等资质。"
+        },
+        {
+          "evidence_id": "HOSP-SX-XJTU1-E-SPEC",
+          "source_id": "SX-XJTU1-EYE",
+          "source_name": "西安交通大学第一附属医院眼科简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.dyyy.xjtu.edu.cn/gzbsy/ksdh/wkxt/y_k.htm",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网介绍眼科设有白内障日间手术中心，开展微切口超声乳化和人工晶体植入及复杂白内障手术。",
+          "evidence_field": "disease_specialty",
+          "supported_claim": "支持该院具有白内障相关眼科与手术能力。"
+        },
+        {
+          "evidence_id": "HOSP-SX-XJTU1-E-RES",
+          "source_id": "SX-XJTU1-EYE",
+          "source_name": "西安交通大学第一附属医院眼科简介",
+          "source_type": "医院官网",
+          "source_url": "https://www.dyyy.xjtu.edu.cn/gzbsy/ksdh/wkxt/y_k.htm",
+          "query_date": "2026-10-08",
+          "evidence_text": "医院官网介绍眼科设有白内障日间手术中心，开展微切口超声乳化和人工晶体植入及复杂白内障手术。",
+          "evidence_field": "medical_resources",
+          "supported_claim": "支持该院具备白内障超声乳化和人工晶体植入相关技术资源。"
+        },
+        {
+          "evidence_id": "HOSP-SX-XJTU1-E-REG",
+          "source_id": "SX-XJTU1-BASE",
+          "source_name": "陕西省三级公立医院名录",
+          "source_type": "省级卫健委",
+          "source_url": "https://sxwjw.shaanxi.gov.cn/sy/tzgg/201906/P020201104551288445130.pdf",
+          "query_date": "2026-10-08",
+          "evidence_text": "西北地区大型三级甲等综合医院眼科平台",
+          "evidence_field": "regional_service",
+          "supported_claim": "支持该院承担区域医疗或疑难病例服务角色。"
+        }
+      ],
+      "profile_version": "hospital-capability-profile-v1"
+    }
+  ],
+  "clinician_profiles": []
+}

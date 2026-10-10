@@ -9,13 +9,14 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
+import threading
 from uuid import uuid4
 
+from medical_claims.database_migrations import apply_migrations
 from medical_claims.workflow_models import CreateCaseRequest, WorkflowCase, WorkflowStatus
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "outputs" / "competition.db"
-CURRENT_SCHEMA_VERSION = 5
 
 
 class CaseNotFound(KeyError):
@@ -37,273 +38,16 @@ def encode(value):
 
 
 class CaseStorage:
+    # Mobile previews are deliberately process-local. They must never become a
+    # persistent database table or survive a backend restart.
+    _preview_lock = threading.Lock()
+    _preview_cache: dict[str, dict] = {}
+
     def __init__(self, path=None):
         self.path = Path(path or os.getenv("COMPETITION_DB_PATH") or DEFAULT_DB_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS schema_migrations (
-                    version INTEGER PRIMARY KEY,
-                    migration_name TEXT NOT NULL,
-                    checksum TEXT,
-                    applied_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS cases (
-                    case_id TEXT PRIMARY KEY, claim_event_id TEXT NOT NULL,
-                    status TEXT NOT NULL, data_source TEXT NOT NULL,
-                    consent_status TEXT NOT NULL, deidentification_status TEXT NOT NULL,
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS case_results (
-                    case_id TEXT PRIMARY KEY REFERENCES cases(case_id),
-                    ocr_result_json TEXT, structured_result_json TEXT,
-                    pain_result_json TEXT, care_result_json TEXT, updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS case_profile_contexts (
-                    case_id TEXT PRIMARY KEY REFERENCES cases(case_id),
-                    context_json TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS profile_case_records (
-                    case_id TEXT PRIMARY KEY, input_json TEXT NOT NULL,
-                    record_json TEXT, assembly_json TEXT NOT NULL,
-                    source_kind TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS quality_portfolios (
-                    portfolio_key TEXT PRIMARY KEY, portfolio_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS reviews (
-                    review_id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(case_id),
-                    content_fingerprint TEXT NOT NULL, target_type TEXT NOT NULL,
-                    decision TEXT NOT NULL, record_json TEXT NOT NULL, created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS deliveries (
-                    delivery_id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(case_id),
-                    content_fingerprint TEXT NOT NULL, record_json TEXT NOT NULL, created_at TEXT NOT NULL,
-                    UNIQUE(case_id, content_fingerprint)
-                );
-                CREATE TABLE IF NOT EXISTS feedback (
-                    feedback_id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES deliveries(delivery_id),
-                    case_id TEXT NOT NULL REFERENCES cases(case_id), record_json TEXT NOT NULL, created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS service_sessions (
-                    session_id_hash TEXT PRIMARY KEY,
-                    channel TEXT NOT NULL,
-                    session_time TEXT NOT NULL,
-                    deidentified_text TEXT,
-                    text_fingerprint TEXT NOT NULL,
-                    data_source TEXT NOT NULL,
-                    consent_status TEXT NOT NULL,
-                    deidentification_status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS service_analysis_results (
-                    analysis_id TEXT PRIMARY KEY,
-                    session_id_hash TEXT NOT NULL REFERENCES service_sessions(session_id_hash),
-                    primary_intent TEXT NOT NULL,
-                    secondary_intents_json TEXT NOT NULL,
-                    has_friction INTEGER NOT NULL CHECK(has_friction IN (0, 1)),
-                    friction_types_json TEXT NOT NULL,
-                    severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high', 'critical')),
-                    severity_score INTEGER NOT NULL CHECK(severity_score BETWEEN 0 AND 100),
-                    confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
-                    evidence_json TEXT NOT NULL,
-                    recommended_action TEXT,
-                    engine_version TEXT NOT NULL,
-                    review_status TEXT NOT NULL CHECK(review_status IN ('pending', 'reviewed', 'rejected')),
-                    reviewer TEXT,
-                    analysis_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS case_service_links (
-                    link_id TEXT PRIMARY KEY,
-                    case_id TEXT NOT NULL REFERENCES cases(case_id),
-                    session_id_hash TEXT NOT NULL REFERENCES service_sessions(session_id_hash),
-                    link_method TEXT NOT NULL,
-                    confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
-                    reviewed INTEGER NOT NULL CHECK(reviewed IN (0, 1)),
-                    reviewer TEXT,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(case_id, session_id_hash)
-                );
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id TEXT PRIMARY KEY,
-                    external_subject TEXT UNIQUE,
-                    display_name TEXT NOT NULL,
-                    identity_source TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('active', 'disabled')),
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS roles (
-                    role_code TEXT PRIMARY KEY,
-                    role_name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    is_system INTEGER NOT NULL CHECK(is_system IN (0, 1)),
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS user_roles (
-                    user_id TEXT NOT NULL REFERENCES users(user_id),
-                    role_code TEXT NOT NULL REFERENCES roles(role_code),
-                    assigned_by TEXT REFERENCES users(user_id),
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(user_id, role_code)
-                );
-                CREATE TABLE IF NOT EXISTS case_access_grants (
-                    grant_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL REFERENCES users(user_id),
-                    case_id TEXT NOT NULL REFERENCES cases(case_id),
-                    access_reason TEXT NOT NULL,
-                    granted_by TEXT REFERENCES users(user_id),
-                    expires_at TEXT,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(user_id, case_id)
-                );
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    audit_id TEXT PRIMARY KEY,
-                    actor_user_id TEXT REFERENCES users(user_id),
-                    actor_role_code TEXT,
-                    action TEXT NOT NULL,
-                    resource_type TEXT NOT NULL,
-                    resource_id TEXT,
-                    result TEXT NOT NULL CHECK(result IN ('allowed', 'denied', 'error')),
-                    request_id TEXT,
-                    ip_hash TEXT,
-                    detail_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS follow_up_tasks (
-                    task_id TEXT PRIMARY KEY,
-                    case_id TEXT REFERENCES cases(case_id),
-                    feedback_id TEXT UNIQUE REFERENCES feedback(feedback_id),
-                    service_analysis_id TEXT REFERENCES service_analysis_results(analysis_id),
-                    source_type TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    priority TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    assignee TEXT,
-                    note TEXT NOT NULL,
-                    record_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    resolved_at TEXT,
-                    resolution TEXT,
-                    CHECK (
-                        (source_type='delivery_feedback' AND feedback_id IS NOT NULL AND service_analysis_id IS NULL)
-                        OR (source_type='service_session' AND feedback_id IS NULL AND service_analysis_id IS NOT NULL)
-                        OR (source_type='manual' AND feedback_id IS NULL AND service_analysis_id IS NULL)
-                    )
-                );
-                CREATE TABLE IF NOT EXISTS mobile_previews (
-                    token_hash TEXT PRIMARY KEY,
-                    case_id TEXT NOT NULL REFERENCES cases(case_id),
-                    preview_json TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_service_sessions_channel_time
-                    ON service_sessions(channel, session_time);
-                CREATE INDEX IF NOT EXISTS idx_service_analysis_intent_severity
-                    ON service_analysis_results(primary_intent, severity);
-                CREATE INDEX IF NOT EXISTS idx_case_service_links_session
-                    ON case_service_links(session_id_hash);
-                CREATE INDEX IF NOT EXISTS idx_user_roles_role
-                    ON user_roles(role_code);
-                CREATE INDEX IF NOT EXISTS idx_case_access_user_case
-                    ON case_access_grants(user_id, case_id);
-                CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_time
-                    ON audit_logs(actor_user_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_time
-                    ON audit_logs(resource_type, resource_id, created_at);
-                CREATE INDEX IF NOT EXISTS idx_follow_up_tasks_case_status
-                    ON follow_up_tasks(case_id, status);
-            """)
-            self._upgrade_follow_up_tasks(db)
-            now = datetime.now(timezone.utc).isoformat()
-            migrations = (
-                (1, "initial_competition_schema"),
-                (2, "add_mobile_previews"),
-                (3, "add_service_analysis_tables"),
-                (4, "generalize_follow_up_sources"),
-                (5, "add_role_scope_and_audit_tables"),
-            )
-            db.executemany(
-                "INSERT OR IGNORE INTO schema_migrations(version, migration_name, checksum, applied_at) "
-                "VALUES (?, ?, NULL, ?)",
-                [(version, name, now) for version, name in migrations],
-            )
-            role_rows = (
-                ("patient", "用户/患者", "仅访问本人获授权的关怀内容、推荐和反馈入口", 1),
-                ("claims_service", "理赔客服", "处理理赔进度、材料状态和服务待办，只查看必要摘要", 1),
-                ("medical_reviewer", "医学审核员", "审核脱敏病历、痛点证据和温度指引", 1),
-                ("operations", "运营/产品", "查看聚合统计、触达效果和反馈分类", 1),
-                ("system_admin", "系统管理员", "管理账号角色与审计配置，不默认获得病历浏览权", 1),
-            )
-            db.executemany(
-                "INSERT OR IGNORE INTO roles(role_code, role_name, description, is_system, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [(*row, now) for row in role_rows],
-            )
-
-    @staticmethod
-    def _upgrade_follow_up_tasks(db):
-        """Upgrade the original feedback-only task table without losing rows."""
-
-        columns = {
-            row["name"]: row
-            for row in db.execute("PRAGMA table_info(follow_up_tasks)").fetchall()
-        }
-        required = {
-            "service_analysis_id", "source_type", "category", "priority", "assignee",
-            "note", "resolved_at", "resolution",
-        }
-        if required.issubset(columns) and not columns["case_id"]["notnull"] and not columns["feedback_id"]["notnull"]:
-            return
-
-        legacy_rows = db.execute("SELECT * FROM follow_up_tasks").fetchall()
-        db.execute("ALTER TABLE follow_up_tasks RENAME TO follow_up_tasks_legacy")
-        db.executescript("""
-            CREATE TABLE follow_up_tasks (
-                task_id TEXT PRIMARY KEY,
-                case_id TEXT REFERENCES cases(case_id),
-                feedback_id TEXT UNIQUE REFERENCES feedback(feedback_id),
-                service_analysis_id TEXT REFERENCES service_analysis_results(analysis_id),
-                source_type TEXT NOT NULL,
-                category TEXT NOT NULL,
-                priority TEXT NOT NULL,
-                status TEXT NOT NULL,
-                assignee TEXT,
-                note TEXT NOT NULL,
-                record_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                resolved_at TEXT,
-                resolution TEXT,
-                CHECK (
-                    (source_type='delivery_feedback' AND feedback_id IS NOT NULL AND service_analysis_id IS NULL)
-                    OR (source_type='service_session' AND feedback_id IS NULL AND service_analysis_id IS NOT NULL)
-                    OR (source_type='manual' AND feedback_id IS NULL AND service_analysis_id IS NULL)
-                )
-            );
-        """)
-        for row in legacy_rows:
-            record = json.loads(row["record_json"])
-            db.execute(
-                "INSERT INTO follow_up_tasks(task_id, case_id, feedback_id, service_analysis_id, "
-                "source_type, category, priority, status, assignee, note, record_json, created_at, "
-                "resolved_at, resolution) VALUES (?, ?, ?, NULL, 'delivery_feedback', ?, 'medium', "
-                "?, NULL, ?, ?, ?, ?, ?)",
-                (
-                    row["task_id"], row["case_id"], row["feedback_id"],
-                    record.get("category", "other"), row["status"], record.get("note", ""),
-                    row["record_json"], row["created_at"], record.get("resolved_at"),
-                    record.get("resolution"),
-                ),
-            )
-        db.execute("DROP TABLE follow_up_tasks_legacy")
-        db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_follow_up_tasks_case_status "
-            "ON follow_up_tasks(case_id, status)"
-        )
+            apply_migrations(db)
 
     @contextmanager
     def _connect(self):
@@ -316,16 +60,33 @@ class CaseStorage:
         finally:
             db.close()
 
-    def create_case(self, request: CreateCaseRequest) -> WorkflowCase:
+    def create_case(self, request: CreateCaseRequest, owner_user_id: str | None = None) -> WorkflowCase:
         now = datetime.now(timezone.utc).isoformat()
         case = WorkflowCase(**request.model_dump(), case_id=str(uuid4()),
                             status=WorkflowStatus.RECEIVED, created_at=now, updated_at=now)
         with self._connect() as db:
-            db.execute("INSERT INTO cases VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                       (case.case_id, case.claim_event_id, case.status.value, case.data_source,
-                        case.consent_status, case.deidentification_status, now, now))
+            db.execute(
+                "INSERT INTO cases(case_id, claim_event_id, status, care_status, claim_status, "
+                "data_source, consent_status, deidentification_status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?)",
+                (case.case_id, case.claim_event_id, case.status.value, case.status.value,
+                 case.data_source, case.consent_status, case.deidentification_status, now, now),
+            )
             db.execute("INSERT INTO case_results(case_id, updated_at) VALUES (?, ?)",
                        (case.case_id, now))
+            if owner_user_id is not None:
+                owner = db.execute(
+                    "SELECT 1 FROM users u JOIN roles r ON r.role_id=u.role_id "
+                    "WHERE u.user_id=? AND u.status='ACTIVE' AND r.role_code='CLAIM'",
+                    (owner_user_id,),
+                ).fetchone()
+                if owner is None:
+                    raise WorkflowConflict("理赔负责人账号不存在或不可用")
+                db.execute(
+                    "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                    "VALUES (?, ?, 'CLAIM_OWNER', 'ACTIVE', ?)",
+                    (case.case_id, owner_user_id, now),
+                )
         return case
 
     def _row(self, db, case_id):
@@ -351,10 +112,320 @@ class CaseStorage:
                 if row[f"{kind}_result_json"] is not None else None
                 for kind in ("ocr", "structured", "pain", "care")}}
 
+    def schema_info(self):
+        """Return non-sensitive schema metadata for health checks and diagnostics."""
+        from .database_migrations import CURRENT_SCHEMA_VERSION
+
+        with self._connect() as db:
+            applied = [dict(row) for row in db.execute(
+                "SELECT version, migration_name, applied_at, checksum "
+                "FROM schema_migrations ORDER BY version"
+            )]
+            tables = [row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )]
+            return {
+                "current_version": CURRENT_SCHEMA_VERSION,
+                "applied_migrations": applied,
+                "tables": tables,
+            }
+
+    def create_user(self, username, password_hash, role_code, display_name,
+                    phone=None, email=None, status="ACTIVE"):
+        """Create a database identity; password hashing is owned by the auth layer."""
+        now = datetime.now(timezone.utc).isoformat()
+        user_id = str(uuid4())
+        with self._connect() as db:
+            role = db.execute("SELECT role_id FROM roles WHERE role_code=?", (role_code,)).fetchone()
+            if role is None:
+                raise WorkflowConflict("未知角色")
+            db.execute(
+                "INSERT INTO users(user_id, username, password_hash, role_id, display_name, phone, "
+                "email, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, username, password_hash, role[0], display_name, phone, email, status, now, now),
+            )
+        return user_id
+
+    def get_user_by_username(self, username):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT u.*, r.role_code, r.role_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id WHERE u.username=?",
+                (username,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_user_identity(self, user_id):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT u.user_id, u.username, u.display_name, u.phone, u.email, u.status, "
+                "u.last_login_at, r.role_code, r.role_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id WHERE u.user_id=?",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            result["permissions"] = [item[0] for item in db.execute(
+                "SELECT p.perm_code FROM permissions p "
+                "JOIN role_permissions rp ON rp.perm_id=p.perm_id "
+                "JOIN users u ON u.role_id=rp.role_id WHERE u.user_id=? ORDER BY p.perm_code",
+                (user_id,),
+            )]
+            return result
+
+    def mark_login(self, user_id):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("UPDATE users SET last_login_at=?, updated_at=? WHERE user_id=?", (now, now, user_id))
+
+    def update_own_profile(self, user_id, *, display_name, phone, email):
+        """Update the three self-service profile fields on the existing users row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE users SET display_name=?, phone=?, email=?, updated_at=? "
+                "WHERE user_id=? AND status='ACTIVE'",
+                (display_name, phone, email, now, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowItemNotFound("当前用户不存在或不可用")
+        return self.get_user_identity(user_id)
+
+    def get_user_password_hash(self, user_id):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT password_hash FROM users WHERE user_id=? AND status='ACTIVE'",
+                (user_id,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def update_own_password_hash(self, user_id, *, expected_hash, new_hash):
+        """Use a compare-and-swap update so a concurrent password change is not overwritten."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE users SET password_hash=?, updated_at=? "
+                "WHERE user_id=? AND status='ACTIVE' AND password_hash=?",
+                (new_hash, now, user_id, expected_hash),
+            )
+            return cursor.rowcount == 1
+
+    def list_claim_cases(self, user_id, search=None, claim_status=None,
+                         consent_status=None, care_status=None, limit=100):
+        clauses = [
+            "EXISTS (SELECT 1 FROM case_participants mine WHERE mine.case_id=c.case_id "
+            "AND mine.user_id=? AND mine.status='ACTIVE')"
+        ]
+        params: list[object] = [user_id]
+        if search:
+            clauses.append("(c.case_id LIKE ? OR c.claim_event_id LIKE ?)")
+            term = f"%{search}%"
+            params.extend((term, term))
+        for column, value in (("claim_status", claim_status), ("consent_status", consent_status),
+                              ("care_status", care_status)):
+            if value:
+                clauses.append(f"c.{column}=?")
+                params.append(value)
+        params.append(max(1, min(int(limit), 200)))
+        sql = f"""
+            SELECT c.case_id, c.claim_event_id, c.data_source, c.consent_status,
+                   c.deidentification_status, c.claim_status, c.care_status, c.status,
+                   c.created_at, c.updated_at,
+                   (SELECT customer.display_name FROM users customer
+                    WHERE customer.user_id=c.customer_user_id) AS customer_display_name,
+                   (SELECT owner.display_name FROM case_participants owner_link
+                    JOIN users owner ON owner.user_id=owner_link.user_id
+                    WHERE owner_link.case_id=c.case_id AND owner_link.case_role='CLAIM_OWNER'
+                    AND owner_link.status='ACTIVE' ORDER BY owner_link.assigned_at DESC LIMIT 1)
+                    AS claim_owner_name,
+                   CASE WHEN cr.ocr_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_ocr_result,
+                   CASE WHEN cr.structured_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_structured_result
+            FROM cases c
+            JOIN case_results cr ON cr.case_id=c.case_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY c.updated_at DESC LIMIT ?
+        """
+        with self._connect() as db:
+            results = [dict(row) for row in db.execute(sql, params)]
+            for result in results:
+                result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
+                result["material_status"] = self._claim_material_status(
+                    result["status"], result["has_ocr_result"], result["has_structured_result"]
+                )
+                result["analysis_ready"] = bool(result.pop("has_structured_result"))
+                result.pop("has_ocr_result", None)
+                result.pop("status", None)
+            return results
+
+    def get_claim_case_detail(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT c.*, "
+                "(SELECT customer.display_name FROM users customer WHERE customer.user_id=c.customer_user_id) "
+                "AS customer_display_name, "
+                "(SELECT owner.display_name FROM case_participants owner_link "
+                "JOIN users owner ON owner.user_id=owner_link.user_id "
+                "WHERE owner_link.case_id=c.case_id AND owner_link.case_role='CLAIM_OWNER' "
+                "AND owner_link.status='ACTIVE' ORDER BY owner_link.assigned_at DESC LIMIT 1) "
+                "AS claim_owner_name, cr.ocr_result_json, "
+                "cr.structured_result_json, cr.pain_result_json, cr.care_result_json "
+                "FROM cases c JOIN case_results cr ON cr.case_id=c.case_id "
+                "WHERE c.case_id=?",
+                (case_id,),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            result = {key: row[key] for key in (
+                "case_id", "claim_event_id", "data_source", "consent_status",
+                "deidentification_status", "claim_status", "care_status", "status",
+                "created_at", "updated_at", "customer_display_name", "claim_owner_name",
+            )}
+            result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
+            for kind in ("ocr", "structured", "pain", "care"):
+                result[f"has_{kind}_result"] = row[f"{kind}_result_json"] is not None
+            result["material_status"] = self._claim_material_status(
+                row["status"], row["ocr_result_json"], row["structured_result_json"]
+            )
+            result["analysis_ready"] = row["structured_result_json"] is not None
+            for kind in ("ocr", "structured", "pain", "care"):
+                result.pop(f"has_{kind}_result", None)
+            result.pop("status", None)
+            return result
+
+    @staticmethod
+    def _mask_customer_label(value):
+        if not value:
+            return None
+        value = str(value)
+        if len(value) == 1:
+            return "*"
+        if len(value) == 2:
+            return value[0] + "*"
+        return value[0] + "*" * (len(value) - 2) + value[-1]
+
+    @staticmethod
+    def _claim_material_status(workflow_status, ocr_payload, structured_payload):
+        if workflow_status == "PROCESSING":
+            return "processing"
+        if structured_payload:
+            return "completed"
+        if ocr_payload:
+            return "submitted"
+        return "not_submitted"
+
+    def claim_dashboard(self, user_id):
+        cases = self.list_claim_cases(user_id, limit=200)
+        awaiting_material = sum(not item["analysis_ready"] for item in cases)
+        awaiting_authorization = sum(
+            item["consent_status"] != "authorized" or item["deidentification_status"] != "confirmed"
+            for item in cases
+        )
+        ready_for_care = sum(
+            item["analysis_ready"] and item["consent_status"] == "authorized"
+            and item["deidentification_status"] == "confirmed"
+            and item["care_status"] in {"RECEIVED", "STRUCTURED"}
+            for item in cases
+        )
+        return {
+            "total": len(cases),
+            "pending": sum(
+                not item["analysis_ready"] or item["consent_status"] != "authorized"
+                or item["deidentification_status"] != "confirmed"
+                or item["care_status"] in {"RECEIVED", "STRUCTURED"}
+                for item in cases
+            ),
+            "awaiting_material": awaiting_material,
+            "awaiting_authorization": awaiting_authorization,
+            "ready_for_care": ready_for_care,
+            "care_started": sum(item["care_status"] not in {"RECEIVED", "STRUCTURED"} for item in cases),
+            "recent_cases": cases[:8],
+        }
+
+    def claim_tasks(self, user_id):
+        tasks = []
+        for item in self.list_claim_cases(user_id, limit=200):
+            reasons = []
+            if item["consent_status"] != "authorized":
+                reasons.append("授权待确认")
+            if item["deidentification_status"] != "confirmed":
+                reasons.append("脱敏状态待确认")
+            if not item["analysis_ready"]:
+                reasons.append("材料待补充或处理")
+            if (item["analysis_ready"] and item["consent_status"] == "authorized"
+                    and item["deidentification_status"] == "confirmed"
+                    and item["care_status"] in {"RECEIVED", "STRUCTURED"}):
+                reasons.append("可以移交医护关怀")
+            if reasons:
+                tasks.append({"case_id": item["case_id"], "claim_event_id": item["claim_event_id"],
+                              "updated_at": item["updated_at"], "reasons": reasons})
+        return tasks
+
+    def trigger_care(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "CARE_TRIGGER"):
+            raise CaseNotFound(case_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT c.consent_status, c.deidentification_status, c.care_status, "
+                "cr.structured_result_json FROM cases c JOIN case_results cr USING(case_id) "
+                "WHERE c.case_id=?",
+                (case_id,),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            blockers = []
+            if row["consent_status"] != "authorized":
+                blockers.append("材料使用授权尚未确认")
+            if row["deidentification_status"] != "confirmed":
+                blockers.append("材料脱敏状态尚未确认")
+            if row["structured_result_json"] is None:
+                blockers.append("病例结构化尚未完成")
+            if blockers:
+                raise WorkflowConflict("；".join(blockers))
+            if row["care_status"] in {"RECEIVED", "STRUCTURED"}:
+                db.execute("UPDATE cases SET care_status='CARE_TRIGGERED', updated_at=? WHERE case_id=?",
+                           (now, case_id))
+                care_status = "CARE_TRIGGERED"
+            else:
+                care_status = row["care_status"]
+            return {"case_id": case_id, "care_status": care_status,
+                    "message": "案件已移交医护关怀，等待医疗处理或复核"}
+
+    def assign_case_participant(self, case_id, user_id, case_role):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            self._row(db, case_id)
+            if db.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone() is None:
+                raise WorkflowItemNotFound("用户不存在")
+            db.execute(
+                "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                "VALUES (?, ?, ?, 'ACTIVE', ?) ON CONFLICT(case_id, user_id, case_role) "
+                "DO UPDATE SET status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
+                (case_id, user_id, case_role, now),
+            )
+
+    def user_can_access_case(self, user_id, case_id, permission_code):
+        """Enforce role permission plus active case assignment."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT 1 FROM users u "
+                "JOIN role_permissions rp ON rp.role_id=u.role_id "
+                "JOIN permissions p ON p.perm_id=rp.perm_id "
+                "JOIN case_participants cp ON cp.user_id=u.user_id "
+                "WHERE u.user_id=? AND u.status='ACTIVE' AND cp.case_id=? "
+                "AND cp.status='ACTIVE' AND p.perm_code=?",
+                (user_id, case_id, permission_code),
+            ).fetchone()
+            return row is not None
+
     def _status(self, db, case_id, status):
         now = datetime.now(timezone.utc).isoformat()
-        db.execute("UPDATE cases SET status=?, updated_at=? WHERE case_id=?",
-                   (status.value, now, case_id))
+        db.execute("UPDATE cases SET status=?, care_status=?, updated_at=? WHERE case_id=?",
+                   (status.value, status.value, now, case_id))
         db.execute("UPDATE case_results SET updated_at=? WHERE case_id=?", (now, case_id))
 
     def begin_processing(self, case_id):
@@ -387,7 +458,7 @@ class CaseStorage:
             db.execute("UPDATE cases SET updated_at=? WHERE case_id=?", (now, case_id))
 
     def save_ocr_review_draft(self, case_id, documents):
-        """Save locally reviewed OCR and invalidate all downstream results."""
+        """Save reviewed OCR locally and invalidate downstream derived data."""
 
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -399,14 +470,16 @@ class CaseStorage:
                 (encode(documents), now, case_id),
             )
             db.execute(
-                "UPDATE cases SET status=?, deidentification_status='pending_review', updated_at=? WHERE case_id=?",
-                (WorkflowStatus.OCR_READY.value, now, case_id),
+                "UPDATE cases SET status=?, care_status=?, "
+                "deidentification_status='pending_review', updated_at=? WHERE case_id=?",
+                (WorkflowStatus.OCR_READY.value, WorkflowStatus.OCR_READY.value, now, case_id),
             )
             self._invalidate_profile(db, case_id, clear_context=True)
+            self._invalidate_recommendations(db, case_id)
 
     def confirm_deidentification(self, case_id, review_method="manual_confirmation", findings=None,
                                  document_fingerprint=None):
-        """Confirm that the reviewed OCR text, not necessarily the source image, is safe to send."""
+        """Confirm reviewed OCR and write the event to the canonical system log."""
 
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -419,16 +492,18 @@ class CaseStorage:
                 (now, case_id),
             )
             db.execute(
-                "INSERT INTO audit_logs(audit_id, actor_user_id, actor_role_code, action, resource_type, "
-                "resource_id, result, request_id, ip_hash, detail_json, created_at) "
-                "VALUES(?,NULL,?,?,?,?,?,NULL,NULL,?,?)",
+                "INSERT INTO system_logs(log_id, user_id, case_id, action, module, request_path, "
+                "ip_address, request_params_json, result, error_message, created_at) "
+                "VALUES (?, NULL, ?, 'confirm_deidentification', 'OCR_REVIEW', NULL, NULL, ?, "
+                "'allowed', NULL, ?)",
                 (
-                    str(uuid4()), "medical_reviewer", "confirm_deidentification", "case", case_id,
-                    "allowed", encode({
+                    str(uuid4()), case_id,
+                    encode({
                         "review_method": review_method,
                         "sensitive_pattern_findings": list(findings or []),
                         "document_fingerprint": document_fingerprint,
-                    }), now,
+                    }),
+                    now,
                 ),
             )
 
@@ -442,6 +517,7 @@ class CaseStorage:
             db.execute("UPDATE case_results SET structured_result_json=?, pain_result_json=NULL, "
                        "care_result_json=NULL WHERE case_id=?", (encode(payload), case_id))
             self._invalidate_profile(db, case_id, clear_context=True)
+            self._invalidate_recommendations(db, case_id)
             self._status(db, case_id, WorkflowStatus.STRUCTURED)
 
     def require_current(self, case_id, case, pain=None):
@@ -467,6 +543,7 @@ class CaseStorage:
             db.execute("UPDATE case_results SET pain_result_json=?, care_result_json=NULL WHERE case_id=?",
                        (encode(result), case_id))
             self._invalidate_profile(db, case_id)
+            self._invalidate_recommendations(db, case_id)
             self._status(db, case_id, WorkflowStatus.PAIN_READY)
 
     def save_care(self, case_id, result, case, pain):
@@ -481,7 +558,7 @@ class CaseStorage:
             self._status(db, case_id, WorkflowStatus.CARE_READY)
 
     def create_mobile_preview(self, case_id: str, ttl_minutes: int = 30):
-        """Create an expiring, read-only snapshot without exposing the real case id."""
+        """Create an expiring, non-persistent preview snapshot."""
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=ttl_minutes)
@@ -490,33 +567,30 @@ class CaseStorage:
         public_case_id = f"PREVIEW-{secrets.token_hex(4).upper()}"
         publication_id = f"MP-{secrets.token_hex(8).upper()}"
         with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
             row = self._row(db, case_id)
             if row["consent_status"] != "authorized" or row["deidentification_status"] != "confirmed":
                 raise WorkflowConflict("手机预览仅允许用于已授权并确认脱敏的案件")
             if row["care_result_json"] is None:
                 raise WorkflowConflict("请先生成温度指引")
             care = json.loads(row["care_result_json"])
-            guide = care.get("guide")
-            if not isinstance(guide, dict):
-                raise WorkflowConflict("温度指引缺少可预览内容")
-            public_guide = json.loads(json.dumps(guide, ensure_ascii=False))
-            public_guide["case_id"] = public_case_id
-            publication = {
-                "version": "patient-mobile-preview-v1",
-                "publication_id": publication_id,
-                "status": "preview",
-                "case_id": public_case_id,
-                "created_at": now.isoformat(),
-                "published_at": None,
-                "expires_at": expires_at.isoformat(),
-                "report": {"case_id": public_case_id, "guide": public_guide},
-            }
-            db.execute("DELETE FROM mobile_previews WHERE expires_at<=?", (now.isoformat(),))
-            db.execute(
-                "INSERT INTO mobile_previews VALUES (?, ?, ?, ?, ?)",
-                (token_hash, case_id, encode(publication), expires_at.isoformat(), now.isoformat()),
-            )
+        guide = care.get("guide")
+        if not isinstance(guide, dict):
+            raise WorkflowConflict("温度指引缺少可预览内容")
+        public_guide = json.loads(json.dumps(guide, ensure_ascii=False))
+        public_guide["case_id"] = public_case_id
+        publication = {
+            "version": "patient-mobile-preview-v2-ephemeral",
+            "publication_id": publication_id,
+            "status": "preview",
+            "case_id": public_case_id,
+            "created_at": now.isoformat(),
+            "published_at": None,
+            "expires_at": expires_at.isoformat(),
+            "report": {"case_id": public_case_id, "guide": public_guide},
+        }
+        with self._preview_lock:
+            self._purge_previews(now)
+            self._preview_cache[token_hash] = publication
         return {
             "token": token,
             "publication_id": publication_id,
@@ -524,21 +598,25 @@ class CaseStorage:
         }
 
     def get_mobile_preview(self, token: str):
-        """Resolve a mobile preview by a raw token; only its hash is stored."""
+        """Resolve a process-local preview by a raw token."""
 
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc)
-        with self._connect() as db:
-            row = db.execute(
-                "SELECT preview_json, expires_at FROM mobile_previews WHERE token_hash=?",
-                (token_hash,),
-            ).fetchone()
-            if row is None:
-                raise WorkflowItemNotFound("手机预览链接不存在或已失效")
-            if datetime.fromisoformat(row["expires_at"]) <= now:
-                db.execute("DELETE FROM mobile_previews WHERE token_hash=?", (token_hash,))
-                raise WorkflowItemNotFound("手机预览链接已过期")
-            return json.loads(row["preview_json"])
+        with self._preview_lock:
+            self._purge_previews(now)
+            publication = self._preview_cache.get(token_hash)
+            if publication is None:
+                raise WorkflowItemNotFound("手机预览链接不存在、已过期或服务已重启")
+            return json.loads(json.dumps(publication, ensure_ascii=False))
+
+    @classmethod
+    def _purge_previews(cls, now: datetime):
+        expired = [
+            key for key, value in cls._preview_cache.items()
+            if datetime.fromisoformat(value["expires_at"]) <= now
+        ]
+        for key in expired:
+            cls._preview_cache.pop(key, None)
 
     def _invalidate_profile(self, db, case_id, clear_context=False):
         changed = db.execute("DELETE FROM profile_case_records WHERE case_id=? AND source_kind='workflow'",
@@ -547,6 +625,254 @@ class CaseStorage:
             db.execute("DELETE FROM case_profile_contexts WHERE case_id=?", (case_id,))
         if changed:
             db.execute("DELETE FROM quality_portfolios")
+
+    @staticmethod
+    def _invalidate_recommendations(db, case_id):
+        db.execute(
+            "UPDATE recommendation_reports SET status='INVALIDATED', updated_at=? "
+            "WHERE case_id=? AND status<>'INVALIDATED'",
+            (datetime.now(timezone.utc).isoformat(), case_id),
+        )
+
+    def save_provider_quality_observation(self, *, case_id, provider_type, provider_id,
+                                          disease_group, metric_code, raw_value=None,
+                                          unit=None, status="OBSERVED", evidence=None,
+                                          source_kind="workflow", observed_at=None):
+        """Store one case-level quality fact without turning it into a conclusion."""
+        now = datetime.now(timezone.utc).isoformat()
+        observation_id = str(uuid4())
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO provider_quality_observations(observation_id, case_id, provider_type, "
+                "provider_id, disease_group, metric_code, raw_value, unit, status, evidence_json, "
+                "source_kind, observed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(case_id, provider_type, provider_id, disease_group, metric_code) "
+                "DO UPDATE SET raw_value=excluded.raw_value, unit=excluded.unit, status=excluded.status, "
+                "evidence_json=excluded.evidence_json, source_kind=excluded.source_kind, "
+                "observed_at=excluded.observed_at, created_at=excluded.created_at",
+                (observation_id, case_id, provider_type, provider_id, disease_group, metric_code,
+                 raw_value, unit, status, encode(evidence or {}), source_kind, observed_at, now),
+            )
+
+    def save_provider_profile_snapshot(self, *, provider_type, provider_id, disease_group,
+                                       metrics, sample_size, data_sufficiency_status,
+                                       profile, composite_score=None):
+        """Version an aggregated provider profile built from quality observations."""
+        now = datetime.now(timezone.utc).isoformat()
+        snapshot_id = str(uuid4())
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT COALESCE(MAX(profile_version), 0) FROM provider_profile_snapshots "
+                "WHERE provider_type=? AND provider_id=? AND disease_group=?",
+                (provider_type, provider_id, disease_group),
+            ).fetchone()[0]
+            version = current + 1
+            db.execute(
+                "UPDATE provider_profile_snapshots SET status='SUPERSEDED', valid_to=? "
+                "WHERE provider_type=? AND provider_id=? AND disease_group=? AND status='ACTIVE'",
+                (now, provider_type, provider_id, disease_group),
+            )
+            db.execute(
+                "INSERT INTO provider_profile_snapshots(snapshot_id, provider_type, provider_id, "
+                "disease_group, profile_version, sample_size, data_sufficiency_status, composite_score, "
+                "profile_json, status, valid_from, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "'ACTIVE', ?, ?)",
+                (snapshot_id, provider_type, provider_id, disease_group, version, sample_size,
+                 data_sufficiency_status, composite_score, encode(profile), now, now),
+            )
+            for metric in metrics:
+                value = json.loads(encode(metric))
+                db.execute(
+                    "INSERT INTO provider_metric_scores(metric_score_id, snapshot_id, metric_code, "
+                    "metric_name, score, status, sample_size, confidence, calculation, evidence_json, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid4()), snapshot_id, value["metric_code"], value["metric_name"],
+                     value.get("score"), value["status"], value.get("sample_size", 0),
+                     value.get("confidence", 0), value.get("calculation", ""),
+                     encode(value.get("evidence") or {}), now),
+                )
+        return {"snapshot_id": snapshot_id, "profile_version": version, "status": "ACTIVE"}
+
+    def load_provider_profile(self, provider_type, provider_id, disease_group, profile_version=None):
+        with self._connect() as db:
+            if profile_version is None:
+                row = db.execute(
+                    "SELECT * FROM provider_profile_snapshots WHERE provider_type=? AND provider_id=? "
+                    "AND disease_group=? ORDER BY profile_version DESC LIMIT 1",
+                    (provider_type, provider_id, disease_group),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    "SELECT * FROM provider_profile_snapshots WHERE provider_type=? AND provider_id=? "
+                    "AND disease_group=? AND profile_version=?",
+                    (provider_type, provider_id, disease_group, profile_version),
+                ).fetchone()
+            if row is None:
+                return None
+            output = dict(row)
+            output["profile"] = json.loads(row["profile_json"])
+            output["metrics"] = [dict(item) for item in db.execute(
+                "SELECT * FROM provider_metric_scores WHERE snapshot_id=? ORDER BY metric_code",
+                (row["snapshot_id"],),
+            )]
+            return output
+
+    def save_recommendation_report(self, case_id, report, clinician_recommendations=None,
+                                   status="DRAFT"):
+        """Persist a V2 recommendation as a versioned report and normalized children.
+
+        The method does not calculate, filter or reorder recommendations.  It only
+        stores the already calculated backend result and its evidence chain.
+        """
+        if status not in {"DRAFT", "REVIEWED", "PUBLISHED"}:
+            raise ValueError("recommendation report status 无效")
+        payload = json.loads(encode(report))
+        context = payload.get("context") or {}
+        if context.get("case_id") != case_id:
+            raise WorkflowConflict("推荐报告 case_id 不匹配")
+        clinician_rows = json.loads(encode(clinician_recommendations or []))
+        now = datetime.now(timezone.utc).isoformat()
+        report_id = str(uuid4())
+
+        hospital_profiles = {
+            item.get("hospital_id"): item
+            for item in payload.get("candidate_profiles", [])
+        }
+        clinician_profiles = {
+            item.get("clinician_id"): item
+            for item in payload.get("candidate_clinician_profiles", [])
+        }
+        evidence_records = {}
+        for profile in [*hospital_profiles.values(), *clinician_profiles.values()]:
+            for evidence in profile.get("evidence_records", []):
+                evidence_records[evidence.get("evidence_id")] = evidence
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._row(db, case_id)
+            current = db.execute(
+                "SELECT COALESCE(MAX(report_version), 0) FROM recommendation_reports WHERE case_id=?",
+                (case_id,),
+            ).fetchone()[0]
+            version = current + 1
+            self._invalidate_recommendations(db, case_id)
+            intent = payload.get("recommendation_intent") or {}
+            planner_version = intent.get("planner") or payload.get("engine_version") or "unknown"
+            db.execute(
+                "INSERT INTO recommendation_reports(report_id, case_id, report_version, disease_group, "
+                "patient_city, status, planner_version, report_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (report_id, case_id, version, context.get("disease_group") or "unavailable",
+                 context.get("city"), status, planner_version, encode(payload), now, now),
+            )
+
+            items = []
+            for recommendation in payload.get("recommendations", []):
+                profile = hospital_profiles.get(recommendation.get("hospital_id"), {})
+                foundation = profile.get("institution_foundation") or {}
+                specialty = profile.get("disease_specialty") or {}
+                items.append(("HOSPITAL", recommendation, {
+                    "entity_id": recommendation.get("hospital_id"),
+                    "entity_name": recommendation.get("hospital_name") or foundation.get("hospital_name"),
+                    "city": (recommendation.get("accessibility") or {}).get("hospital_city") or foundation.get("city"),
+                    "department": "、".join(specialty.get("related_departments") or []),
+                    "score": recommendation.get("recommendation_score"),
+                    "confidence": recommendation.get("recommendation_confidence"),
+                }))
+            for recommendation in clinician_rows:
+                profile = clinician_profiles.get(recommendation.get("clinician_id"), {})
+                basic = profile.get("basic_qualification") or {}
+                items.append(("DOCTOR", recommendation, {
+                    "entity_id": recommendation.get("clinician_id"),
+                    "entity_name": recommendation.get("clinician_name") or basic.get("clinician_name"),
+                    "city": None,
+                    "department": basic.get("department"),
+                    "score": recommendation.get("recommendation_score"),
+                    "confidence": recommendation.get("recommendation_confidence"),
+                }))
+
+            for item_type, recommendation, fields in items:
+                item_id = str(uuid4())
+                evidence_status = str(recommendation.get("evidence_status") or "pending_verification").upper()
+                db.execute(
+                    "INSERT INTO recommendation_items(item_id, report_id, item_type, entity_id, entity_name, "
+                    "city, department, profile_snapshot_id, rank_no, total_score, confidence, evidence_status, "
+                    "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (item_id, report_id, item_type, fields["entity_id"], fields["entity_name"] or "unavailable",
+                     fields["city"], fields["department"], recommendation.get("profile_snapshot_id"),
+                     recommendation.get("rank", 1),
+                     fields["score"], fields["confidence"], evidence_status, now),
+                )
+                for dimension in recommendation.get("dimension_scores", []):
+                    db.execute(
+                        "INSERT INTO recommendation_scores(score_id, item_id, dimension_code, dimension_name, "
+                        "score, weight, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (str(uuid4()), item_id, dimension.get("dimension"), dimension.get("label"),
+                         dimension.get("score"), dimension.get("weight"),
+                         dimension.get("reasoning") or "", now),
+                    )
+                for reason in recommendation.get("reasons", []):
+                    linked = [evidence_records[item] for item in reason.get("evidence_record_ids", [])
+                              if item in evidence_records]
+                    if not linked:
+                        linked = [{
+                            "evidence_field": reason.get("dimension"),
+                            "source_name": reason.get("suggested_source_name"),
+                            "source_url": reason.get("suggested_source_url"),
+                            "supported_claim": reason.get("suggested_evidence_summary"),
+                            "evidence_confidence": reason.get("evidence_confidence", 0.5),
+                            "verified": False,
+                        }]
+                    for evidence in linked:
+                        ev_status = reason.get("evidence_status") or (
+                            "verified" if evidence.get("verified") else "pending_verification"
+                        )
+                        db.execute(
+                            "INSERT INTO recommendation_evidence(evidence_id, item_id, reason, evidence_type, "
+                            "source_name, source_url, evidence_summary, evidence_status, evidence_confidence, "
+                            "verified_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (str(uuid4()), item_id, reason.get("explanation") or reason.get("title") or "",
+                             evidence.get("evidence_field"), evidence.get("source_name"),
+                             evidence.get("source_url"), evidence.get("supported_claim") or evidence.get("evidence_text"),
+                             str(ev_status).upper(), evidence.get("evidence_confidence", 0.5),
+                             now if str(ev_status).lower() == "verified" else None, now),
+                        )
+        return {"report_id": report_id, "report_version": version, "status": status}
+
+    def load_recommendation_report(self, case_id, report_version=None):
+        with self._connect() as db:
+            self._row(db, case_id)
+            if report_version is None:
+                row = db.execute(
+                    "SELECT * FROM recommendation_reports WHERE case_id=? "
+                    "ORDER BY report_version DESC LIMIT 1",
+                    (case_id,),
+                ).fetchone()
+            else:
+                row = db.execute(
+                    "SELECT * FROM recommendation_reports WHERE case_id=? AND report_version=?",
+                    (case_id, report_version),
+                ).fetchone()
+            if row is None:
+                return None
+            items = []
+            for item in db.execute(
+                "SELECT * FROM recommendation_items WHERE report_id=? ORDER BY item_type, rank_no",
+                (row["report_id"],),
+            ):
+                item_data = dict(item)
+                item_data["scores"] = [dict(value) for value in db.execute(
+                    "SELECT * FROM recommendation_scores WHERE item_id=? ORDER BY rowid", (item["item_id"],)
+                )]
+                item_data["evidence"] = [dict(value) for value in db.execute(
+                    "SELECT * FROM recommendation_evidence WHERE item_id=? ORDER BY rowid", (item["item_id"],)
+                )]
+                items.append(item_data)
+            output = dict(row)
+            output["report"] = json.loads(row["report_json"])
+            output["items"] = items
+            return output
 
     def save_profile_context(self, case_id, settings, case, pain=None):
         with self._connect() as db:
@@ -738,9 +1064,12 @@ class CaseStorage:
                 raise WorkflowConflict("没有可用推荐，不能审核不存在的推荐内容")
             record = ReviewRecord(**request.model_dump(), review_id=str(uuid4()), case_id=prepared["case_id"],
                                   created_at=datetime.now(timezone.utc).isoformat())
-            db.execute("INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (record.review_id, record.case_id, record.content_fingerprint, record.target_type.value,
-                        record.decision.value, encode(record), record.created_at))
+            db.execute(
+                "INSERT INTO reviews(review_id, case_id, content_fingerprint, target_type, decision, "
+                "record_json, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.review_id, record.case_id, record.content_fingerprint, record.target_type.value,
+                 record.decision.value, encode(record), record.created_at, record.note),
+            )
             authorization = self._delivery_authorization(db, prepared)
             status = WorkflowStatus.REJECTED if authorization["review_status"] == "REJECTED" else \
                      WorkflowStatus.APPROVED if authorization["can_send"] else WorkflowStatus.REVIEW_REQUIRED
@@ -775,8 +1104,12 @@ class CaseStorage:
                 recommendation_included=bool(prepared["content"]["recommendation"]), risk_gate_result=prepared["gate"],
                 content_fingerprint=prepared["content_fingerprint"], created_at=datetime.now(timezone.utc).isoformat(),
                 content=prepared["content"])
-            db.execute("INSERT INTO deliveries VALUES (?, ?, ?, ?, ?)",
-                       (record.delivery_id, record.case_id, record.content_fingerprint, encode(record), record.created_at))
+            db.execute(
+                "INSERT INTO deliveries(delivery_id, case_id, content_fingerprint, record_json, created_at, "
+                "channel, status, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.delivery_id, record.case_id, record.content_fingerprint, encode(record), record.created_at,
+                 "MOCK", record.status, record.created_at),
+            )
             has_open_tasks = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (record.case_id,)).fetchone()
             self._status(db, record.case_id, WorkflowStatus.FOLLOWUP_PENDING if has_open_tasks else WorkflowStatus.DELIVERED_MOCK)
             return record
@@ -797,10 +1130,7 @@ class CaseStorage:
             return self._delivery_row(db, delivery_id)
 
     def save_feedback(self, delivery_id, request):
-        from .feedback_models import (
-            FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpPriority,
-            FollowUpSourceType, FollowUpTask,
-        )
+        from .feedback_models import FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpTask
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             delivery = self._delivery_row(db, delivery_id)
@@ -809,23 +1139,26 @@ class CaseStorage:
             now = datetime.now(timezone.utc).isoformat()
             feedback = FeedbackRecord(**request.model_dump(), feedback_id=str(uuid4()), delivery_id=delivery_id,
                                       case_id=delivery["case_id"], created_at=now)
-            db.execute("INSERT INTO feedback VALUES (?, ?, ?, ?, ?)",
-                       (feedback.feedback_id, delivery_id, feedback.case_id, encode(feedback), now))
+            db.execute(
+                "INSERT INTO feedback(feedback_id, delivery_id, case_id, record_json, created_at, "
+                "target_type, rating, helpful, category, comment, request_contact) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (feedback.feedback_id, delivery_id, feedback.case_id, encode(feedback), now,
+                 feedback.target_type.value, feedback.rating, int(feedback.helpful),
+                 feedback.category.value, feedback.comment,
+                 int(feedback.category.value != "clear" or not feedback.helpful)),
+            )
             needs_followup = request.rating <= 3 or not request.helpful or request.category != FeedbackCategory.CLEAR
             task = None
             if needs_followup:
                 task = FollowUpTask(task_id=str(uuid4()), case_id=feedback.case_id, feedback_id=feedback.feedback_id,
-                                    source_type=FollowUpSourceType.DELIVERY_FEEDBACK,
-                                    category=feedback.category,
-                                    priority=FollowUpPriority.HIGH if feedback.rating <= 2 else FollowUpPriority.MEDIUM,
-                                    note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
+                                    category=feedback.category, note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
                 db.execute(
-                    "INSERT INTO follow_up_tasks(task_id, case_id, feedback_id, service_analysis_id, "
-                    "source_type, category, priority, status, assignee, note, record_json, created_at, "
-                    "resolved_at, resolution) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL)",
-                    (task.task_id, task.case_id, task.feedback_id, task.source_type.value,
-                     task.category.value, task.priority.value, task.status.value, task.note,
-                     encode(task), now),
+                    "INSERT INTO follow_up_tasks(task_id, case_id, feedback_id, status, record_json, "
+                    "created_at, source_type, category, priority, note) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'DELIVERY_FEEDBACK', ?, 'MEDIUM', ?)",
+                    (task.task_id, task.case_id, task.feedback_id, task.status.value, encode(task), now,
+                     task.category.value, task.note),
                 )
             if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
@@ -867,7 +1200,7 @@ class CaseStorage:
                 "WHERE task_id=?",
                 (encode(task), task.resolved_at, task.resolution, task_id),
             )
-            if task.case_id is not None and self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+            if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 open_task = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (task.case_id,)).fetchone()
                 self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
             return task
