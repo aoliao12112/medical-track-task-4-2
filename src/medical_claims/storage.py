@@ -407,6 +407,11 @@ class CaseStorage:
                 "DO UPDATE SET status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
                 (case_id, user_id, case_role, now),
             )
+            if case_role == "CUSTOMER":
+                db.execute(
+                    "UPDATE cases SET customer_user_id=?, updated_at=? WHERE case_id=?",
+                    (user_id, now, case_id),
+                )
 
     def user_can_access_case(self, user_id, case_id, permission_code):
         """Enforce role permission plus active case assignment."""
@@ -1129,11 +1134,16 @@ class CaseStorage:
         with self._connect() as db:
             return self._delivery_row(db, delivery_id)
 
-    def save_feedback(self, delivery_id, request):
+    def save_feedback(self, delivery_id, request, customer_user_id=None):
         from .feedback_models import FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpTask
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             delivery = self._delivery_row(db, delivery_id)
+            if customer_user_id is not None and db.execute(
+                "SELECT 1 FROM feedback WHERE delivery_id=? AND customer_user_id=?",
+                (delivery_id, customer_user_id),
+            ).fetchone():
+                raise WorkflowConflict("本次关怀结果已提交过反馈")
             if request.target_type == FeedbackTarget.RECOMMENDATION and not delivery["recommendation_included"]:
                 raise WorkflowConflict("本次触达未包含推荐，不能提交推荐内容评分")
             now = datetime.now(timezone.utc).isoformat()
@@ -1141,12 +1151,13 @@ class CaseStorage:
                                       case_id=delivery["case_id"], created_at=now)
             db.execute(
                 "INSERT INTO feedback(feedback_id, delivery_id, case_id, record_json, created_at, "
-                "target_type, rating, helpful, category, comment, request_contact) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "customer_user_id, target_type, rating, helpful, category, comment, request_contact) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (feedback.feedback_id, delivery_id, feedback.case_id, encode(feedback), now,
+                 customer_user_id,
                  feedback.target_type.value, feedback.rating, int(feedback.helpful),
                  feedback.category.value, feedback.comment,
-                 int(feedback.category.value != "clear" or not feedback.helpful)),
+                 int(feedback.consent_to_contact)),
             )
             needs_followup = request.rating <= 3 or not request.helpful or request.category != FeedbackCategory.CLEAR
             task = None
@@ -1201,6 +1212,312 @@ class CaseStorage:
                 (encode(task), task.resolved_at, task.resolution, task_id),
             )
             if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
-                open_task = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (task.case_id,)).fetchone()
+                open_task = db.execute(
+                    "SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status IN ('OPEN','PROCESSING')",
+                    (task.case_id,),
+                ).fetchone()
                 self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
             return task
+
+    # Customer and service workspaces intentionally expose narrow, role-safe views.
+    # Raw OCR, structured medical records and draft analysis never leave these methods.
+    def list_customer_cases(self, user_id, limit=100):
+        sql = """
+            SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status,
+                   c.created_at, c.updated_at,
+                   (SELECT d.delivery_id FROM deliveries d WHERE d.case_id=c.case_id
+                    ORDER BY COALESCE(d.sent_at, d.created_at) DESC LIMIT 1) AS delivery_id,
+                   (SELECT COALESCE(d.sent_at, d.created_at) FROM deliveries d WHERE d.case_id=c.case_id
+                    ORDER BY COALESCE(d.sent_at, d.created_at) DESC LIMIT 1) AS delivered_at,
+                   EXISTS(SELECT 1 FROM feedback f WHERE f.customer_user_id=?
+                          AND f.delivery_id=(SELECT latest.delivery_id FROM deliveries latest
+                          WHERE latest.case_id=c.case_id
+                          ORDER BY COALESCE(latest.sent_at, latest.created_at) DESC LIMIT 1))
+                          AS has_feedback
+            FROM cases c
+            JOIN case_participants cp ON cp.case_id=c.case_id
+            WHERE cp.user_id=? AND cp.case_role='CUSTOMER' AND cp.status='ACTIVE'
+            ORDER BY c.updated_at DESC LIMIT ?
+        """
+        with self._connect() as db:
+            return [dict(row) for row in db.execute(
+                sql, (user_id, user_id, max(1, min(int(limit), 200))),
+            )]
+
+    def customer_dashboard(self, user_id):
+        cases = self.list_customer_cases(user_id, limit=200)
+        return {
+            "total": len(cases),
+            "results_available": sum(bool(item["delivery_id"]) for item in cases),
+            "awaiting_result": sum(not item["delivery_id"] for item in cases),
+            "feedback_submitted": sum(bool(item["has_feedback"]) for item in cases),
+            "recent_cases": cases[:6],
+        }
+
+    @staticmethod
+    def _customer_delivery_payload(delivery):
+        content = delivery.get("content") or {}
+        return {
+            "delivery_id": delivery.get("delivery_id"),
+            "created_at": delivery.get("created_at"),
+            "status": delivery.get("status"),
+            "recommendation_included": bool(delivery.get("recommendation_included")),
+            "content": {
+                "care_guide": content.get("care_guide"),
+                "recommendation": content.get("recommendation") or [],
+                "recommendation_unavailable_reason": content.get("recommendation_unavailable_reason"),
+            },
+        }
+
+    def get_customer_case_detail(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "OWN_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT case_id, claim_event_id, claim_status, care_status, created_at, updated_at "
+                "FROM cases WHERE case_id=?", (case_id,),
+            ).fetchone()
+            delivery_row = db.execute(
+                "SELECT record_json FROM deliveries WHERE case_id=? "
+                "ORDER BY COALESCE(sent_at, created_at) DESC LIMIT 1", (case_id,),
+            ).fetchone()
+            result = dict(row)
+            result["delivery"] = (
+                self._customer_delivery_payload(json.loads(delivery_row[0])) if delivery_row else None
+            )
+            if result["delivery"]:
+                db.execute(
+                    "UPDATE deliveries SET read_at=COALESCE(read_at, ?) WHERE delivery_id=?",
+                    (datetime.now(timezone.utc).isoformat(), result["delivery"]["delivery_id"]),
+                )
+            result["feedback_submitted"] = bool(result["delivery"] and db.execute(
+                "SELECT 1 FROM feedback WHERE delivery_id=? AND customer_user_id=?",
+                (result["delivery"]["delivery_id"], user_id),
+            ).fetchone())
+            return result
+
+    def list_customer_feedback(self, user_id):
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT f.record_json FROM feedback f "
+                "JOIN case_participants cp ON cp.case_id=f.case_id "
+                "WHERE f.customer_user_id=? AND cp.user_id=? AND cp.case_role='CUSTOMER' "
+                "AND cp.status='ACTIVE' ORDER BY f.created_at DESC",
+                (user_id, user_id),
+            )
+            return [json.loads(row[0]) for row in rows]
+
+    def save_customer_feedback(self, user_id, delivery_id, request):
+        try:
+            delivery = self.get_delivery(delivery_id)
+        except WorkflowItemNotFound as exc:
+            raise WorkflowItemNotFound("关怀结果不存在或当前账号无权访问") from exc
+        if not self.user_can_access_case(user_id, delivery["case_id"], "FEEDBACK_SUBMIT"):
+            raise WorkflowItemNotFound("关怀结果不存在或当前账号无权访问")
+        return self.save_feedback(delivery_id, request, customer_user_id=user_id)
+
+    def list_service_cases(self, user_id, limit=100):
+        sql = """
+            SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status,
+                   c.created_at, c.updated_at, customer.display_name AS customer_display_name,
+                   (SELECT COUNT(*) FROM feedback f WHERE f.case_id=c.case_id) AS feedback_count,
+                   (SELECT COUNT(*) FROM follow_up_tasks t WHERE t.case_id=c.case_id
+                    AND t.status IN ('OPEN','PROCESSING')) AS active_follow_up_count,
+                   (SELECT COUNT(*) FROM case_service_links l WHERE l.case_id=c.case_id
+                    AND l.reviewed=0) AS pending_consultation_count
+            FROM cases c
+            JOIN case_participants cp ON cp.case_id=c.case_id
+            LEFT JOIN users customer ON customer.user_id=c.customer_user_id
+            WHERE cp.user_id=? AND cp.case_role='SERVICE_AGENT' AND cp.status='ACTIVE'
+            ORDER BY c.updated_at DESC LIMIT ?
+        """
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                sql, (user_id, max(1, min(int(limit), 200))),
+            )]
+            for row in rows:
+                row["customer_display_name"] = self._mask_customer_label(row["customer_display_name"])
+            return rows
+
+    def service_dashboard(self, user_id):
+        cases = self.list_service_cases(user_id, limit=200)
+        follow_ups = self.list_service_follow_ups(user_id)
+        consultations = self.list_service_consultations(user_id)
+        return {
+            "total_cases": len(cases),
+            "pending_consultations": sum(item["review_status"] == "PENDING" for item in consultations),
+            "active_follow_ups": sum(item["status"] in {"OPEN", "PROCESSING"} for item in follow_ups),
+            "urgent_follow_ups": sum(
+                item["status"] in {"OPEN", "PROCESSING"} and item["priority"] == "urgent"
+                for item in follow_ups
+            ),
+            "recent_cases": cases[:6],
+        }
+
+    def create_service_consultation(self, user_id, *, case_id, channel, deidentified_text,
+                                    category, priority):
+        if not self.user_can_access_case(user_id, case_id, "SERVICE_SESSION_CREATE"):
+            raise CaseNotFound(case_id)
+        now = datetime.now(timezone.utc).isoformat()
+        session_id_hash = hashlib.sha256(f"{uuid4()}:{now}".encode()).hexdigest()
+        analysis_id = str(uuid4())
+        link_id = str(uuid4())
+        severity_score = {"low": 20, "medium": 45, "high": 75, "urgent": 95}[priority]
+        action = {
+            "claim_progress": "核查理赔进度并回访客户",
+            "claim_material": "核对缺失材料并提供补交说明",
+            "coverage_rule": "转交具备权限的理赔人员解释保障规则",
+            "human_service_request": "安排人工客服尽快回访",
+        }.get(category, "由客服核实诉求并持续跟进")
+        with self._connect() as db:
+            customer = db.execute(
+                "SELECT customer_user_id FROM cases WHERE case_id=?", (case_id,),
+            ).fetchone()
+            db.execute(
+                "INSERT INTO service_sessions(session_id_hash, customer_user_id, channel, session_time, "
+                "deidentified_text, text_fingerprint, data_source, consent_status, "
+                "deidentification_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id_hash, customer[0] if customer else None, channel, now, deidentified_text,
+                 hashlib.sha256(deidentified_text.encode()).hexdigest(), "service_portal",
+                 "authorized", "confirmed", now, now),
+            )
+            db.execute(
+                "INSERT INTO service_analysis_results(analysis_id, session_id_hash, primary_intent, "
+                "secondary_intents_json, has_friction, friction_types_json, severity, severity_score, "
+                "confidence, evidence_json, recommended_action, engine_version, review_status, created_at) "
+                "VALUES (?, ?, ?, '[]', ?, ?, ?, ?, 1, '[]', ?, 'service-routing-v1', 'PENDING', ?)",
+                (analysis_id, session_id_hash, category, int(category != "clear"),
+                 encode([category] if category != "clear" else []), priority, severity_score, action, now),
+            )
+            db.execute(
+                "INSERT INTO case_service_links(link_id, case_id, session_id_hash, link_method, confidence, "
+                "reviewed, created_at) VALUES (?, ?, ?, 'service_manual', 1, 0, ?)",
+                (link_id, case_id, session_id_hash, now),
+            )
+        return self.get_service_consultation(user_id, analysis_id)
+
+    def get_service_consultation(self, user_id, analysis_id):
+        items = self.list_service_consultations(user_id, analysis_id=analysis_id)
+        if not items:
+            raise WorkflowItemNotFound("咨询记录不存在或当前账号无权访问")
+        return items[0]
+
+    def list_service_consultations(self, user_id, analysis_id=None):
+        clauses = ["cp.user_id=?", "cp.case_role='SERVICE_AGENT'", "cp.status='ACTIVE'"]
+        params = [user_id]
+        if analysis_id:
+            clauses.append("a.analysis_id=?")
+            params.append(analysis_id)
+        sql = f"""
+            SELECT a.analysis_id, l.case_id, c.claim_event_id, s.channel, s.session_time,
+                   s.deidentified_text, a.primary_intent, a.severity, a.severity_score,
+                   a.recommended_action, a.review_status, a.created_at,
+                   customer.display_name AS customer_display_name
+            FROM service_analysis_results a
+            JOIN service_sessions s ON s.session_id_hash=a.session_id_hash
+            JOIN case_service_links l ON l.session_id_hash=s.session_id_hash
+            JOIN cases c ON c.case_id=l.case_id
+            JOIN case_participants cp ON cp.case_id=c.case_id
+            LEFT JOIN users customer ON customer.user_id=c.customer_user_id
+            WHERE {' AND '.join(clauses)} ORDER BY a.created_at DESC
+        """
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(sql, params)]
+            for row in rows:
+                row["customer_display_name"] = self._mask_customer_label(row["customer_display_name"])
+            return rows
+
+    def route_service_consultation(self, user_id, analysis_id):
+        item = self.get_service_consultation(user_id, analysis_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute(
+                "UPDATE service_analysis_results SET review_status='ROUTED', reviewer_user_id=? "
+                "WHERE analysis_id=?", (user_id, analysis_id),
+            )
+            db.execute(
+                "UPDATE case_service_links SET reviewed=1, reviewer_user_id=? "
+                "WHERE session_id_hash=(SELECT session_id_hash FROM service_analysis_results WHERE analysis_id=?)",
+                (user_id, analysis_id),
+            )
+            db.execute("UPDATE cases SET updated_at=? WHERE case_id=?", (now, item["case_id"]))
+        return self.get_service_consultation(user_id, analysis_id)
+
+    def list_service_follow_ups(self, user_id, status=None):
+        clauses = ["cp.user_id=?", "cp.case_role='SERVICE_AGENT'", "cp.status='ACTIVE'"]
+        params = [user_id]
+        if status:
+            clauses.append("t.status=?")
+            params.append(status)
+        sql = f"""
+            SELECT t.*, c.claim_event_id, assignee.display_name AS assignee_name,
+                   f.comment AS feedback_comment, f.rating AS feedback_rating,
+                   f.helpful AS feedback_helpful, f.request_contact
+            FROM follow_up_tasks t
+            JOIN cases c ON c.case_id=t.case_id
+            JOIN case_participants cp ON cp.case_id=c.case_id
+            LEFT JOIN users assignee ON assignee.user_id=t.assignee_user_id
+            LEFT JOIN feedback f ON f.feedback_id=t.feedback_id
+            WHERE {' AND '.join(clauses)} ORDER BY
+              CASE lower(t.priority) WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                   WHEN 'medium' THEN 2 ELSE 3 END, t.created_at DESC
+        """
+        with self._connect() as db:
+            results = []
+            for row in db.execute(sql, params):
+                item = json.loads(row["record_json"])
+                item.update({
+                    "status": row["status"], "priority": str(row["priority"]).lower(),
+                    "assignee": row["assignee_name"], "claim_event_id": row["claim_event_id"],
+                    "resolution": row["resolution"], "resolved_at": row["resolved_at"],
+                    "feedback_comment": row["feedback_comment"],
+                    "feedback_rating": row["feedback_rating"],
+                    "feedback_helpful": bool(row["feedback_helpful"])
+                    if row["feedback_helpful"] is not None else None,
+                    "request_contact": bool(row["request_contact"]),
+                })
+                results.append(item)
+            return results
+
+    def claim_service_follow_up(self, user_id, task_id):
+        from .feedback_models import FollowUpTask, FollowUpStatus
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT t.*, u.display_name FROM follow_up_tasks t "
+                "JOIN case_participants cp ON cp.case_id=t.case_id "
+                "JOIN users u ON u.user_id=? "
+                "WHERE t.task_id=? AND cp.user_id=? AND cp.case_role='SERVICE_AGENT' "
+                "AND cp.status='ACTIVE'", (user_id, task_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise WorkflowItemNotFound("跟进任务不存在或当前账号无权访问")
+            if row["status"] in {"RESOLVED", "CLOSED"}:
+                raise WorkflowConflict("已结束的跟进任务不能再次领取")
+            if row["assignee_user_id"] not in (None, user_id):
+                raise WorkflowConflict("该跟进任务已由其他客服领取")
+            task = FollowUpTask.model_validate_json(row["record_json"])
+            task.status = FollowUpStatus.PROCESSING
+            task.assignee = row["display_name"]
+            db.execute(
+                "UPDATE follow_up_tasks SET status='PROCESSING', assignee_user_id=?, record_json=? "
+                "WHERE task_id=?", (user_id, encode(task), task_id),
+            )
+        return next(
+            item for item in self.list_service_follow_ups(user_id, status="PROCESSING")
+            if item["task_id"] == task_id
+        )
+
+    def resolve_service_follow_up(self, user_id, task_id, resolution):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT t.case_id, t.assignee_user_id FROM follow_up_tasks t "
+                "JOIN case_participants cp ON cp.case_id=t.case_id "
+                "WHERE t.task_id=? AND cp.user_id=? AND cp.case_role='SERVICE_AGENT' "
+                "AND cp.status='ACTIVE'", (task_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise WorkflowItemNotFound("跟进任务不存在或当前账号无权访问")
+        if row["assignee_user_id"] != user_id:
+            raise WorkflowConflict("请先领取该跟进任务再处理")
+        return self.resolve_follow_up(task_id, resolution)

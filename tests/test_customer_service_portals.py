@@ -1,0 +1,210 @@
+"""Authenticated customer and service workspace integration tests."""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from medical_claims.auth import hash_password
+from medical_claims.storage import CaseStorage
+from medical_claims.workflow_models import CreateCaseRequest
+from web.backend.app import _auth_sessions, app
+
+
+PASSWORD = "safe-password-123"
+
+
+def _user(storage: CaseStorage, username: str, role: str) -> str:
+    return storage.create_user(
+        username=username,
+        password_hash=hash_password(PASSWORD),
+        role_code=role,
+        display_name=f"{username}-{role}",
+    )
+
+
+def _login(client: TestClient, username: str) -> None:
+    response = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+    assert response.status_code == 200, response.text
+
+
+def _case(storage: CaseStorage, event_id: str, owner_id: str, customer_id: str, service_id: str):
+    case = storage.create_case(CreateCaseRequest(
+        claim_event_id=event_id,
+        data_source="user_upload",
+        consent_status="authorized",
+        deidentification_status="confirmed",
+    ), owner_user_id=owner_id)
+    storage.assign_case_participant(case.case_id, customer_id, "CUSTOMER")
+    storage.assign_case_participant(case.case_id, service_id, "SERVICE_AGENT")
+    return case
+
+
+def _delivery(storage: CaseStorage, case_id: str) -> str:
+    delivery_id = str(uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "delivery_id": delivery_id,
+        "case_id": case_id,
+        "status": "DELIVERED_MOCK",
+        "recommendation_included": False,
+        "created_at": now,
+        "content": {
+            "care_guide": {
+                "guide": {
+                    "disease_topic": "康复关怀",
+                    "opening": {"title": "给您的话", "content": "请按医嘱稳步康复。"},
+                    "recovery_plan": [],
+                    "follow_up_plan": [],
+                    "red_flags": [],
+                    "limitations": ["本指引不能替代医生诊疗。"],
+                }
+            },
+            "recommendation": [],
+            "recommendation_unavailable_reason": "当前暂无服务推荐。",
+            "internal_marker": "must-not-leak",
+        },
+        "content_fingerprint": "0" * 64,
+        "risk_gate_result": {"decision": "auto_deliver", "reasons": []},
+    }
+    with storage._connect() as db:
+        db.execute(
+            "INSERT INTO deliveries(delivery_id, case_id, content_fingerprint, record_json, created_at, "
+            "channel, status, sent_at) VALUES (?, ?, ?, ?, ?, 'MOCK', 'DELIVERED_MOCK', ?)",
+            (delivery_id, case_id, "0" * 64, json.dumps(record, ensure_ascii=False), now, now),
+        )
+    return delivery_id
+
+
+def _setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMPETITION_DB_PATH", str(tmp_path / "portal.db"))
+    _auth_sessions.clear()
+    storage = CaseStorage()
+    owner_id = _user(storage, "claim-owner", "CLAIM")
+    customer_a = _user(storage, "customer-a", "CUSTOMER")
+    customer_b = _user(storage, "customer-b", "CUSTOMER")
+    service_a = _user(storage, "service-a", "SERVICE")
+    service_b = _user(storage, "service-b", "SERVICE")
+    case_a = _case(storage, "EVENT-A", owner_id, customer_a, service_a)
+    case_b = _case(storage, "EVENT-B", owner_id, customer_b, service_b)
+    delivery_a = _delivery(storage, case_a.case_id)
+    delivery_b = _delivery(storage, case_b.case_id)
+    return storage, case_a, case_b, delivery_a, delivery_b
+
+
+def test_customer_workspace_is_case_scoped_and_exposes_only_delivered_content(tmp_path, monkeypatch):
+    _, case_a, case_b, _, _ = _setup(tmp_path, monkeypatch)
+    client = TestClient(app)
+    _login(client, "customer-a")
+
+    listing = client.get("/api/customer/cases")
+    assert listing.status_code == 200
+    assert [item["case_id"] for item in listing.json()] == [case_a.case_id]
+    assert client.get(f"/api/customer/cases/{case_b.case_id}").status_code == 404
+
+    detail = client.get(f"/api/customer/cases/{case_a.case_id}")
+    assert detail.status_code == 200, detail.text
+    payload = detail.json()
+    assert payload["delivery"]["content"]["care_guide"]["guide"]["disease_topic"] == "康复关怀"
+    serialized = json.dumps(payload, ensure_ascii=False)
+    for forbidden in ("ocr_result", "structured_result", "pain_result", "internal_marker", "risk_gate_result"):
+        assert forbidden not in serialized
+
+
+def test_customer_feedback_persists_owner_and_creates_service_follow_up(tmp_path, monkeypatch):
+    storage, case_a, _, delivery_a, delivery_b = _setup(tmp_path, monkeypatch)
+    client = TestClient(app)
+    _login(client, "customer-a")
+    request = {
+        "target_type": "overall_service",
+        "rating": 2,
+        "helpful": False,
+        "category": "human_service_request",
+        "comment": "希望客服说明下一步安排",
+        "consent_to_contact": True,
+    }
+    response = client.post(f"/api/customer/deliveries/{delivery_a}/feedback", json=request)
+    assert response.status_code == 201, response.text
+    assert response.json()["follow_up"]["case_id"] == case_a.case_id
+    assert client.post(f"/api/customer/deliveries/{delivery_a}/feedback", json=request).status_code == 409
+    assert client.post(f"/api/customer/deliveries/{delivery_b}/feedback", json=request).status_code == 404
+
+    with storage._connect() as db:
+        feedback = db.execute(
+            "SELECT customer_user_id, request_contact FROM feedback WHERE delivery_id=?", (delivery_a,),
+        ).fetchone()
+        task = db.execute(
+            "SELECT source_type, status FROM follow_up_tasks WHERE case_id=?", (case_a.case_id,),
+        ).fetchone()
+    assert feedback[0] == storage.get_user_by_username("customer-a")["user_id"]
+    assert feedback[1] == 1
+    assert tuple(task) == ("DELIVERY_FEEDBACK", "OPEN")
+
+
+def test_service_consultation_routing_and_follow_up_are_scoped(tmp_path, monkeypatch):
+    _, case_a, case_b, delivery_a, _ = _setup(tmp_path, monkeypatch)
+    customer = TestClient(app)
+    _login(customer, "customer-a")
+    assert customer.post(f"/api/customer/deliveries/{delivery_a}/feedback", json={
+        "target_type": "overall_service", "rating": 2, "helpful": False,
+        "category": "claim_progress", "comment": "请联系我", "consent_to_contact": True,
+    }).status_code == 201
+    customer.post("/api/auth/logout")
+
+    client = TestClient(app)
+    _login(client, "service-a")
+    cases = client.get("/api/service/cases").json()
+    assert [item["case_id"] for item in cases] == [case_a.case_id]
+    request = {
+        "case_id": case_a.case_id,
+        "channel": "INBOUND_CALL",
+        "deidentified_text": "客户咨询理赔进度，希望确认下一步时间。",
+        "category": "claim_progress",
+        "priority": "high",
+        "consent_confirmed": True,
+        "deidentification_confirmed": True,
+    }
+    created = client.post("/api/service/consultations", json=request)
+    assert created.status_code == 201, created.text
+    assert created.json()["review_status"] == "PENDING"
+    assert client.post(
+        "/api/service/consultations", json={**request, "consent_confirmed": False},
+    ).status_code == 400
+    assert client.post(
+        "/api/service/consultations", json={**request, "deidentification_confirmed": False},
+    ).status_code == 400
+    assert client.post("/api/service/consultations", json={**request, "case_id": case_b.case_id}).status_code == 404
+    routed = client.post(f"/api/service/consultations/{created.json()['analysis_id']}/route")
+    assert routed.status_code == 200
+    assert routed.json()["review_status"] == "ROUTED"
+
+    tasks = client.get("/api/service/follow-ups").json()
+    assert len(tasks) == 1
+    task_id = tasks[0]["task_id"]
+    claimed = client.post(f"/api/service/follow-ups/{task_id}/claim")
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["status"] == "PROCESSING"
+    resolved = client.post(
+        f"/api/service/follow-ups/{task_id}/resolve", json={"resolution": "已电话说明当前进度"},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "RESOLVED"
+
+
+def test_customer_and_service_pages_share_login_and_api_conventions(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMPETITION_DB_PATH", str(tmp_path / "portal.db"))
+    client = TestClient(app)
+    assert "客户服务中心" in client.get("/customer").text
+    assert "客服工作台" in client.get("/service").text
+    assert client.get("/customer.js").status_code == 200
+    assert client.get("/service.js").status_code == 200
+    login_source = Path("web/dist/login.js").read_text(encoding="utf-8")
+    assert "CUSTOMER:'/customer'" in login_source
+    assert "SERVICE:'/service'" in login_source
+    for source_name in ("customer.js", "service.js"):
+        source = Path("web/dist", source_name).read_text(encoding="utf-8")
+        assert "credentials: \"same-origin\"" in source
+        assert "localStorage" not in source

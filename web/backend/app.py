@@ -18,7 +18,7 @@ import tempfile
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import (
@@ -114,12 +114,14 @@ from medical_claims.disease_provider_catalog import load_catalog
 from medical_claims.provider_discovery import LocalCapabilityCache
 from medical_claims.delivery import prepare_delivery_content, SendDeliveryRequest
 from medical_claims.review_models import ReviewRequest
-from medical_claims.feedback_models import FeedbackRequest, ResolveFollowUpRequest
+from medical_claims.feedback_models import (
+    FeedbackCategory, FeedbackRequest, FollowUpPriority, ResolveFollowUpRequest,
+)
 from urllib.parse import urlencode
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.6.0")
-BACKEND_REVISION = "2026-10-10-main-new-consolidated"
+BACKEND_REVISION = "2026-10-10-customer-service-portals"
 # 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
 # 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
 LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
@@ -228,6 +230,24 @@ class ClaimCaseCreateRequest(StrictModel):
     deidentification_status: str = Field(default="pending", min_length=1, max_length=100)
 
 
+class ServiceConsultationCreateRequest(StrictModel):
+    case_id: str = Field(min_length=1, max_length=200)
+    channel: Literal["WECHAT", "INBOUND_CALL", "ONLINE", "APP_CHAT"]
+    deidentified_text: str = Field(min_length=1, max_length=8000)
+    category: FeedbackCategory
+    priority: FollowUpPriority = FollowUpPriority.MEDIUM
+    consent_confirmed: bool
+    deidentification_confirmed: bool
+
+    @field_validator("deidentified_text")
+    @classmethod
+    def consultation_text_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("脱敏咨询摘要不能为空")
+        return value
+
+
 def _public_identity(identity: dict[str, Any]) -> dict[str, Any]:
     return {key: identity.get(key) for key in (
         "user_id", "username", "display_name", "phone", "email", "status",
@@ -246,6 +266,18 @@ def current_user(request: Request) -> dict[str, Any]:
 def current_claim_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     if identity["role_code"] != "CLAIM":
         raise HTTPException(status_code=403, detail="当前账号无权进入理赔工作区")
+    return identity
+
+
+def current_customer_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    if identity["role_code"] != "CUSTOMER":
+        raise HTTPException(status_code=403, detail="当前账号无权进入客户工作区")
+    return identity
+
+
+def current_service_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    if identity["role_code"] != "SERVICE":
+        raise HTTPException(status_code=403, detail="当前账号无权进入客服工作区")
     return identity
 
 
@@ -350,6 +382,16 @@ def claim_page():
     return FileResponse(WEB_DIST / "claim.html")
 
 
+@app.get("/customer", include_in_schema=False)
+def customer_page():
+    return FileResponse(WEB_DIST / "customer.html")
+
+
+@app.get("/service", include_in_schema=False)
+def service_page():
+    return FileResponse(WEB_DIST / "service.html")
+
+
 @app.get("/legacy", include_in_schema=False)
 def legacy_workbench():
     return FileResponse(WEB_DIST / "index.html")
@@ -357,7 +399,10 @@ def legacy_workbench():
 
 @app.get("/{asset_name}", include_in_schema=False)
 def portal_asset(asset_name: str):
-    allowed = {"portal.css", "login.js", "claim.js", "styles.css", "app.js"}
+    allowed = {
+        "portal.css", "login.js", "claim.js", "customer.js", "service.js",
+        "styles.css", "app.js",
+    }
     if asset_name not in allowed:
         raise HTTPException(status_code=404, detail="资源不存在")
     return FileResponse(WEB_DIST / asset_name)
@@ -579,6 +624,117 @@ async def claim_process_documents(
     finally:
         if storage.get_case(case_id)["status"] == "PROCESSING":
             storage.finish_failed_processing(case_id)
+
+
+@app.get("/api/customer/dashboard")
+def customer_dashboard(identity: dict[str, Any] = Depends(current_customer_user)):
+    require_permission(identity, "OWN_CASE_VIEW")
+    return get_case_storage().customer_dashboard(identity["user_id"])
+
+
+@app.get("/api/customer/cases")
+def customer_cases(identity: dict[str, Any] = Depends(current_customer_user)):
+    require_permission(identity, "OWN_CASE_VIEW")
+    return get_case_storage().list_customer_cases(identity["user_id"])
+
+
+@app.get("/api/customer/cases/{case_id}")
+def customer_case_detail(
+    case_id: str,
+    identity: dict[str, Any] = Depends(current_customer_user),
+):
+    require_case_permission(identity, case_id, "OWN_CASE_VIEW")
+    return get_case_storage().get_customer_case_detail(identity["user_id"], case_id)
+
+
+@app.get("/api/customer/feedback")
+def customer_feedback(identity: dict[str, Any] = Depends(current_customer_user)):
+    require_permission(identity, "OWN_CASE_VIEW")
+    return get_case_storage().list_customer_feedback(identity["user_id"])
+
+
+@app.post("/api/customer/deliveries/{delivery_id}/feedback", status_code=201)
+def customer_submit_feedback(
+    delivery_id: str,
+    request: FeedbackRequest,
+    identity: dict[str, Any] = Depends(current_customer_user),
+):
+    require_permission(identity, "FEEDBACK_SUBMIT")
+    return get_case_storage().save_customer_feedback(identity["user_id"], delivery_id, request)
+
+
+@app.get("/api/service/dashboard")
+def service_dashboard(identity: dict[str, Any] = Depends(current_service_user)):
+    require_permission(identity, "SERVICE_CASE_SUMMARY_VIEW")
+    return get_case_storage().service_dashboard(identity["user_id"])
+
+
+@app.get("/api/service/cases")
+def service_cases(identity: dict[str, Any] = Depends(current_service_user)):
+    require_permission(identity, "SERVICE_CASE_SUMMARY_VIEW")
+    return get_case_storage().list_service_cases(identity["user_id"])
+
+
+@app.get("/api/service/consultations")
+def service_consultations(identity: dict[str, Any] = Depends(current_service_user)):
+    require_permission(identity, "SERVICE_SESSION_VIEW")
+    return get_case_storage().list_service_consultations(identity["user_id"])
+
+
+@app.post("/api/service/consultations", status_code=201)
+def create_service_consultation(
+    request: ServiceConsultationCreateRequest,
+    identity: dict[str, Any] = Depends(current_service_user),
+):
+    require_permission(identity, "SERVICE_SESSION_CREATE")
+    if not request.consent_confirmed:
+        raise HTTPException(status_code=400, detail="请先确认客户已授权记录本次咨询")
+    if not request.deidentification_confirmed:
+        raise HTTPException(status_code=400, detail="请先确认咨询内容已完成脱敏")
+    return get_case_storage().create_service_consultation(
+        identity["user_id"], case_id=request.case_id, channel=request.channel,
+        deidentified_text=request.deidentified_text.strip(), category=request.category.value,
+        priority=request.priority.value,
+    )
+
+
+@app.post("/api/service/consultations/{analysis_id}/route")
+def route_service_consultation(
+    analysis_id: str,
+    identity: dict[str, Any] = Depends(current_service_user),
+):
+    require_permission(identity, "FOLLOWUP_ASSIGN")
+    return get_case_storage().route_service_consultation(identity["user_id"], analysis_id)
+
+
+@app.get("/api/service/follow-ups")
+def service_follow_ups(
+    status: Literal["OPEN", "PROCESSING", "RESOLVED", "CLOSED"] | None = Query(default=None),
+    identity: dict[str, Any] = Depends(current_service_user),
+):
+    require_permission(identity, "FOLLOWUP_VIEW")
+    return get_case_storage().list_service_follow_ups(identity["user_id"], status=status)
+
+
+@app.post("/api/service/follow-ups/{task_id}/claim")
+def claim_service_follow_up(
+    task_id: str,
+    identity: dict[str, Any] = Depends(current_service_user),
+):
+    require_permission(identity, "FOLLOWUP_ASSIGN")
+    return get_case_storage().claim_service_follow_up(identity["user_id"], task_id)
+
+
+@app.post("/api/service/follow-ups/{task_id}/resolve")
+def resolve_service_follow_up(
+    task_id: str,
+    request: ResolveFollowUpRequest,
+    identity: dict[str, Any] = Depends(current_service_user),
+):
+    require_permission(identity, "FOLLOWUP_RESOLVE")
+    return get_case_storage().resolve_service_follow_up(
+        identity["user_id"], task_id, request.resolution,
+    )
 
 
 def normalize_document_id(value: str) -> str:
