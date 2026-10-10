@@ -52,7 +52,7 @@ class CaseStorage:
         finally:
             db.close()
 
-    def create_case(self, request: CreateCaseRequest) -> WorkflowCase:
+    def create_case(self, request: CreateCaseRequest, owner_user_id: str | None = None) -> WorkflowCase:
         now = datetime.now(timezone.utc).isoformat()
         case = WorkflowCase(**request.model_dump(), case_id=str(uuid4()),
                             status=WorkflowStatus.RECEIVED, created_at=now, updated_at=now)
@@ -66,6 +66,19 @@ class CaseStorage:
             )
             db.execute("INSERT INTO case_results(case_id, updated_at) VALUES (?, ?)",
                        (case.case_id, now))
+            if owner_user_id is not None:
+                owner = db.execute(
+                    "SELECT 1 FROM users u JOIN roles r ON r.role_id=u.role_id "
+                    "WHERE u.user_id=? AND u.status='ACTIVE' AND r.role_code='CLAIM'",
+                    (owner_user_id,),
+                ).fetchone()
+                if owner is None:
+                    raise WorkflowConflict("理赔负责人账号不存在或不可用")
+                db.execute(
+                    "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                    "VALUES (?, ?, 'CLAIM_OWNER', 'ACTIVE', ?)",
+                    (case.case_id, owner_user_id, now),
+                )
         return case
 
     def _row(self, db, case_id):
@@ -125,6 +138,254 @@ class CaseStorage:
                 (user_id, username, password_hash, role[0], display_name, phone, email, status, now, now),
             )
         return user_id
+
+    def get_user_by_username(self, username):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT u.*, r.role_code, r.role_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id WHERE u.username=?",
+                (username,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_user_identity(self, user_id):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT u.user_id, u.username, u.display_name, u.phone, u.email, u.status, "
+                "u.last_login_at, r.role_code, r.role_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id WHERE u.user_id=?",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            result["permissions"] = [item[0] for item in db.execute(
+                "SELECT p.perm_code FROM permissions p "
+                "JOIN role_permissions rp ON rp.perm_id=p.perm_id "
+                "JOIN users u ON u.role_id=rp.role_id WHERE u.user_id=? ORDER BY p.perm_code",
+                (user_id,),
+            )]
+            return result
+
+    def mark_login(self, user_id):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("UPDATE users SET last_login_at=?, updated_at=? WHERE user_id=?", (now, now, user_id))
+
+    def update_own_profile(self, user_id, *, display_name, phone, email):
+        """Update the three self-service profile fields on the existing users row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE users SET display_name=?, phone=?, email=?, updated_at=? "
+                "WHERE user_id=? AND status='ACTIVE'",
+                (display_name, phone, email, now, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowItemNotFound("当前用户不存在或不可用")
+        return self.get_user_identity(user_id)
+
+    def get_user_password_hash(self, user_id):
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT password_hash FROM users WHERE user_id=? AND status='ACTIVE'",
+                (user_id,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def update_own_password_hash(self, user_id, *, expected_hash, new_hash):
+        """Use a compare-and-swap update so a concurrent password change is not overwritten."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                "UPDATE users SET password_hash=?, updated_at=? "
+                "WHERE user_id=? AND status='ACTIVE' AND password_hash=?",
+                (new_hash, now, user_id, expected_hash),
+            )
+            return cursor.rowcount == 1
+
+    def list_claim_cases(self, user_id, search=None, claim_status=None,
+                         consent_status=None, care_status=None, limit=100):
+        clauses = [
+            "EXISTS (SELECT 1 FROM case_participants mine WHERE mine.case_id=c.case_id "
+            "AND mine.user_id=? AND mine.status='ACTIVE')"
+        ]
+        params: list[object] = [user_id]
+        if search:
+            clauses.append("(c.case_id LIKE ? OR c.claim_event_id LIKE ?)")
+            term = f"%{search}%"
+            params.extend((term, term))
+        for column, value in (("claim_status", claim_status), ("consent_status", consent_status),
+                              ("care_status", care_status)):
+            if value:
+                clauses.append(f"c.{column}=?")
+                params.append(value)
+        params.append(max(1, min(int(limit), 200)))
+        sql = f"""
+            SELECT c.case_id, c.claim_event_id, c.data_source, c.consent_status,
+                   c.deidentification_status, c.claim_status, c.care_status, c.status,
+                   c.created_at, c.updated_at,
+                   (SELECT customer.display_name FROM users customer
+                    WHERE customer.user_id=c.customer_user_id) AS customer_display_name,
+                   (SELECT owner.display_name FROM case_participants owner_link
+                    JOIN users owner ON owner.user_id=owner_link.user_id
+                    WHERE owner_link.case_id=c.case_id AND owner_link.case_role='CLAIM_OWNER'
+                    AND owner_link.status='ACTIVE' ORDER BY owner_link.assigned_at DESC LIMIT 1)
+                    AS claim_owner_name,
+                   CASE WHEN cr.ocr_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_ocr_result,
+                   CASE WHEN cr.structured_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_structured_result
+            FROM cases c
+            JOIN case_results cr ON cr.case_id=c.case_id
+            WHERE {' AND '.join(clauses)}
+            ORDER BY c.updated_at DESC LIMIT ?
+        """
+        with self._connect() as db:
+            results = [dict(row) for row in db.execute(sql, params)]
+            for result in results:
+                result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
+                result["material_status"] = self._claim_material_status(
+                    result["status"], result["has_ocr_result"], result["has_structured_result"]
+                )
+                result["analysis_ready"] = bool(result.pop("has_structured_result"))
+                result.pop("has_ocr_result", None)
+                result.pop("status", None)
+            return results
+
+    def get_claim_case_detail(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT c.*, "
+                "(SELECT customer.display_name FROM users customer WHERE customer.user_id=c.customer_user_id) "
+                "AS customer_display_name, "
+                "(SELECT owner.display_name FROM case_participants owner_link "
+                "JOIN users owner ON owner.user_id=owner_link.user_id "
+                "WHERE owner_link.case_id=c.case_id AND owner_link.case_role='CLAIM_OWNER' "
+                "AND owner_link.status='ACTIVE' ORDER BY owner_link.assigned_at DESC LIMIT 1) "
+                "AS claim_owner_name, cr.ocr_result_json, "
+                "cr.structured_result_json, cr.pain_result_json, cr.care_result_json "
+                "FROM cases c JOIN case_results cr ON cr.case_id=c.case_id "
+                "WHERE c.case_id=?",
+                (case_id,),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            result = {key: row[key] for key in (
+                "case_id", "claim_event_id", "data_source", "consent_status",
+                "deidentification_status", "claim_status", "care_status", "status",
+                "created_at", "updated_at", "customer_display_name", "claim_owner_name",
+            )}
+            result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
+            for kind in ("ocr", "structured", "pain", "care"):
+                result[f"has_{kind}_result"] = row[f"{kind}_result_json"] is not None
+            result["material_status"] = self._claim_material_status(
+                row["status"], row["ocr_result_json"], row["structured_result_json"]
+            )
+            result["analysis_ready"] = row["structured_result_json"] is not None
+            for kind in ("ocr", "structured", "pain", "care"):
+                result.pop(f"has_{kind}_result", None)
+            result.pop("status", None)
+            return result
+
+    @staticmethod
+    def _mask_customer_label(value):
+        if not value:
+            return None
+        value = str(value)
+        if len(value) == 1:
+            return "*"
+        if len(value) == 2:
+            return value[0] + "*"
+        return value[0] + "*" * (len(value) - 2) + value[-1]
+
+    @staticmethod
+    def _claim_material_status(workflow_status, ocr_payload, structured_payload):
+        if workflow_status == "PROCESSING":
+            return "processing"
+        if structured_payload:
+            return "completed"
+        if ocr_payload:
+            return "submitted"
+        return "not_submitted"
+
+    def claim_dashboard(self, user_id):
+        cases = self.list_claim_cases(user_id, limit=200)
+        awaiting_material = sum(not item["analysis_ready"] for item in cases)
+        awaiting_authorization = sum(
+            item["consent_status"] != "authorized" or item["deidentification_status"] != "confirmed"
+            for item in cases
+        )
+        ready_for_care = sum(
+            item["analysis_ready"] and item["consent_status"] == "authorized"
+            and item["deidentification_status"] == "confirmed"
+            and item["care_status"] in {"RECEIVED", "STRUCTURED"}
+            for item in cases
+        )
+        return {
+            "total": len(cases),
+            "pending": sum(
+                not item["analysis_ready"] or item["consent_status"] != "authorized"
+                or item["deidentification_status"] != "confirmed"
+                or item["care_status"] in {"RECEIVED", "STRUCTURED"}
+                for item in cases
+            ),
+            "awaiting_material": awaiting_material,
+            "awaiting_authorization": awaiting_authorization,
+            "ready_for_care": ready_for_care,
+            "care_started": sum(item["care_status"] not in {"RECEIVED", "STRUCTURED"} for item in cases),
+            "recent_cases": cases[:8],
+        }
+
+    def claim_tasks(self, user_id):
+        tasks = []
+        for item in self.list_claim_cases(user_id, limit=200):
+            reasons = []
+            if item["consent_status"] != "authorized":
+                reasons.append("授权待确认")
+            if item["deidentification_status"] != "confirmed":
+                reasons.append("脱敏状态待确认")
+            if not item["analysis_ready"]:
+                reasons.append("材料待补充或处理")
+            if (item["analysis_ready"] and item["consent_status"] == "authorized"
+                    and item["deidentification_status"] == "confirmed"
+                    and item["care_status"] in {"RECEIVED", "STRUCTURED"}):
+                reasons.append("可以移交医护关怀")
+            if reasons:
+                tasks.append({"case_id": item["case_id"], "claim_event_id": item["claim_event_id"],
+                              "updated_at": item["updated_at"], "reasons": reasons})
+        return tasks
+
+    def trigger_care(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "CARE_TRIGGER"):
+            raise CaseNotFound(case_id)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT c.consent_status, c.deidentification_status, c.care_status, "
+                "cr.structured_result_json FROM cases c JOIN case_results cr USING(case_id) "
+                "WHERE c.case_id=?",
+                (case_id,),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            blockers = []
+            if row["consent_status"] != "authorized":
+                blockers.append("材料使用授权尚未确认")
+            if row["deidentification_status"] != "confirmed":
+                blockers.append("材料脱敏状态尚未确认")
+            if row["structured_result_json"] is None:
+                blockers.append("病例结构化尚未完成")
+            if blockers:
+                raise WorkflowConflict("；".join(blockers))
+            if row["care_status"] in {"RECEIVED", "STRUCTURED"}:
+                db.execute("UPDATE cases SET care_status='CARE_TRIGGERED', updated_at=? WHERE case_id=?",
+                           (now, case_id))
+                care_status = "CARE_TRIGGERED"
+            else:
+                care_status = row["care_status"]
+            return {"case_id": case_id, "care_status": care_status,
+                    "message": "案件已移交医护关怀，等待医疗处理或复核"}
 
     def assign_case_participant(self, case_id, user_id, case_role):
         now = datetime.now(timezone.utc).isoformat()
