@@ -39,6 +39,7 @@ def _case(storage: CaseStorage, event_id: str, owner_id: str, *, compliant: bool
             deidentification_status="confirmed" if compliant else "pending",
         ),
         owner_user_id=owner_id,
+        claim_status="ACCEPTED",
     )
 
 
@@ -227,7 +228,7 @@ def ready_case(storage, owner_user_id, customer_user_id=None):
     metadata = storage.create_case(CreateCaseRequest(
         claim_event_id="MEDICAL-CASE-001", data_source="synthetic_test",
         consent_status="authorized", deidentification_status="confirmed",
-    ), owner_user_id=owner_user_id)
+    ), owner_user_id=owner_user_id, claim_status="ACCEPTED")
     evidence = Evidence(document_id="fixture-page.jpg", page=1, text="合成测试诊断：肺炎")
     case = ClaimCase(case_id=metadata.case_id, diagnoses=[Diagnosis(
         diagnosis_id="dx-1", diagnosis_type=DiagnosisType.PRIMARY, certainty=Certainty.CONFIRMED,
@@ -258,8 +259,7 @@ def ready_case(storage, owner_user_id, customer_user_id=None):
     storage.save_pain(metadata.case_id, pain, case)
     storage.save_care(metadata.case_id, care, case, pain)
     if customer_user_id:
-        with storage._connect() as db:
-            db.execute("UPDATE cases SET customer_user_id=? WHERE case_id=?", (customer_user_id, metadata.case_id))
+        storage.assign_case_participant(metadata.case_id, customer_user_id, "CUSTOMER")
     return metadata.case_id
 
 
@@ -350,7 +350,7 @@ def test_only_care_workflow_cases_enter_medical_queue(tmp_path, monkeypatch):
     waiting = storage.create_case(CreateCaseRequest(
         claim_event_id="NOT-HANDED-OFF", data_source="synthetic_test",
         consent_status="authorized", deidentification_status="confirmed",
-    ), owner_user_id=claim_id)
+    ), owner_user_id=claim_id, claim_status="ACCEPTED")
     storage.assign_case_participant(waiting.case_id, medical_id, "MEDICAL_REVIEWER")
     ready_id = ready_case(storage, claim_id)
     storage.assign_case_participant(ready_id, medical_id, "MEDICAL_REVIEWER")
@@ -594,7 +594,7 @@ def test_new_claim_handoff_can_prepare_and_review_independent_medical_modules(tm
     metadata = storage.create_case(CreateCaseRequest(
         claim_event_id="MEDICAL-FORMAL-001", data_source="synthetic_test",
         consent_status="authorized", deidentification_status="confirmed",
-    ), owner_user_id=claim_id)
+    ), owner_user_id=claim_id, claim_status="ACCEPTED")
     evidence = Evidence(document_id="fixture-page.jpg", page=1, text="肺炎 阿莫西林 1000元")
     pending_cost = FieldValue(
         value=1000, status=FieldStatus.REVIEW_REQUIRED, confidence=.65, evidence=[evidence],
@@ -662,7 +662,7 @@ def test_formal_medical_recommendation_is_persisted_in_existing_v2_tables(tmp_pa
     metadata = storage.create_case(CreateCaseRequest(
         claim_event_id="MEDICAL-RECOMMEND-001", data_source="synthetic_test",
         consent_status="authorized", deidentification_status="confirmed",
-    ), owner_user_id=claim_id)
+    ), owner_user_id=claim_id, claim_status="ACCEPTED")
     evidence = Evidence(
         document_id="fixture-cataract.jpg", page=1,
         text="老年性白内障，行白内障超声乳化联合人工晶体植入术",

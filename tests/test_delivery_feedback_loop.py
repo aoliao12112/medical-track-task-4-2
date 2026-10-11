@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from medical_claims.auth import hash_password
 from medical_claims.models import ClaimCase, Diagnosis, DiagnosisType, Certainty, FieldValue, FieldStatus, Evidence, QualityFlag
 from medical_claims.pain_engine import analyze_pain_points
 from medical_claims.care_models import CareGuideReport, CareGuideDraft, CareSection, CareAction, CareSafetyCheck, SafetyStatus, GenerationMethod, ReviewStatus
@@ -26,8 +27,15 @@ class DeliveryFeedbackLoopTest(unittest.TestCase):
         self.storage = CaseStorage()
         self.client = TestClient(app)
         metadata = self.storage.create_case(CreateCaseRequest(claim_event_id="phase-c-synthetic", data_source="synthetic_test",
-                    consent_status="authorized", deidentification_status="confirmed"))
+                    consent_status="authorized", deidentification_status="confirmed"), claim_status="ACCEPTED")
         self.case_id = metadata.case_id
+        customer_id = self.storage.create_user(
+            username="synthetic-customer",
+            password_hash=hash_password("safe-password-123"),
+            role_code="CUSTOMER",
+            display_name="合成测试客户",
+        )
+        self.storage.assign_case_participant(self.case_id, customer_id, "CUSTOMER")
         self.case = ClaimCase(case_id=self.case_id, diagnoses=[Diagnosis(diagnosis_id="dx", diagnosis_type=DiagnosisType.PRIMARY,
             certainty=Certainty.CONFIRMED, name=FieldValue(value="肺炎", status=FieldStatus.EXTRACTED, confidence=.95,
             evidence=[Evidence(document_id="synthetic", page=1, text="合成测试诊断：肺炎")]))])

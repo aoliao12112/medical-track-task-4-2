@@ -113,7 +113,7 @@ erDiagram
 | `feedback` | 保存用户对触达内容的评价和意见 | 已用于主流程 |
 | `follow_up_tasks` | 保存由低分、疑问或会话问题触发的客服后续任务 | 反馈链路已用；客服扩展字段已建表 |
 
-`cases.status` 为兼容旧代码继续保留；新增 `claim_status` 与 `care_status` 用于逐步分离理赔状态和关怀服务状态。当前业务逻辑仍以兼容字段为主，不能把建表完成误认为全部状态接口已经切换完成。
+`cases.status` 为兼容旧代码继续保留；`claim_status` 与 `care_status` 分别承载理赔受理状态和关怀服务状态。Schema Version 5 为兼容历史记录保留 `claim_status='COMPLETED'` 的列默认值，但当前运行时新案不会依赖该默认值：客户自助建案显式写入 `PENDING_ACCEPTANCE`，理赔受理或理赔人员绑定已有客户代建后写入 `ACCEPTED`。客户关联同时写入 `cases.customer_user_id` 与有效的 `case_participants(CUSTOMER)`，正式触达必须校验两者一致。
 
 ## 6. 旧第四问兼容表
 

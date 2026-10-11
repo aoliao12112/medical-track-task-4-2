@@ -61,20 +61,40 @@ class CaseStorage:
         finally:
             db.close()
 
-    def create_case(self, request: CreateCaseRequest, owner_user_id: str | None = None) -> WorkflowCase:
+    def create_case(
+        self,
+        request: CreateCaseRequest,
+        owner_user_id: str | None = None,
+        customer_user_id: str | None = None,
+        *,
+        claim_status: str = "PENDING_ACCEPTANCE",
+        route_to_claim: bool = False,
+    ) -> WorkflowCase:
+        if claim_status not in {"PENDING_ACCEPTANCE", "ACCEPTED", "COMPLETED"}:
+            raise WorkflowConflict("不支持的理赔状态")
         now = datetime.now(timezone.utc).isoformat()
         case = WorkflowCase(**request.model_dump(), case_id=str(uuid4()),
                             status=WorkflowStatus.RECEIVED, created_at=now, updated_at=now)
         with self._connect() as db:
-            db.execute(
-                "INSERT INTO cases(case_id, claim_event_id, status, care_status, claim_status, "
-                "data_source, consent_status, deidentification_status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?)",
-                (case.case_id, case.claim_event_id, case.status.value, case.status.value,
-                 case.data_source, case.consent_status, case.deidentification_status, now, now),
-            )
-            db.execute("INSERT INTO case_results(case_id, updated_at) VALUES (?, ?)",
-                       (case.case_id, now))
+            if customer_user_id is not None:
+                customer = db.execute(
+                    "SELECT 1 FROM users u JOIN roles r ON r.role_id=u.role_id "
+                    "WHERE u.user_id=? AND u.status='ACTIVE' AND r.role_code='CUSTOMER'",
+                    (customer_user_id,),
+                ).fetchone()
+                if customer is None:
+                    raise WorkflowConflict("客户账号不存在或不可用")
+            if route_to_claim and owner_user_id is None:
+                routed_owner = db.execute(
+                    "SELECT u.user_id FROM users u JOIN roles r ON r.role_id=u.role_id "
+                    "LEFT JOIN case_participants cp ON cp.user_id=u.user_id "
+                    "AND cp.case_role='CLAIM_OWNER' AND cp.status='ACTIVE' "
+                    "WHERE u.status='ACTIVE' AND r.role_code='CLAIM' "
+                    "GROUP BY u.user_id ORDER BY COUNT(cp.case_id), u.user_id LIMIT 1"
+                ).fetchone()
+                if routed_owner is None:
+                    raise WorkflowConflict("当前没有可受理案件的理赔人员")
+                owner_user_id = routed_owner[0]
             if owner_user_id is not None:
                 owner = db.execute(
                     "SELECT 1 FROM users u JOIN roles r ON r.role_id=u.role_id "
@@ -83,12 +103,51 @@ class CaseStorage:
                 ).fetchone()
                 if owner is None:
                     raise WorkflowConflict("理赔负责人账号不存在或不可用")
+            db.execute(
+                "INSERT INTO cases(case_id, claim_event_id, status, care_status, claim_status, "
+                "data_source, consent_status, deidentification_status, customer_user_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (case.case_id, case.claim_event_id, case.status.value, case.status.value, claim_status,
+                  case.data_source, case.consent_status, case.deidentification_status,
+                  customer_user_id, now, now),
+            )
+            db.execute("INSERT INTO case_results(case_id, updated_at) VALUES (?, ?)",
+                       (case.case_id, now))
+            if owner_user_id is not None:
                 db.execute(
                     "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
                     "VALUES (?, ?, 'CLAIM_OWNER', 'ACTIVE', ?)",
                     (case.case_id, owner_user_id, now),
                 )
+            if customer_user_id is not None:
+                db.execute(
+                    "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                    "VALUES (?, ?, 'CUSTOMER', 'ACTIVE', ?)",
+                    (case.case_id, customer_user_id, now),
+                )
         return case
+
+    def create_customer_case(self, request: CreateCaseRequest, customer_user_id: str) -> WorkflowCase:
+        """Create the default self-service claim and route it to a claim intake owner."""
+        return self.create_case(
+            request,
+            customer_user_id=customer_user_id,
+            claim_status="PENDING_ACCEPTANCE",
+            route_to_claim=True,
+        )
+
+    def create_claim_case_for_customer(
+        self, request: CreateCaseRequest, owner_user_id: str, customer_username: str,
+    ) -> WorkflowCase:
+        customer = self.get_user_by_username(customer_username)
+        if customer is None or customer["status"] != "ACTIVE" or customer["role_code"] != "CUSTOMER":
+            raise WorkflowItemNotFound("客户账号不存在或不可用")
+        return self.create_case(
+            request,
+            owner_user_id=owner_user_id,
+            customer_user_id=customer["user_id"],
+            claim_status="ACCEPTED",
+        )
 
     def _row(self, db, case_id):
         row = db.execute("SELECT * FROM cases JOIN case_results USING(case_id) WHERE case_id=?",
@@ -156,6 +215,28 @@ class CaseStorage:
                 (username,),
             ).fetchone()
             return dict(row) if row else None
+
+    def search_active_users_by_role(self, role_code, search, limit=20):
+        term = f"%{str(search).strip()}%"
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT u.user_id, u.username, u.display_name, u.phone FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id "
+                "WHERE r.role_code=? AND u.status='ACTIVE' "
+                "AND (u.username LIKE ? OR u.display_name LIKE ? OR u.phone LIKE ?) "
+                "ORDER BY u.username LIMIT ?",
+                (role_code, term, term, term, max(1, min(int(limit), 50))),
+            )
+            results = []
+            for row in rows:
+                phone = str(row["phone"] or "")
+                results.append({
+                    "user_id": row["user_id"],
+                    "username": row["username"],
+                    "display_name": self._mask_customer_label(row["display_name"]),
+                    "phone_last4": phone[-4:] if phone else None,
+                })
+            return results
 
     def get_user_identity(self, user_id):
         with self._connect() as db:
@@ -268,6 +349,8 @@ class CaseStorage:
                 "SELECT c.*, "
                 "(SELECT customer.display_name FROM users customer WHERE customer.user_id=c.customer_user_id) "
                 "AS customer_display_name, "
+                "(SELECT customer.username FROM users customer WHERE customer.user_id=c.customer_user_id) "
+                "AS customer_username, "
                 "(SELECT owner.display_name FROM case_participants owner_link "
                 "JOIN users owner ON owner.user_id=owner_link.user_id "
                 "WHERE owner_link.case_id=c.case_id AND owner_link.case_role='CLAIM_OWNER' "
@@ -283,7 +366,8 @@ class CaseStorage:
             result = {key: row[key] for key in (
                 "case_id", "claim_event_id", "data_source", "consent_status",
                 "deidentification_status", "claim_status", "care_status", "status",
-                "created_at", "updated_at", "customer_display_name", "claim_owner_name",
+                "created_at", "updated_at", "customer_display_name", "customer_username",
+                "claim_owner_name",
             )}
             result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
             for kind in ("ocr", "structured", "pain", "care"):
@@ -350,6 +434,8 @@ class CaseStorage:
         tasks = []
         for item in self.list_claim_cases(user_id, limit=200):
             reasons = []
+            if item["claim_status"] == "PENDING_ACCEPTANCE":
+                reasons.append("客户申请待受理")
             if item["consent_status"] != "authorized":
                 reasons.append("授权待确认")
             if item["deidentification_status"] != "confirmed":
@@ -371,7 +457,7 @@ class CaseStorage:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             row = db.execute(
-                "SELECT c.consent_status, c.deidentification_status, c.care_status, "
+                "SELECT c.claim_status, c.consent_status, c.deidentification_status, c.care_status, "
                 "cr.structured_result_json FROM cases c JOIN case_results cr USING(case_id) "
                 "WHERE c.case_id=?",
                 (case_id,),
@@ -379,6 +465,8 @@ class CaseStorage:
             if row is None:
                 raise CaseNotFound(case_id)
             blockers = []
+            if row["claim_status"] == "PENDING_ACCEPTANCE":
+                blockers.append("理赔案件尚未受理")
             if row["consent_status"] != "authorized":
                 blockers.append("材料使用授权尚未确认")
             if row["deidentification_status"] != "confirmed":
@@ -1738,6 +1826,13 @@ class CaseStorage:
             row = self._row(db, prepared["case_id"])
             if row["status"] == "PROCESSING":
                 raise WorkflowConflict("案件正在处理，不能触达旧内容")
+            customer_link = db.execute(
+                "SELECT 1 FROM case_participants WHERE case_id=? AND user_id=? "
+                "AND case_role='CUSTOMER' AND status='ACTIVE'",
+                (prepared["case_id"], row["customer_user_id"]),
+            ).fetchone() if row["customer_user_id"] else None
+            if customer_link is None:
+                raise WorkflowConflict("案件尚未绑定有效客户，不能发送关怀结果")
             authorization = self._delivery_authorization(db, prepared)
             if not authorization["can_send"]:
                 raise WorkflowConflict("拒绝触达：" + authorization["review_status"])
@@ -1754,9 +1849,9 @@ class CaseStorage:
                 content=prepared["content"])
             db.execute(
                 "INSERT INTO deliveries(delivery_id, case_id, content_fingerprint, record_json, created_at, "
-                "channel, status, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "channel, status, sent_at, customer_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (record.delivery_id, record.case_id, record.content_fingerprint, encode(record), record.created_at,
-                 "MOCK", record.status, record.created_at),
+                 "MOCK", record.status, record.created_at, row["customer_user_id"]),
             )
             has_open_tasks = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (record.case_id,)).fetchone()
             self._status(db, record.case_id, WorkflowStatus.FOLLOWUP_PENDING if has_open_tasks else WorkflowStatus.DELIVERED_MOCK)
@@ -1796,8 +1891,13 @@ class CaseStorage:
                  feedback.category.value, feedback.comment,
                  int(feedback.category.value != "clear" or not feedback.helpful)),
             )
-            needs_followup = request.rating <= 3 or not request.helpful or request.category != FeedbackCategory.CLEAR
+            needs_followup = (
+                request.rating <= 3 or not request.helpful
+                or request.category != FeedbackCategory.CLEAR
+                or request.consent_to_contact
+            )
             task = None
+            service_route = None
             if needs_followup:
                 task = FollowUpTask(task_id=str(uuid4()), case_id=feedback.case_id, feedback_id=feedback.feedback_id,
                                     category=feedback.category, note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
@@ -1808,11 +1908,43 @@ class CaseStorage:
                     (task.task_id, task.case_id, task.feedback_id, task.status.value, encode(task), now,
                      task.category.value, task.note),
                 )
+                service = db.execute(
+                    "SELECT u.user_id, u.display_name FROM case_participants cp "
+                    "JOIN users u ON u.user_id=cp.user_id JOIN roles r ON r.role_id=u.role_id "
+                    "WHERE cp.case_id=? AND cp.case_role='SERVICE_AGENT' AND cp.status='ACTIVE' "
+                    "AND u.status='ACTIVE' AND r.role_code='SERVICE' "
+                    "ORDER BY cp.assigned_at LIMIT 1",
+                    (feedback.case_id,),
+                ).fetchone()
+                if service is None:
+                    service = db.execute(
+                        "SELECT u.user_id, u.display_name FROM users u JOIN roles r ON r.role_id=u.role_id "
+                        "LEFT JOIN case_participants cp ON cp.user_id=u.user_id "
+                        "AND cp.case_role='SERVICE_AGENT' AND cp.status='ACTIVE' "
+                        "WHERE u.status='ACTIVE' AND r.role_code='SERVICE' "
+                        "GROUP BY u.user_id ORDER BY COUNT(cp.case_id), u.user_id LIMIT 1"
+                    ).fetchone()
+                    if service is not None:
+                        db.execute(
+                            "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                            "VALUES (?, ?, 'SERVICE_AGENT', 'ACTIVE', ?) "
+                            "ON CONFLICT(case_id, user_id, case_role) DO UPDATE SET "
+                            "status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
+                            (feedback.case_id, service["user_id"], now),
+                        )
+                if service is not None:
+                    service_route = {
+                        "user_id": service["user_id"], "display_name": service["display_name"],
+                    }
             if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
                 if db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (feedback.case_id,)).fetchone():
                     self._status(db, feedback.case_id, WorkflowStatus.FOLLOWUP_PENDING)
-            return {"feedback": feedback.model_dump(mode="json"), "follow_up": task.model_dump(mode="json") if task else None}
+            return {
+                "feedback": feedback.model_dump(mode="json"),
+                "follow_up": task.model_dump(mode="json") if task else None,
+                "service_route": service_route,
+            }
 
     def list_feedback(self, case_id):
         with self._connect() as db:
@@ -1870,6 +2002,100 @@ class CaseStorage:
                     "UPDATE cases SET customer_user_id=?, updated_at=? WHERE case_id=?",
                     (user_id, now, case_id),
                 )
+
+    def assign_case_customer(self, case_id, customer_username):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            case = self._row(db, case_id)
+            customer = db.execute(
+                "SELECT u.user_id, u.username, u.display_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id "
+                "WHERE u.username=? AND u.status='ACTIVE' AND r.role_code='CUSTOMER'",
+                (customer_username,),
+            ).fetchone()
+            if customer is None:
+                raise WorkflowItemNotFound("客户账号不存在或不可用")
+            if case["customer_user_id"] not in (None, customer["user_id"]):
+                if db.execute("SELECT 1 FROM deliveries WHERE case_id=? LIMIT 1", (case_id,)).fetchone():
+                    raise WorkflowConflict("案件已向客户送达结果，不能更换绑定客户")
+            db.execute(
+                "UPDATE case_participants SET status='CLOSED', unassigned_at=? "
+                "WHERE case_id=? AND case_role='CUSTOMER' AND user_id<>? AND status='ACTIVE'",
+                (now, case_id, customer["user_id"]),
+            )
+            db.execute(
+                "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                "VALUES (?, ?, 'CUSTOMER', 'ACTIVE', ?) "
+                "ON CONFLICT(case_id, user_id, case_role) DO UPDATE SET "
+                "status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
+                (case_id, customer["user_id"], now),
+            )
+            db.execute(
+                "UPDATE cases SET customer_user_id=?, updated_at=? WHERE case_id=?",
+                (customer["user_id"], now, case_id),
+            )
+            return {
+                "user_id": customer["user_id"],
+                "username": customer["username"],
+                "display_name": self._mask_customer_label(customer["display_name"]),
+            }
+
+    def accept_claim_case(self, user_id, case_id):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT c.claim_status, c.customer_user_id FROM cases c "
+                "JOIN case_participants cp ON cp.case_id=c.case_id "
+                "WHERE c.case_id=? AND cp.user_id=? AND cp.case_role='CLAIM_OWNER' "
+                "AND cp.status='ACTIVE'",
+                (case_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            if row["customer_user_id"] is None:
+                raise WorkflowConflict("请先绑定客户，再受理案件")
+            if row["claim_status"] == "PENDING_ACCEPTANCE":
+                db.execute(
+                    "UPDATE cases SET claim_status='ACCEPTED', updated_at=? WHERE case_id=?",
+                    (now, case_id),
+                )
+            elif row["claim_status"] != "ACCEPTED":
+                raise WorkflowConflict("当前理赔状态不能执行受理")
+            return {"case_id": case_id, "claim_status": "ACCEPTED", "message": "案件已受理"}
+
+    def update_claim_compliance(
+        self, user_id, case_id, *, consent_status, deidentification_status,
+    ):
+        if consent_status not in {"pending", "authorized"}:
+            raise WorkflowConflict("不支持的授权状态")
+        if deidentification_status not in {"pending", "confirmed"}:
+            raise WorkflowConflict("不支持的脱敏状态")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT c.claim_status FROM cases c JOIN case_participants cp ON cp.case_id=c.case_id "
+                "WHERE c.case_id=? AND cp.user_id=? AND cp.case_role='CLAIM_OWNER' "
+                "AND cp.status='ACTIVE'",
+                (case_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            if row["claim_status"] == "PENDING_ACCEPTANCE":
+                raise WorkflowConflict("请先受理案件，再补录授权与脱敏状态")
+            db.execute(
+                "UPDATE cases SET consent_status=?, deidentification_status=?, updated_at=? "
+                "WHERE case_id=?",
+                (consent_status, deidentification_status, now, case_id),
+            )
+            return {
+                "case_id": case_id,
+                "consent_status": consent_status,
+                "deidentification_status": deidentification_status,
+                "message": "授权与脱敏状态已更新",
+            }
 
     def assign_medical_reviewer(self, case_id, reviewer_username):
         with self._connect() as db:
@@ -2059,8 +2285,13 @@ class CaseStorage:
                  feedback.category.value, feedback.comment,
                  int(feedback.consent_to_contact)),
             )
-            needs_followup = request.rating <= 3 or not request.helpful or request.category != FeedbackCategory.CLEAR
+            needs_followup = (
+                request.rating <= 3 or not request.helpful
+                or request.category != FeedbackCategory.CLEAR
+                or request.consent_to_contact
+            )
             task = None
+            service_route = None
             if needs_followup:
                 task = FollowUpTask(task_id=str(uuid4()), case_id=feedback.case_id, feedback_id=feedback.feedback_id,
                                     category=feedback.category, note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
@@ -2071,11 +2302,43 @@ class CaseStorage:
                     (task.task_id, task.case_id, task.feedback_id, task.status.value, encode(task), now,
                      task.category.value, task.note),
                 )
+                service = db.execute(
+                    "SELECT u.user_id, u.display_name FROM case_participants cp "
+                    "JOIN users u ON u.user_id=cp.user_id JOIN roles r ON r.role_id=u.role_id "
+                    "WHERE cp.case_id=? AND cp.case_role='SERVICE_AGENT' AND cp.status='ACTIVE' "
+                    "AND u.status='ACTIVE' AND r.role_code='SERVICE' "
+                    "ORDER BY cp.assigned_at LIMIT 1",
+                    (feedback.case_id,),
+                ).fetchone()
+                if service is None:
+                    service = db.execute(
+                        "SELECT u.user_id, u.display_name FROM users u JOIN roles r ON r.role_id=u.role_id "
+                        "LEFT JOIN case_participants cp ON cp.user_id=u.user_id "
+                        "AND cp.case_role='SERVICE_AGENT' AND cp.status='ACTIVE' "
+                        "WHERE u.status='ACTIVE' AND r.role_code='SERVICE' "
+                        "GROUP BY u.user_id ORDER BY COUNT(cp.case_id), u.user_id LIMIT 1"
+                    ).fetchone()
+                    if service is not None:
+                        db.execute(
+                            "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                            "VALUES (?, ?, 'SERVICE_AGENT', 'ACTIVE', ?) "
+                            "ON CONFLICT(case_id, user_id, case_role) DO UPDATE SET "
+                            "status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
+                            (feedback.case_id, service["user_id"], now),
+                        )
+                if service is not None:
+                    service_route = {
+                        "user_id": service["user_id"], "display_name": service["display_name"],
+                    }
             if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
                 if db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (feedback.case_id,)).fetchone():
                     self._status(db, feedback.case_id, WorkflowStatus.FOLLOWUP_PENDING)
-            return {"feedback": feedback.model_dump(mode="json"), "follow_up": task.model_dump(mode="json") if task else None}
+            return {
+                "feedback": feedback.model_dump(mode="json"),
+                "follow_up": task.model_dump(mode="json") if task else None,
+                "service_route": service_route,
+            }
 
     def resolve_follow_up(self, task_id, resolution):
         from .feedback_models import FollowUpTask, FollowUpStatus

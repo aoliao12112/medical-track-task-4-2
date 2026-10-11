@@ -23,6 +23,15 @@ def _create_claim_user(storage, username):
     )
 
 
+def _create_customer_user(storage, username):
+    return storage.create_user(
+        username=username,
+        password_hash=hash_password("safe-password-123"),
+        role_code="CUSTOMER",
+        display_name=f"{username}客户",
+    )
+
+
 def _login(client, username, password="safe-password-123"):
     response = client.post("/api/auth/login", json={
         "username": username,
@@ -192,10 +201,12 @@ def test_claim_create_assigns_owner_and_care_trigger_uses_real_state(tmp_path, m
     _auth_sessions.clear()
     storage = CaseStorage()
     user_id = _create_claim_user(storage, "claim-create")
+    _create_customer_user(storage, "customer-create")
     client = TestClient(app)
     _login(client, "claim-create")
     created = client.post("/api/claim/cases", json={
         "claim_event_id": "CLAIM-PORTAL-001",
+        "customer_username": "customer-create",
         "data_source": "user_upload",
         "consent_status": "authorized",
         "deidentification_status": "confirmed",
@@ -230,10 +241,12 @@ def test_claim_upload_returns_business_status_without_medical_payload(tmp_path, 
     _auth_sessions.clear()
     storage = CaseStorage()
     _create_claim_user(storage, "claim-upload")
+    _create_customer_user(storage, "customer-upload")
     client = TestClient(app)
     _login(client, "claim-upload")
     created = client.post("/api/claim/cases", json={
         "claim_event_id": "CLAIM-UPLOAD-001",
+        "customer_username": "customer-upload",
         "data_source": "user_upload",
         "consent_status": "authorized",
         "deidentification_status": "confirmed",

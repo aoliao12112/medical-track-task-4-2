@@ -6,7 +6,8 @@
   let activeView = "home";
 
   const labels = {
-    COMPLETED: "理赔已完成", RECEIVED: "处理中", STRUCTURED: "分析已完成",
+    PENDING_ACCEPTANCE: "待理赔受理", ACCEPTED: "理赔已受理", COMPLETED: "理赔已完成",
+    RECEIVED: "处理中", STRUCTURED: "分析已完成",
     CARE_TRIGGERED: "关怀准备中", CARE_READY: "关怀已就绪", DELIVERED_MOCK: "已送达",
     care_guide: "关怀指引", recommendation: "服务推荐", overall_service: "整体服务",
     clear: "内容清楚", not_clear: "内容不清楚", not_personalized: "不够个性化",
@@ -43,10 +44,38 @@
   async function home() {
     topTitle.textContent = "客户服务中心";
     const data = await api("/api/customer/dashboard");
-    content.innerHTML = `<div class="page-head"><div><h1>${esc(currentUser.display_name)}，您好</h1><p class="muted">在这里查看本人的理赔关怀结果，并向客服反馈问题</p></div></div>
+    content.innerHTML = `<div class="page-head"><div><h1>${esc(currentUser.display_name)}，您好</h1><p class="muted">发起理赔申请、查看处理进度，并对关怀结果提交反馈</p></div><button class="btn primary" id="startClaim">发起理赔申请</button></div>
       <section class="metric-grid"><article class="card metric"><span class="muted">我的案件</span><strong>${data.total}</strong></article><article class="card metric"><span class="muted">结果已送达</span><strong>${data.results_available}</strong></article><article class="card metric"><span class="muted">结果准备中</span><strong>${data.awaiting_result}</strong></article><article class="card metric"><span class="muted">已提交反馈</span><strong>${data.feedback_submitted}</strong></article></section>
       <section class="card"><div class="card-pad section-title"><h2>最近案件</h2><button class="link-btn" id="allCases">查看全部</button></div>${caseRows(data.recent_cases)}</section>`;
+    document.getElementById("startClaim").onclick = () => navigate("apply");
     document.getElementById("allCases").onclick = () => navigate("cases"); bindCases();
+  }
+
+  async function apply() {
+    topTitle.textContent = "发起理赔申请";
+    content.innerHTML = `<div class="page-head"><div><h1>发起理赔申请</h1><p class="muted">提交后系统会自动绑定当前账号，并进入理赔待受理队列</p></div></div>
+      <section class="card card-pad profile-card"><form id="claimApplicationForm" class="profile-form">
+        <div class="notice"><strong>办理说明</strong><br>此处用于建立理赔案件。医疗材料将在理赔人员受理后按授权与脱敏要求补充处理。</div>
+        <div class="form-field"><label for="customerClaimEventId">报案号 / 理赔事件编号（选填）</label><input class="input" id="customerClaimEventId" maxlength="200" placeholder="没有编号可留空，由系统自动生成"></div>
+        <p id="claimApplicationError" class="form-error"></p><button id="claimApplicationSubmit" class="btn primary">确认发起申请</button>
+      </form></section>`;
+    document.getElementById("claimApplicationForm").onsubmit = async event => {
+      event.preventDefault();
+      const button = document.getElementById("claimApplicationSubmit");
+      const error = document.getElementById("claimApplicationError");
+      button.disabled = true; button.textContent = "正在提交…"; error.textContent = "";
+      try {
+        const claimEventId = document.getElementById("customerClaimEventId").value.trim();
+        const created = await api("/api/customer/cases", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claim_event_id: claimEventId || null })
+        });
+        toast("理赔申请已提交，等待理赔人员受理");
+        await openCase(created.case_id);
+      } catch (exception) {
+        error.textContent = exception.message; button.disabled = false; button.textContent = "确认发起申请";
+      }
+    };
   }
 
   async function cases() {
@@ -125,7 +154,7 @@
   }
 
   function navigate(view) { activeView = view; document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === view)); render(); }
-  async function render() { loading(); try { await ({ home, cases, results, feedback, profile })[activeView](); } catch (error) { errorState(error); } }
+  async function render() { loading(); try { await ({ home, apply, cases, results, feedback, profile })[activeView](); } catch (error) { errorState(error); } }
   document.querySelectorAll(".nav-item").forEach(item => { item.onclick = () => navigate(item.dataset.view); });
   document.getElementById("logoutButton").onclick = async () => { try { await api("/api/auth/logout", { method: "POST" }); } finally { location.replace("/login"); } };
   (async () => { try { currentUser = await api("/api/auth/me"); if (currentUser.role_code !== "CUSTOMER") throw new Error("当前账号无权进入客户工作区"); document.getElementById("userName").textContent = currentUser.display_name; await render(); } catch (error) { if (error.message.includes("无权进入")) { alert(error.message); location.replace("/login"); } } })();

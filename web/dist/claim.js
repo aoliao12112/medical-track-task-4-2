@@ -10,7 +10,9 @@
 
   const labels = {
     ACTIVE: "启用", authorized: "已授权", pending: "待确认", unknown: "待确认",
-    confirmed: "已确认脱敏", user_upload: "用户上传",
+    confirmed: "已确认脱敏", user_upload: "用户上传", customer_self_service: "客户自助申请",
+    phone_report: "电话报案", offline_material: "线下材料", historical_migration: "历史数据迁移",
+    customer_service_entry: "客服代录", PENDING_ACCEPTANCE: "待理赔受理", ACCEPTED: "理赔已受理",
     RECEIVED: "尚未进入医护关怀", STRUCTURED: "等待移交医护关怀",
     CARE_TRIGGERED: "已移交医护关怀", PROCESSING: "处理中",
     PAIN_READY: "医疗处理中", CARE_READY: "等待医疗复核",
@@ -30,8 +32,8 @@
   }
   function label(value) { return labels[value] || (typeof value === "string" ? value : "—"); }
   function status(value) {
-    const warning = ["pending", "unknown", "REVIEW_REQUIRED", "FOLLOWUP_PENDING", "CARE_TRIGGERED", "processing", "submitted"].includes(value);
-    const success = ["authorized", "confirmed", "COMPLETED", "CARE_READY", "APPROVED", "RESOLVED", "completed"].includes(value);
+    const warning = ["pending", "unknown", "PENDING_ACCEPTANCE", "REVIEW_REQUIRED", "FOLLOWUP_PENDING", "CARE_TRIGGERED", "processing", "submitted"].includes(value);
+    const success = ["authorized", "confirmed", "ACCEPTED", "COMPLETED", "CARE_READY", "APPROVED", "RESOLVED", "completed"].includes(value);
     const danger = ["REJECTED", "BLOCKED", "failed"].includes(value);
     return `<span class="tag ${danger ? "danger" : warning ? "warning" : success ? "success" : ""}">${esc(label(value))}</span>`;
   }
@@ -102,7 +104,7 @@
     content.innerHTML = `<div class="page-head"><div><h1>我的案件</h1><p class="muted">仅展示您作为参与人员有权访问的案件</p></div><button class="btn primary" id="newCase">新建理赔案件</button></div>
       <section class="card card-pad"><form id="filters" class="toolbar">
       <input id="search" class="input grow" placeholder="搜索案件编号或理赔事件编号">
-      <select id="claimStatus" class="input"><option value="">全部理赔状态</option><option value="COMPLETED">理赔已完成</option></select>
+      <select id="claimStatus" class="input"><option value="">全部理赔状态</option><option value="PENDING_ACCEPTANCE">待理赔受理</option><option value="ACCEPTED">理赔已受理</option><option value="COMPLETED">理赔已完成</option></select>
       <select id="consentStatus" class="input"><option value="">全部授权状态</option><option value="authorized">已授权</option><option value="pending">待确认</option></select>
       <select id="careStatus" class="input"><option value="">全部关怀状态</option><option value="RECEIVED">尚未进入</option><option value="STRUCTURED">等待移交</option><option value="CARE_TRIGGERED">已移交</option><option value="CARE_READY">等待医疗复核</option></select>
       <button class="btn secondary">查询</button></form><div id="caseTable" class="empty">正在读取案件…</div></section>`;
@@ -223,6 +225,7 @@
   }
   function careBlockers(data) {
     const blockers = [];
+    if (data.claim_status === "PENDING_ACCEPTANCE") blockers.push("理赔案件尚未受理");
     if (data.consent_status !== "authorized") blockers.push("用户授权尚未确认");
     if (data.deidentification_status !== "confirmed") blockers.push("材料脱敏状态尚未通过");
     if (!data.analysis_ready) blockers.push("材料处理尚未完成");
@@ -236,7 +239,17 @@
         ${detailItem("数据来源", label(data.data_source))}${detailItem("理赔负责人", data.claim_owner_name || "未分配")}
         ${detailItem("授权状态", status(data.consent_status), true)}${detailItem("脱敏状态", status(data.deidentification_status), true)}
         ${detailItem("材料状态", status(materialState(data)), true)}${detailItem("理赔状态", status(data.claim_status), true)}
-        ${detailItem("医护关怀状态", status(data.care_status), true)}${detailItem("最近更新时间", formatTime(data.updated_at))}</div>`;
+        ${detailItem("医护关怀状态", status(data.care_status), true)}${detailItem("最近更新时间", formatTime(data.updated_at))}</div>
+        <div class="reviewer-assign"><div><strong>${data.customer_username ? "已绑定客户" : "补录绑定客户"}</strong><p class="muted">${data.customer_username ? `当前客户账号：${esc(data.customer_username)}。结果送达后不可更换。` : "输入已有客户账号进行绑定；不会创建新的客户身份。"}</p></div><div class="inline-form"><input id="bindCustomerUsername" class="input" maxlength="200" placeholder="客户账号" value="${esc(data.customer_username || "")}"><button id="bindCustomer" class="btn secondary">确认绑定</button></div></div>`;
+      document.getElementById("bindCustomer").onclick = async () => {
+        const username = document.getElementById("bindCustomerUsername").value.trim();
+        if (!username) { toast("请输入客户账号"); return; }
+        const button = document.getElementById("bindCustomer"); button.disabled = true;
+        try {
+          const result = await api(`/api/claim/cases/${encodeURIComponent(data.case_id)}/customer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) });
+          toast(`${result.message}：${result.customer.display_name}`); await openCase(data.case_id, "overview");
+        } catch (error) { toast(error.message); button.disabled = false; }
+      };
     }
     if (activeTab === "materials") {
       const state = materialState(data);
@@ -251,11 +264,26 @@
       const blockers = careBlockers(data);
       panel.innerHTML = `<div class="detail-grid">${detailItem("数据来源", label(data.data_source))}${detailItem("用户授权状态", status(data.consent_status), true)}
         ${detailItem("脱敏状态", status(data.deidentification_status), true)}${detailItem("允许进入后续医护流程", blockers.length ? status("BLOCKED") : status("APPROVED"), true)}</div>
-        <div class="notice ${blockers.length ? "error" : ""}" style="margin-top:20px">${blockers.length ? `当前无法进入医护关怀流程：${blockers.map(esc).join("；")}。请重新处理或补充材料。` : "授权和脱敏条件已满足；系统仅向后续流程提供必要的脱敏信息。"}</div>`;
+        <div class="notice ${blockers.length ? "error" : ""}" style="margin-top:20px">${blockers.length ? `当前无法进入医护关怀流程：${blockers.map(esc).join("；")}。请重新处理或补充材料。` : "授权和脱敏条件已满足；系统仅向后续流程提供必要的脱敏信息。"}</div>
+        <div class="reviewer-assign"><div><strong>补录授权与脱敏确认</strong><p class="muted">必须依据客户真实授权和已完成的材料脱敏操作填写，不能为了通过流程虚假勾选。</p></div><div class="inline-form"><select id="consentStatusUpdate" class="input"><option value="pending" ${data.consent_status === "pending" ? "selected" : ""}>授权待确认</option><option value="authorized" ${data.consent_status === "authorized" ? "selected" : ""}>已获得授权</option></select><select id="deidentificationStatusUpdate" class="input"><option value="pending" ${data.deidentification_status === "pending" ? "selected" : ""}>脱敏待确认</option><option value="confirmed" ${data.deidentification_status === "confirmed" ? "selected" : ""}>已确认脱敏</option></select><button id="saveCompliance" class="btn secondary" ${data.claim_status === "PENDING_ACCEPTANCE" ? "disabled" : ""}>保存补录</button></div></div>`;
+      document.getElementById("saveCompliance").onclick = async () => {
+        const button = document.getElementById("saveCompliance"); button.disabled = true;
+        try {
+          const result = await api(`/api/claim/cases/${encodeURIComponent(data.case_id)}/compliance`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ consent_status: document.getElementById("consentStatusUpdate").value, deidentification_status: document.getElementById("deidentificationStatusUpdate").value }) });
+          toast(result.message); await openCase(data.case_id, "consent");
+        } catch (error) { toast(error.message); button.disabled = false; }
+      };
     }
     if (activeTab === "claim-status") {
-      panel.innerHTML = `<h2>理赔状态</h2><p class="muted">状态来自 cases.claim_status。当前后端尚无正式状态流转规则，因此本页只读展示。</p>
-        <div class="status-flow"><div class="status-node">当前状态：${status(data.claim_status)}</div></div>`;
+      panel.innerHTML = `<h2>理赔状态</h2><p class="muted">客户自助申请先进入待受理；理赔人员确认接案后方可继续补录与医护移交。</p>
+        <div class="status-flow"><div class="status-node">当前状态：${status(data.claim_status)}</div></div>
+        ${data.claim_status === "PENDING_ACCEPTANCE" ? '<div style="margin-top:18px"><button id="acceptClaim" class="btn primary">受理案件</button></div>' : ""}`;
+      const acceptButton = document.getElementById("acceptClaim");
+      if (acceptButton) acceptButton.onclick = async () => {
+        acceptButton.disabled = true;
+        try { const result = await api(`/api/claim/cases/${encodeURIComponent(data.case_id)}/accept`, { method: "POST" }); toast(result.message); await openCase(data.case_id, "claim-status"); }
+        catch (error) { toast(error.message); acceptButton.disabled = false; }
+      };
     }
     if (activeTab === "care") {
       const blockers = careBlockers(data);
@@ -295,7 +323,11 @@
       activeTab = "materials"; renderCase(data);
     }
   }
-  function openCreateDialog() { document.getElementById("caseError").textContent = ""; document.getElementById("caseDialog").classList.remove("hidden"); }
+  function openCreateDialog() {
+    document.getElementById("caseError").textContent = "";
+    document.getElementById("customerUsername").innerHTML = '<option value="">请先搜索客户</option>';
+    document.getElementById("caseDialog").classList.remove("hidden");
+  }
   function navigate(view) {
     activeView = view; activeCaseId = null;
     profileMode = "view";
@@ -306,16 +338,29 @@
 
   document.querySelectorAll(".nav-item").forEach((item) => { item.onclick = () => navigate(item.dataset.view); });
   document.getElementById("cancelCase").onclick = () => document.getElementById("caseDialog").classList.add("hidden");
+  document.getElementById("searchCustomer").onclick = async () => {
+    const query = document.getElementById("customerSearch").value.trim();
+    const select = document.getElementById("customerUsername");
+    const error = document.getElementById("caseError");
+    if (!query) { error.textContent = "请输入客户账号、姓名或手机号"; return; }
+    error.textContent = "";
+    try {
+      const customers = await api(`/api/claim/customers?search=${encodeURIComponent(query)}`);
+      select.innerHTML = customers.length ? '<option value="">请选择匹配客户</option>' + customers.map(item => `<option value="${esc(item.username)}">${esc(item.username)} · ${esc(item.display_name)}${item.phone_last4 ? ` · 尾号 ${esc(item.phone_last4)}` : ""}</option>`).join("") : '<option value="">未找到可用客户</option>';
+    } catch (exception) { error.textContent = exception.message; }
+  };
   document.getElementById("caseForm").onsubmit = async (event) => {
     event.preventDefault(); const error = document.getElementById("caseError");
-    if (!document.getElementById("caseAuthorized").checked) { error.textContent = "请先确认已获得材料使用授权"; return; }
-    if (!document.getElementById("caseDeidentified").checked) { error.textContent = "请先确认材料已完成脱敏处理"; return; }
+    const customerUsername = document.getElementById("customerUsername").value;
+    if (!customerUsername) { error.textContent = "请先搜索并选择已有客户"; return; }
     try {
       const created = await api("/api/claim/cases", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        claim_event_id: document.getElementById("claimEventId").value.trim(), data_source: "user_upload",
-        consent_status: "authorized", deidentification_status: "confirmed"
+        claim_event_id: document.getElementById("claimEventId").value.trim(),
+        customer_username: customerUsername, data_source: document.getElementById("caseDataSource").value,
+        consent_status: document.getElementById("caseAuthorized").checked ? "authorized" : "pending",
+        deidentification_status: document.getElementById("caseDeidentified").checked ? "confirmed" : "pending"
       }) });
-      document.getElementById("caseDialog").classList.add("hidden"); document.getElementById("caseForm").reset(); toast("理赔案件已创建"); await openCase(created.case_id);
+      document.getElementById("caseDialog").classList.add("hidden"); document.getElementById("caseForm").reset(); toast("已代客户建案并完成绑定"); await openCase(created.case_id);
     } catch (exception) { error.textContent = exception.message; }
   };
   document.getElementById("logoutButton").onclick = async () => { try { await api("/api/auth/logout", { method: "POST" }); } finally { location.replace("/login"); } };

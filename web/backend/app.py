@@ -267,9 +267,31 @@ class MedicalModuleReviewRequest(MedicalReviewRequest):
 
 class ClaimCaseCreateRequest(StrictModel):
     claim_event_id: str = Field(min_length=1, max_length=200)
-    data_source: str = Field(default="user_upload", min_length=1, max_length=200)
+    customer_username: str = Field(min_length=1, max_length=200)
+    data_source: Literal[
+        "phone_report", "offline_material", "historical_migration",
+        "customer_service_entry", "user_upload",
+    ] = "phone_report"
     consent_status: str = Field(default="pending", min_length=1, max_length=100)
     deidentification_status: str = Field(default="pending", min_length=1, max_length=100)
+
+
+class CustomerCaseCreateRequest(StrictModel):
+    claim_event_id: str | None = Field(default=None, max_length=200)
+
+    @field_validator("claim_event_id")
+    @classmethod
+    def normalize_claim_event_id(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+class AssignCustomerRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=200)
+
+
+class ClaimComplianceUpdateRequest(StrictModel):
+    consent_status: Literal["pending", "authorized"]
+    deidentification_status: Literal["pending", "confirmed"]
 
 
 class AssignMedicalReviewerRequest(StrictModel):
@@ -638,15 +660,59 @@ def create_claim_case(
     identity: dict[str, Any] = Depends(current_claim_user),
 ):
     require_permission(identity, "CASE_CREATE")
-    return get_case_storage().create_case(
-        CreateCaseRequest(**request.model_dump()), owner_user_id=identity["user_id"]
+    payload = request.model_dump(exclude={"customer_username"})
+    return get_case_storage().create_claim_case_for_customer(
+        CreateCaseRequest(**payload),
+        identity["user_id"],
+        request.customer_username.strip(),
     )
+
+
+@app.get("/api/claim/customers")
+def claim_search_customers(
+    search: str = Query(min_length=1, max_length=200),
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().search_active_users_by_role("CUSTOMER", search)
 
 
 @app.get("/api/claim/cases/{case_id}")
 def claim_case_detail(case_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
     require_case_permission(identity, case_id, "CASE_VIEW")
     return get_case_storage().get_claim_case_detail(identity["user_id"], case_id)
+
+
+@app.post("/api/claim/cases/{case_id}/accept")
+def claim_accept_case(case_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
+    require_case_permission(identity, case_id, "CLAIM_STATUS_UPDATE")
+    return get_case_storage().accept_claim_case(identity["user_id"], case_id)
+
+
+@app.post("/api/claim/cases/{case_id}/customer")
+def claim_assign_customer(
+    case_id: str,
+    request: AssignCustomerRequest,
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_case_permission(identity, case_id, "CASE_UPDATE")
+    customer = get_case_storage().assign_case_customer(case_id, request.username.strip())
+    return {"case_id": case_id, "customer": customer, "message": "客户已绑定"}
+
+
+@app.patch("/api/claim/cases/{case_id}/compliance")
+def claim_update_compliance(
+    case_id: str,
+    request: ClaimComplianceUpdateRequest,
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_case_permission(identity, case_id, "CONSENT_CONFIRM")
+    return get_case_storage().update_claim_compliance(
+        identity["user_id"],
+        case_id,
+        consent_status=request.consent_status,
+        deidentification_status=request.deidentification_status,
+    )
 
 
 @app.get("/api/claim/tasks")
@@ -682,6 +748,9 @@ async def claim_process_documents(
     if not files:
         raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
     storage = get_case_storage()
+    claim_metadata = storage.get_claim_case_detail(identity["user_id"], case_id)
+    if claim_metadata["claim_status"] == "PENDING_ACCEPTANCE":
+        raise HTTPException(status_code=409, detail="请先受理案件，再补录或处理医疗材料")
     case_metadata = storage.get_case(case_id)
     if case_metadata["consent_status"] != "authorized" or \
             case_metadata["deidentification_status"] != "confirmed":
@@ -1119,6 +1188,24 @@ def customer_dashboard(identity: dict[str, Any] = Depends(current_customer_user)
 def customer_cases(identity: dict[str, Any] = Depends(current_customer_user)):
     require_permission(identity, "OWN_CASE_VIEW")
     return get_case_storage().list_customer_cases(identity["user_id"])
+
+
+@app.post("/api/customer/cases", status_code=201)
+def customer_create_case(
+    request: CustomerCaseCreateRequest,
+    identity: dict[str, Any] = Depends(current_customer_user),
+):
+    require_permission(identity, "OWN_CASE_VIEW")
+    claim_event_id = request.claim_event_id or f"CUS-{uuid4().hex[:12].upper()}"
+    return get_case_storage().create_customer_case(
+        CreateCaseRequest(
+            claim_event_id=claim_event_id,
+            data_source="customer_self_service",
+            consent_status="pending",
+            deidentification_status="pending",
+        ),
+        identity["user_id"],
+    )
 
 
 @app.get("/api/customer/cases/{case_id}")
