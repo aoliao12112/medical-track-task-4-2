@@ -42,7 +42,19 @@ def prepare_delivery_content(storage: CaseStorage, case_id: str):
     results = snapshot["results"]
     if results["care_result"] is None:
         raise WorkflowConflict("请先生成并保存 Care Guide")
-    recommendation = case_recommendations(storage, case_id)
+    persisted_recommendation = storage.load_recommendation_report(case_id)
+    if persisted_recommendation and persisted_recommendation.get("status") != "INVALIDATED" \
+            and persisted_recommendation.get("items"):
+        recommendation = {"reports": [{
+            "status": "available",
+            "report": {
+                "report_id": persisted_recommendation["report_id"],
+                "warnings": (persisted_recommendation.get("report") or {}).get("warnings", []),
+                "recommendations": persisted_recommendation["items"],
+            },
+        }]}
+    else:
+        recommendation = case_recommendations(storage, case_id)
     if encode(snapshot) != encode(storage.delivery_input_snapshot(case_id)):
         raise WorkflowConflict("准备触达期间案件或画像已改变，请重试")
     care = CareGuideReport.model_validate(results["care_result"])

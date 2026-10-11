@@ -52,21 +52,19 @@ def evaluate_delivery_gate(care: CareGuideReport, case: ClaimCase,
         concern("knowledge_review_status 未经审核")
     for warning in care.warnings:
         concern("care warning: " + warning)
+    # Publication safety is narrower than field-review completeness.  Only a
+    # disputed primary diagnosis or an explicit high-risk medical flag belongs
+    # in the case-level gate; ordinary dates, fee details and low-risk tests are
+    # retained as module warnings instead of blocking the whole delivery.
+    primary = [item for item in case.diagnoses if item.diagnosis_type.value == "primary"]
+    primary = primary or [item for item in case.diagnoses if item.diagnosis_type.value == "discharge"][:1]
+    for diagnosis in primary[:1]:
+        if diagnosis.name.status.value in {"conflict", "review_required"}:
+            concern(f"主诊断状态需要确认：{diagnosis.name.status.value}")
+    safety_markers = ("高风险", "禁忌", "过敏", "剂量", "停药", "换药", "治疗风险", "事实冲突")
     for flag in case.quality_flags:
-        if flag.severity.value in {"warning", "error"}:
-            concern(f"case quality flag: {flag.code}: {flag.message}")
-
-    def walk(value, path="case"):
-        if isinstance(value, dict):
-            if value.get("status") in {"conflict", "review_required"}:
-                concern(f"{path}.status={value['status']}")
-            for key, child in value.items():
-                walk(child, path + "." + key)
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                walk(child, f"{path}[{index}]")
-
-    walk(case.model_dump(mode="json"))
+        if flag.severity.value == "error" or any(marker in flag.message for marker in safety_markers):
+            concern(f"关键病例风险：{flag.code}: {flag.message}")
     if pain:
         medication_types = {PainPointType.MEDICATION_DIAGNOSIS_REVIEW, PainPointType.DUPLICATE_MEDICATION_REVIEW}
         for point in pain.pain_points:
@@ -80,12 +78,23 @@ def evaluate_delivery_gate(care: CareGuideReport, case: ClaimCase,
         for warning in report.get("warnings", []):
             concern("recommendation warning: " + warning, ReviewTarget.RECOMMENDATION)
         for item in report.get("recommendations", []):
-            if item["confidence"] < MIN_AUTO_RECOMMENDATION_CONFIDENCE:
-                concern(f"recommendation {item['entity_id']} confidence={item['confidence']} < .5", ReviewTarget.RECOMMENDATION)
-            if item["sample_size"] < MIN_AUTO_RECOMMENDATION_SAMPLE:
-                concern(f"recommendation {item['entity_id']} sample_size={item['sample_size']} < 3", ReviewTarget.RECOMMENDATION)
-            if len(item.get("reasons", [])) < 2 or any(not r.get("evidence_fields") for r in item.get("reasons", [])):
-                concern("recommendation 缺少两条有字段依据的理由", ReviewTarget.RECOMMENDATION)
+            entity_id = item.get("entity_id") or item.get("hospital_id") or item.get("clinician_id")
+            confidence = item.get("confidence", item.get("recommendation_confidence", 0))
+            if str(item.get("evidence_status", "")).upper() == "CONTRADICTED":
+                return DeliveryGateResult(
+                    decision=GateDecision.BLOCKED,
+                    reasons=[f"recommendation {entity_id} 存在明确事实矛盾"],
+                    review_targets=[ReviewTarget.RECOMMENDATION],
+                )
+            if confidence < MIN_AUTO_RECOMMENDATION_CONFIDENCE:
+                concern(f"recommendation {entity_id} confidence={confidence} < .5", ReviewTarget.RECOMMENDATION)
+            if "sample_size" in item and item["sample_size"] < MIN_AUTO_RECOMMENDATION_SAMPLE:
+                concern(f"recommendation {entity_id} sample_size={item['sample_size']} < 3", ReviewTarget.RECOMMENDATION)
+            item_reasons = item.get("reasons") or item.get("evidence") or []
+            if len(item_reasons) < 2:
+                concern("recommendation 缺少两条可追溯理由", ReviewTarget.RECOMMENDATION)
+            elif item.get("reasons") and any(not r.get("evidence_fields") for r in item_reasons):
+                concern("recommendation 缺少字段依据", ReviewTarget.RECOMMENDATION)
     return DeliveryGateResult(decision=GateDecision.REVIEW_REQUIRED if reasons else GateDecision.AUTO_DELIVER,
         reasons=list(dict.fromkeys(reasons)) or ["已有安全检查全部通过，非降级指引，证据覆盖>=.8，无现有高风险标记"],
         review_targets=sorted(targets, key=lambda target: target.value))

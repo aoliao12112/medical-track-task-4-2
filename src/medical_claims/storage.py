@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
+import re
 import sqlite3
 import threading
 from uuid import uuid4
@@ -38,8 +40,7 @@ def encode(value):
 
 
 class CaseStorage:
-    # Mobile previews are deliberately process-local. They must never become a
-    # persistent database table or survive a backend restart.
+    # Mobile previews remain process-local and expire automatically.
     _preview_lock = threading.Lock()
     _preview_cache: dict[str, dict] = {}
 
@@ -392,8 +393,736 @@ class CaseStorage:
                 care_status = "CARE_TRIGGERED"
             else:
                 care_status = row["care_status"]
+            reviewer = None
+            assigned = db.execute(
+                "SELECT 1 FROM case_participants cp JOIN users u ON u.user_id=cp.user_id "
+                "JOIN roles r ON r.role_id=u.role_id WHERE cp.case_id=? AND cp.case_role='MEDICAL_REVIEWER' "
+                "AND cp.status='ACTIVE' AND u.status='ACTIVE' AND r.role_code='MEDICAL'",
+                (case_id,),
+            ).fetchone()
+            if assigned is None:
+                reviewer = db.execute(
+                    "SELECT u.user_id FROM users u JOIN roles r ON r.role_id=u.role_id "
+                    "LEFT JOIN case_participants cp ON cp.user_id=u.user_id "
+                    "AND cp.case_role='MEDICAL_REVIEWER' AND cp.status='ACTIVE' "
+                    "WHERE u.status='ACTIVE' AND r.role_code='MEDICAL' "
+                    "GROUP BY u.user_id ORDER BY COUNT(cp.case_id), u.user_id LIMIT 1"
+                ).fetchone()
+                if reviewer is not None:
+                    db.execute(
+                        "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                        "VALUES (?, ?, 'MEDICAL_REVIEWER', 'ACTIVE', ?)",
+                        (case_id, reviewer[0], now),
+                    )
             return {"case_id": case_id, "care_status": care_status,
+                    "medical_reviewer_assigned": assigned is not None or reviewer is not None,
                     "message": "案件已移交医护关怀，等待医疗处理或复核"}
+
+    @staticmethod
+    def _medical_review_status(decision, care_status=None):
+        if care_status == "APPROVED":
+            return "APPROVED"
+        if care_status == "REJECTED":
+            return "RETURNED"
+        if care_status == "REVIEW_REQUIRED" and decision == "NEEDS_CONFIRMATION":
+            return "NEEDS_CONFIRMATION"
+        return "PENDING"
+
+    @staticmethod
+    def _primary_diagnosis(structured):
+        diagnoses = (structured or {}).get("diagnoses") or []
+        chosen = next((item for item in diagnoses if item.get("diagnosis_type") == "primary"), None)
+        chosen = chosen or (diagnoses[0] if diagnoses else None)
+        if not chosen:
+            return None
+        name = chosen.get("name") or {}
+        return name.get("normalized_value") or name.get("value")
+
+    @staticmethod
+    def _structured_fingerprint(structured):
+        if not structured:
+            return None
+        return hashlib.sha256(encode(structured).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _field_at_path(structured, field_path):
+        current = structured
+        for name, index in re.findall(r"([^.\[\]]+)(?:\[(\d+)\])?", field_path):
+            if not isinstance(current, dict) or name not in current:
+                raise WorkflowItemNotFound("结构化字段不存在或已变化")
+            current = current[name]
+            if index:
+                if not isinstance(current, list) or int(index) >= len(current):
+                    raise WorkflowItemNotFound("结构化字段不存在或已变化")
+                current = current[int(index)]
+        if not isinstance(current, dict) or "status" not in current or "value" not in current:
+            raise WorkflowConflict("该路径不是可复核的结构化字段")
+        return current
+
+    @staticmethod
+    def _field_label(field_path):
+        names = {
+            "admission_date": "入院日期", "discharge_date": "出院日期",
+            "length_of_stay_days": "住院天数", "department": "住院科室",
+            "name": "名称", "code": "编码", "performed_date": "操作日期",
+            "body_site": "部位", "dose": "剂量", "frequency": "频次",
+            "route": "给药途径", "duration": "疗程", "conclusion": "检查结论",
+            "total_amount": "总费用", "policy_scope_amount": "政策范围内费用",
+            "outside_policy_amount": "政策范围外费用", "amount": "金额",
+            "category": "类别", "value": "结果值", "unit": "单位",
+            "reference_range": "参考范围",
+        }
+        groups = {"diagnoses": "诊断", "procedures": "手术/操作", "medications": "用药",
+                  "examinations": "检查", "hospitalization": "住院信息", "costs": "费用"}
+        first = field_path.split(".", 1)[0].split("[", 1)[0]
+        last = field_path.rsplit(".", 1)[-1].split("[", 1)[0]
+        index = re.search(r"\[(\d+)\]", field_path)
+        prefix = groups.get(first, first)
+        return f"{prefix}{int(index.group(1)) + 1 if index else ''} · {names.get(last, last)}"
+
+    @classmethod
+    def _field_review_candidates(cls, structured):
+        if not structured:
+            return []
+        flags = structured.get("quality_flags") or []
+
+        def flag_matches(path, flag_path):
+            if not flag_path:
+                return False
+            pattern = re.escape(flag_path).replace(r"\[\]", r"\[\d+\]")
+            return re.fullmatch(pattern, path) is not None
+
+        candidates = []
+
+        def walk(value, path=""):
+            if isinstance(value, dict):
+                if "status" in value and "value" in value:
+                    if value.get("value") is None or value.get("status") in {
+                        "not_present_in_document", "not_applicable"
+                    }:
+                        return
+                    relevant = [flag for flag in flags if flag_matches(path, flag.get("field_path"))]
+                    confidence = value.get("confidence")
+                    reasons = []
+                    if value.get("status") in {"review_required", "conflict"}:
+                        reasons.append("字段状态需要人工确认")
+                    if confidence is not None and float(confidence) < .8:
+                        reasons.append("字段可信度低于 80%")
+                    reasons.extend(flag.get("message") for flag in relevant if flag.get("message"))
+                    if reasons:
+                        candidates.append({
+                            "field_path": path, "field_label": cls._field_label(path),
+                            "model_value": value.get("normalized_value")
+                            if value.get("normalized_value") is not None else value.get("value"),
+                            "status": value.get("status"), "confidence": confidence,
+                            "reason": "；".join(dict.fromkeys(reasons)),
+                            "source_references": deepcopy(value.get("evidence") or []),
+                        })
+                    return
+                for key, item in value.items():
+                    if key not in {"quality_flags", "events"}:
+                        walk(item, f"{path}.{key}" if path else key)
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    walk(item, f"{path}[{index}]")
+
+        walk(structured)
+        return candidates
+
+    @staticmethod
+    def _latest_field_reviews(db, case_id, fingerprint):
+        rows = db.execute(
+            "SELECT record_json FROM reviews WHERE case_id=? AND content_fingerprint=? "
+            "AND target_type LIKE 'structured_field:%' ORDER BY rowid DESC",
+            (case_id, fingerprint),
+        ).fetchall()
+        latest = {}
+        for row in rows:
+            record = json.loads(row[0])
+            latest.setdefault(record["field_path"], record)
+        return latest
+
+    @classmethod
+    def _field_review_state(cls, db, case_id, structured):
+        fingerprint = cls._structured_fingerprint(structured)
+        if not fingerprint:
+            return fingerprint, [], [], deepcopy(structured)
+        reviews_by_path = cls._latest_field_reviews(db, case_id, fingerprint)
+        candidates = cls._field_review_candidates(structured)
+        pending = [item for item in candidates if item["field_path"] not in reviews_by_path]
+        effective = deepcopy(structured)
+        for path, review in reviews_by_path.items():
+            if review.get("decision") not in {"CONFIRMED", "CORRECTED"}:
+                continue
+            try:
+                field = cls._field_at_path(effective, path)
+            except (WorkflowConflict, WorkflowItemNotFound):
+                continue
+            field["value"] = review.get("final_value")
+            if "normalized_value" in field:
+                field["normalized_value"] = review.get("final_value")
+            # Review metadata stays in ``field_reviews``.  The effective case
+            # must remain a valid ClaimCase so every existing downstream
+            # algorithm can consume it without a parallel JSON schema.
+        return fingerprint, pending, list(reviews_by_path.values()), effective
+
+    @classmethod
+    def _medical_pending_count(cls, structured, pain, care, handled_paths=None):
+        handled_paths = set(handled_paths or [])
+        count = sum(item["field_path"] not in handled_paths
+                    for item in cls._field_review_candidates(structured))
+        count += sum(
+            flag.get("severity") in {"warning", "error"} and not flag.get("field_path")
+            for flag in (structured or {}).get("quality_flags", [])
+        )
+        count += sum(bool(item.get("review_required")) for item in (pain or {}).get("pain_points", []))
+        if care and (care.get("review_required") or care.get("warnings")):
+            count += 1
+        return count
+
+    @staticmethod
+    def _content_fingerprint(value):
+        return hashlib.sha256(encode(value).encode("utf-8")).hexdigest() if value is not None else None
+
+    @staticmethod
+    def _module_target(module):
+        return {
+            "pain": "pain_report",
+            "care": "care_guide",
+            "treatment_quality": "treatment_quality",
+            "recommendation": "recommendation",
+        }[module]
+
+    @staticmethod
+    def _record_module_state(db, case_id, module, effective_fingerprint, *, user_id=None,
+                             action="MEDICAL_MODULE_GENERATED"):
+        db.execute(
+            "INSERT INTO system_logs(log_id, user_id, case_id, action, module, request_path, "
+            "ip_address, request_params_json, result, error_message, created_at) "
+            "VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'SUCCESS', NULL, ?)",
+            (str(uuid4()), user_id, case_id, action, module,
+             encode({"effective_fingerprint": effective_fingerprint}),
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+    @staticmethod
+    def _latest_module_fingerprint(db, case_id, module):
+        row = db.execute(
+            "SELECT request_params_json FROM system_logs WHERE case_id=? AND module=? "
+            "AND action IN ('MEDICAL_MODULE_GENERATED','MEDICAL_MODULE_REBASED') "
+            "AND result='SUCCESS' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (case_id, module),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0]).get("effective_fingerprint")
+
+    @staticmethod
+    def _latest_module_generation_id(db, case_id, module):
+        row = db.execute(
+            "SELECT log_id FROM system_logs WHERE case_id=? AND module=? "
+            "AND action='MEDICAL_MODULE_GENERATED' AND result='SUCCESS' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (case_id, module),
+        ).fetchone()
+        return row[0] if row else None
+
+    @classmethod
+    def _module_content_fingerprint(cls, db, case_id, module, content):
+        if content is None:
+            return None
+        generation_id = cls._latest_module_generation_id(db, case_id, module)
+        if generation_id is None:
+            # Legacy results predate module generation logs. Keep them
+            # reviewable without rewriting existing business data.
+            return cls._content_fingerprint(content)
+        return cls._content_fingerprint({
+            "module": module, "generation_id": generation_id, "content": content,
+        })
+
+    def get_effective_case_state(self, case_id):
+        """Return the raw extraction plus the field-review overlay used downstream."""
+        with self._connect() as db:
+            row = self._row(db, case_id)
+            raw = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+            fingerprint, pending, reviews, effective = self._field_review_state(db, case_id, raw)
+            effective_fingerprint = self._structured_fingerprint(effective)
+            return {
+                "raw": raw, "effective": effective,
+                "raw_fingerprint": fingerprint,
+                "effective_fingerprint": effective_fingerprint,
+                "pending": pending, "field_reviews": reviews,
+            }
+
+    def save_medical_pain(self, case_id, result, raw_case, effective_fingerprint, user_id=None):
+        """Save pain computed from the effective case without deleting viewable old Care."""
+        if result.case_id != case_id:
+            raise WorkflowConflict("痛点报告 case_id 不匹配")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._require_current(db, case_id, raw_case)
+            db.execute("UPDATE case_results SET pain_result_json=?, updated_at=? WHERE case_id=?",
+                       (encode(result), datetime.now(timezone.utc).isoformat(), case_id))
+            self._record_module_state(db, case_id, "pain", effective_fingerprint, user_id=user_id)
+
+    def save_medical_care(self, case_id, result, raw_case, effective_fingerprint, user_id=None):
+        """Save Care computed from the effective case and current saved pain."""
+        if result.case_id != case_id:
+            raise WorkflowConflict("指引报告 case_id 不匹配")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._require_current(db, case_id, raw_case)
+            if row["pain_result_json"] is None:
+                raise WorkflowConflict("请先保存痛点分析结果")
+            db.execute("UPDATE case_results SET care_result_json=?, updated_at=? WHERE case_id=?",
+                       (encode(result), datetime.now(timezone.utc).isoformat(), case_id))
+            self._record_module_state(db, case_id, "care", effective_fingerprint, user_id=user_id)
+
+    def record_medical_module_generation(self, case_id, module, effective_fingerprint, user_id=None):
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._row(db, case_id)
+            self._record_module_state(db, case_id, module, effective_fingerprint, user_id=user_id)
+
+    def save_treatment_evaluation(self, case_id, evaluation, disease_group,
+                                  effective_fingerprint, user_id=None):
+        """Persist one-case treatment observations in the existing quality tables."""
+        payload = json.loads(encode(evaluation))
+        dimensions = {
+            "treatment_diagnosis_match": payload["treatment_diagnosis_match"],
+            "medication_rationality": payload["medication_rationality"],
+            "procedure_rationality": payload["procedure_rationality"],
+            "treatment_completeness": payload["treatment_completeness"],
+            "discharge_continuity": payload["discharge_continuity"],
+            "risk_management": payload["risk_management"],
+        }
+        status_map = {
+            "evaluated": "OBSERVED", "needs_review": "REVIEW_REQUIRED",
+            "insufficient_evidence": "DATA_UNAVAILABLE", "not_applicable": "DATA_UNAVAILABLE",
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._row(db, case_id)
+            provider_id = f"case:{case_id}"
+            db.execute(
+                "DELETE FROM provider_quality_observations WHERE case_id=? AND provider_type='TREATMENT'",
+                (case_id,),
+            )
+            for metric_code, dimension in dimensions.items():
+                db.execute(
+                    "INSERT INTO provider_quality_observations(observation_id, case_id, provider_type, "
+                    "provider_id, disease_group, metric_code, raw_value, unit, status, evidence_json, "
+                    "source_kind, observed_at, created_at) VALUES (?, ?, 'TREATMENT', ?, ?, ?, ?, 'score', "
+                    "?, ?, 'workflow', ?, ?) ON CONFLICT(case_id, provider_type, provider_id, "
+                    "disease_group, metric_code) DO UPDATE SET raw_value=excluded.raw_value, "
+                    "status=excluded.status, evidence_json=excluded.evidence_json, "
+                    "observed_at=excluded.observed_at, created_at=excluded.created_at",
+                    (str(uuid4()), case_id, provider_id, disease_group, metric_code,
+                     dimension.get("score"), status_map[dimension["status"]],
+                     encode({
+                         "reasoning": dimension.get("reasoning"),
+                         "evidence_fields": dimension.get("evidence_fields") or [],
+                         "limitations": dimension.get("limitations") or [],
+                         "confidence": dimension.get("confidence", 0),
+                         "effective_fingerprint": effective_fingerprint,
+                     }), now, now),
+                )
+            self._record_module_state(
+                db, case_id, "treatment_quality", effective_fingerprint, user_id=user_id,
+            )
+
+    def module_review_content(self, case_id, module):
+        with self._connect() as db:
+            row = self._row(db, case_id)
+            if module == "pain":
+                content = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
+                generation_id = self._latest_module_generation_id(db, case_id, module)
+                return ({"module": module, "generation_id": generation_id, "content": content}
+                        if content is not None and generation_id else content)
+            if module == "care":
+                content = json.loads(row["care_result_json"]) if row["care_result_json"] else None
+                generation_id = self._latest_module_generation_id(db, case_id, module)
+                return ({"module": module, "generation_id": generation_id, "content": content}
+                        if content is not None and generation_id else content)
+            if module == "treatment_quality":
+                values = []
+                for item in db.execute(
+                    "SELECT metric_code, raw_value, status, evidence_json FROM provider_quality_observations "
+                    "WHERE case_id=? AND provider_type='TREATMENT' ORDER BY metric_code", (case_id,),
+                ):
+                    value = dict(item)
+                    value["evidence"] = json.loads(value.pop("evidence_json"))
+                    values.append(value)
+                content = values or None
+                generation_id = self._latest_module_generation_id(db, case_id, module)
+                return ({"module": module, "generation_id": generation_id, "content": content}
+                        if content is not None and generation_id else content)
+            if module == "recommendation":
+                content = self.load_recommendation_report(case_id)
+                generation_id = self._latest_module_generation_id(db, case_id, module)
+                return ({"module": module, "generation_id": generation_id, "content": content}
+                        if content is not None and generation_id else content)
+            raise WorkflowConflict("未知复核模块")
+
+    def save_module_review(self, user_id, case_id, target_type, decision, note, content):
+        """Persist a review for one immutable module result, independent of delivery review."""
+        from .review_models import ReviewRecord, ReviewRequest, ReviewTarget
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        target = ReviewTarget(target_type)
+        if target == ReviewTarget.COMBINED_DELIVERY:
+            raise WorkflowConflict("案件级发布复核必须使用发布门禁接口")
+        fingerprint = self._content_fingerprint(content)
+        if not fingerprint:
+            raise WorkflowConflict("该模块尚无可复核结果")
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            reviewer = db.execute("SELECT display_name FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if reviewer is None:
+                raise WorkflowConflict("当前复核用户不存在")
+            request = ReviewRequest(target_type=target, reviewer=reviewer[0], decision=decision,
+                                    note=note, content_fingerprint=fingerprint)
+            record = ReviewRecord(**request.model_dump(), review_id=str(uuid4()), case_id=case_id,
+                                  created_at=datetime.now(timezone.utc).isoformat())
+            db.execute(
+                "INSERT INTO reviews(review_id, case_id, content_fingerprint, target_type, decision, "
+                "record_json, created_at, comment, reviewer_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.review_id, case_id, fingerprint, target.value, decision.value,
+                 encode(record), record.created_at, note, user_id),
+            )
+            return record
+
+    def _module_states(self, db, case_id, effective, pain, care, observations, recommendation):
+        from .medical_orchestration import (
+            GenerationStatus, MedicalModule, ModuleReviewStatus, ModuleState, eligibility,
+        )
+        effective_fingerprint = self._structured_fingerprint(effective)
+        if not effective:
+            return {module.value: ModuleState(
+                module=module, generation_status=GenerationStatus.INPUT_INSUFFICIENT,
+                blockers=["结构化病例尚未生成"],
+            ).model_dump(mode="json") for module in MedicalModule}
+        from .models import ClaimCase
+        case = ClaimCase.model_validate(effective)
+        treatment_content = [{
+            "metric_code": item.get("metric_code"), "raw_value": item.get("raw_value"),
+            "status": item.get("status"), "evidence": item.get("evidence") or {},
+        } for item in observations if item.get("provider_type") == "TREATMENT"]
+        content = {
+            "pain": pain,
+            "care": care,
+            "treatment_quality": treatment_content or None,
+            "recommendation": recommendation,
+        }
+        states = {}
+        for module in MedicalModule:
+            available = content[module.value] is not None
+            city = ((recommendation or {}).get("patient_city") if recommendation else None)
+            allowed, blockers, warnings = eligibility(
+                module, case, pain_available=pain is not None, city=city,
+            )
+            generated_from = self._latest_module_fingerprint(db, case_id, module.value)
+            if module == MedicalModule.RECOMMENDATION and available \
+                    and recommendation.get("status") == "INVALIDATED":
+                generation = GenerationStatus.STALE
+            elif available and generated_from and generated_from != effective_fingerprint:
+                generation = GenerationStatus.STALE
+            elif available:
+                generation = GenerationStatus.GENERATED
+            elif allowed:
+                generation = GenerationStatus.READY
+            else:
+                generation = GenerationStatus.INPUT_INSUFFICIENT
+            target = self._module_target(module.value)
+            content_fingerprint = self._module_content_fingerprint(
+                db, case_id, module.value, content[module.value],
+            )
+            latest = None
+            if content_fingerprint:
+                row = db.execute(
+                    "SELECT decision FROM reviews WHERE case_id=? AND target_type=? "
+                    "AND content_fingerprint=? ORDER BY rowid DESC LIMIT 1",
+                    (case_id, target, content_fingerprint),
+                ).fetchone()
+                latest = row[0] if row else None
+            review = {
+                None: ModuleReviewStatus.NOT_REVIEWED,
+                "APPROVED": ModuleReviewStatus.APPROVED,
+                "REJECTED": ModuleReviewStatus.REJECTED,
+                "NEEDS_CONFIRMATION": ModuleReviewStatus.NEEDS_CONFIRMATION,
+            }.get(latest, ModuleReviewStatus.NOT_REVIEWED)
+            if available and latest is None:
+                review = ModuleReviewStatus.REVIEW_REQUIRED
+            states[module.value] = ModuleState(
+                module=module, generation_status=generation, review_status=review,
+                blockers=blockers, warnings=warnings, result_available=available,
+                content_fingerprint=content_fingerprint,
+            ).model_dump(mode="json")
+        return states
+
+    @staticmethod
+    def _without_bbox(value):
+        if isinstance(value, dict):
+            return {key: CaseStorage._without_bbox(item) for key, item in value.items() if key != "bbox"}
+        if isinstance(value, list):
+            return [CaseStorage._without_bbox(item) for item in value]
+        return value
+
+    def list_medical_cases(self, user_id, *, pending_only=False, limit=200):
+        """List only assigned cases that have entered the care workflow."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT c.case_id, c.claim_event_id, c.care_status, c.updated_at, c.created_at, "
+                "cp.assigned_at AS care_entered_at, customer.display_name AS customer_display_name, "
+                "cr.structured_result_json, cr.pain_result_json, cr.care_result_json, "
+                "(SELECT decision FROM reviews rv WHERE rv.case_id=c.case_id "
+                "AND rv.target_type NOT LIKE 'structured_field:%' ORDER BY rv.rowid DESC LIMIT 1) "
+                "AS latest_review_decision FROM cases c "
+                "JOIN case_participants cp ON cp.case_id=c.case_id "
+                "JOIN case_results cr ON cr.case_id=c.case_id "
+                "LEFT JOIN users customer ON customer.user_id=c.customer_user_id "
+                "WHERE cp.user_id=? AND cp.case_role='MEDICAL_REVIEWER' AND cp.status='ACTIVE' "
+                "AND c.care_status NOT IN ('RECEIVED','STRUCTURED') "
+                "ORDER BY c.updated_at DESC LIMIT ?",
+                (user_id, max(1, min(int(limit), 500))),
+            ).fetchall()
+            output = []
+            for row in rows:
+                structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+                pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
+                care = json.loads(row["care_result_json"]) if row["care_result_json"] else None
+                fingerprint = self._structured_fingerprint(structured)
+                handled = self._latest_field_reviews(db, row["case_id"], fingerprint) if fingerprint else {}
+                review_status = self._medical_review_status(row["latest_review_decision"], row["care_status"])
+                if pending_only and review_status == "APPROVED":
+                    continue
+                output.append({
+                    "case_id": row["case_id"], "claim_event_id": row["claim_event_id"],
+                    "customer_display_name": self._mask_customer_label(row["customer_display_name"]),
+                    "primary_diagnosis": self._primary_diagnosis(structured),
+                    "care_status": row["care_status"], "review_status": review_status,
+                    "analysis_ready": {"structured": structured is not None, "pain": pain is not None,
+                                       "care": care is not None},
+                    "pending_confirmation_count": self._medical_pending_count(
+                        structured, pain, care, handled.keys()),
+                    "care_entered_at": row["care_entered_at"], "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                })
+            return output
+
+    def medical_dashboard(self, user_id):
+        cases = self.list_medical_cases(user_id)
+        return {
+            "pending_review": sum(item["review_status"] != "APPROVED" for item in cases),
+            "new_care_cases": sum(item["care_status"] == "CARE_TRIGGERED" for item in cases),
+            "needs_confirmation": sum(item["pending_confirmation_count"] > 0 for item in cases),
+            "completed_reviews": sum(item["review_status"] == "APPROVED" for item in cases),
+            "recent_cases": cases[:8],
+        }
+
+    def get_medical_case_detail(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT c.case_id, c.claim_event_id, c.data_source, c.consent_status, "
+                "c.deidentification_status, c.care_status, c.created_at, "
+                "c.updated_at, customer.display_name AS customer_display_name, "
+                "cr.ocr_result_json, cr.structured_result_json, cr.pain_result_json, cr.care_result_json "
+                "FROM cases c JOIN case_results cr ON cr.case_id=c.case_id "
+                "LEFT JOIN users customer ON customer.user_id=c.customer_user_id WHERE c.case_id=?",
+                (case_id,),
+            ).fetchone()
+            if row is None or row["care_status"] in {"RECEIVED", "STRUCTURED"}:
+                raise CaseNotFound(case_id)
+            raw_structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+            structured = self._without_bbox(raw_structured) if raw_structured else None
+            pain = self._without_bbox(json.loads(row["pain_result_json"])) if row["pain_result_json"] else None
+            care = self._without_bbox(json.loads(row["care_result_json"])) if row["care_result_json"] else None
+            raw_ocr = json.loads(row["ocr_result_json"]) if row["ocr_result_json"] else []
+            ocr = [{
+                "document_id": item.get("document_id"), "page": item.get("page"),
+                "resource_id": item.get("resource_id"),
+                "media_type": item.get("media_type"),
+                "preview_available": bool(item.get("resource_id") and item.get("stored_filename")),
+                "human_corrected": bool(item.get("human_corrected")),
+                "full_text": item.get("full_text") or "",
+                "blocks": [{"text": block.get("text", ""), "confidence": block.get("confidence")}
+                           for block in item.get("blocks", [])],
+            } for item in raw_ocr]
+            reviews = [json.loads(item[0]) for item in db.execute(
+                "SELECT record_json FROM reviews WHERE case_id=? "
+                "AND target_type NOT LIKE 'structured_field:%' ORDER BY rowid DESC", (case_id,)
+            )]
+            structured_fingerprint, pending_fields, field_reviews, effective_structured = \
+                self._field_review_state(db, case_id, raw_structured)
+            observations = []
+            for item in db.execute(
+                "SELECT * FROM provider_quality_observations WHERE case_id=? ORDER BY provider_type, metric_code",
+                (case_id,),
+            ):
+                value = dict(item)
+                value["evidence"] = json.loads(value.pop("evidence_json"))
+                observations.append(value)
+            historical_profiles = []
+            profile_keys = {(item["provider_type"], item["provider_id"], item["disease_group"])
+                            for item in observations}
+            for provider_type, provider_id, disease_group in sorted(profile_keys):
+                snapshot = db.execute(
+                    "SELECT * FROM provider_profile_snapshots WHERE provider_type=? AND provider_id=? "
+                    "AND disease_group=? AND status='ACTIVE' ORDER BY profile_version DESC LIMIT 1",
+                    (provider_type, provider_id, disease_group),
+                ).fetchone()
+                if snapshot is None:
+                    continue
+                profile = dict(snapshot)
+                profile["profile"] = json.loads(profile.pop("profile_json"))
+                profile["metrics"] = []
+                for metric_row in db.execute(
+                    "SELECT * FROM provider_metric_scores WHERE snapshot_id=? ORDER BY metric_code",
+                    (snapshot["snapshot_id"],),
+                ):
+                    metric = dict(metric_row)
+                    metric["evidence"] = json.loads(metric.pop("evidence_json"))
+                    profile["metrics"].append(metric)
+                historical_profiles.append(profile)
+            recommendation = self.load_recommendation_report(case_id)
+            module_states = self._module_states(
+                db, case_id, effective_structured, pain, care, observations, recommendation,
+            )
+            latest_decision = reviews[0].get("decision") if reviews else None
+            hospitalization = (effective_structured or {}).get("hospitalization") or {}
+            return {
+                "case_id": row["case_id"], "claim_event_id": row["claim_event_id"],
+                "customer_display_name": self._mask_customer_label(row["customer_display_name"]),
+                "data_source": row["data_source"], "care_status": row["care_status"],
+                "compliance_ready": (row["consent_status"] == "authorized"
+                                     and row["deidentification_status"] == "confirmed"),
+                "review_status": self._medical_review_status(latest_decision, row["care_status"]),
+                "primary_diagnosis": self._primary_diagnosis(effective_structured),
+                "admission_date": (hospitalization.get("admission_date") or {}).get("value"),
+                "discharge_date": (hospitalization.get("discharge_date") or {}).get("value"),
+                "created_at": row["created_at"], "updated_at": row["updated_at"],
+                "pending_confirmation_count": self._medical_pending_count(
+                    structured, pain, care, {item["field_path"] for item in field_reviews}),
+                "ocr_documents": ocr,
+                # Compatibility alias contains the same sanitized view and never
+                # exposes private filenames, filesystem paths, or OCR boxes.
+                "ocr_result": ocr,
+                "structured_result": structured, "pain_result": pain,
+                "structured_effective_result": self._without_bbox(effective_structured),
+                "structured_fingerprint": structured_fingerprint,
+                "pending_field_reviews": self._without_bbox(pending_fields),
+                "field_reviews": self._without_bbox(field_reviews),
+                "field_review_summary": {
+                    "pending": len(pending_fields),
+                    "confirmed": sum(item.get("decision") == "CONFIRMED" for item in field_reviews),
+                    "corrected": sum(item.get("decision") == "CORRECTED" for item in field_reviews),
+                    "unresolved": sum(item.get("decision") == "UNRESOLVED" for item in field_reviews),
+                },
+                "care_result": care, "quality": {
+                    "case_observations": observations,
+                    "historical_profiles": historical_profiles,
+                    "single_case_notice": "单病例观察，不代表该医院整体医疗质量。",
+                },
+                "recommendation": recommendation, "reviews": reviews,
+                "module_states": module_states,
+            }
+
+    def save_field_review(self, user_id, case_id, request):
+        """Persist a field decision without overwriting the model extraction."""
+        from .review_models import FieldReviewDecision, FieldReviewRecord
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+            if not structured:
+                raise WorkflowConflict("结构化病例尚未生成")
+            _raw_fp, _pending_before, _reviews_before, effective_before = \
+                self._field_review_state(db, case_id, structured)
+            old_effective_fingerprint = self._structured_fingerprint(effective_before)
+            field = self._field_at_path(structured, request.field_path)
+            old_effective_field = self._field_at_path(effective_before, request.field_path)
+            model_value = field.get("normalized_value") \
+                if field.get("normalized_value") is not None else field.get("value")
+            old_effective_value = old_effective_field.get("normalized_value") \
+                if old_effective_field.get("normalized_value") is not None \
+                else old_effective_field.get("value")
+            reason = request.reason.strip()
+            if request.decision == FieldReviewDecision.CORRECTED:
+                if request.reviewed_value is None or (
+                    isinstance(request.reviewed_value, str) and not request.reviewed_value.strip()
+                ):
+                    raise WorkflowConflict("修改并确认时必须填写人工确认值")
+                final_value = request.reviewed_value.strip() if isinstance(request.reviewed_value, str) else request.reviewed_value
+            elif request.decision == FieldReviewDecision.CONFIRMED:
+                final_value = model_value
+            else:
+                if not reason:
+                    raise WorkflowConflict("暂无法确认时必须填写原因")
+                final_value = None
+            reviewer = db.execute("SELECT display_name FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if reviewer is None:
+                raise WorkflowConflict("当前复核用户不存在")
+            now = datetime.now(timezone.utc).isoformat()
+            fingerprint = self._structured_fingerprint(structured)
+            record = FieldReviewRecord(
+                **request.model_dump(), review_id=str(uuid4()), case_id=case_id,
+                field_label=self._field_label(request.field_path),
+                model_value=model_value, final_value=final_value, reviewer_user_id=user_id,
+                reviewer_name=reviewer["display_name"], reviewed_at=now,
+                content_fingerprint=fingerprint,
+                source_references=deepcopy(field.get("evidence") or []),
+            )
+            target = f"structured_field:{request.field_path}"
+            db.execute(
+                "INSERT INTO reviews(review_id, case_id, content_fingerprint, target_type, decision, "
+                "record_json, created_at, comment, reviewer_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.review_id, case_id, fingerprint, target, record.decision.value,
+                 encode(record), now, reason, user_id),
+            )
+            _raw_fp, _pending_after, _reviews_after, effective_after = \
+                self._field_review_state(db, case_id, structured)
+            new_effective_fingerprint = self._structured_fingerprint(effective_after)
+            from .medical_orchestration import MedicalModule, modules_affected_by
+            # Compare against the value that downstream modules actually used.
+            # A second correction can differ from the previous human correction
+            # even when both differ from the original model value.
+            changed = request.decision == FieldReviewDecision.CORRECTED \
+                and final_value != old_effective_value
+            affected = modules_affected_by(request.field_path) if changed else set()
+            for module in MedicalModule:
+                if module in affected:
+                    continue
+                latest = self._latest_module_fingerprint(db, case_id, module.value)
+                if latest == old_effective_fingerprint:
+                    self._record_module_state(
+                        db, case_id, module.value, new_effective_fingerprint,
+                        user_id=user_id, action="MEDICAL_MODULE_REBASED",
+                    )
+            return record
+
+    def get_medical_document_resource(self, user_id, case_id, resource_id):
+        """Resolve only a resource attached to the current case's saved OCR payload."""
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        if not re.fullmatch(r"[a-f0-9]{32}", resource_id or ""):
+            raise WorkflowItemNotFound("医疗材料不存在")
+        with self._connect() as db:
+            row = self._row(db, case_id)
+            documents = json.loads(row["ocr_result_json"]) if row["ocr_result_json"] else []
+            document = next((item for item in documents if item.get("resource_id") == resource_id), None)
+            if not document or not document.get("stored_filename"):
+                raise WorkflowItemNotFound("医疗材料不存在")
+            return {
+                "resource_id": resource_id,
+                "stored_filename": document["stored_filename"],
+                "media_type": document.get("media_type") or "application/octet-stream",
+                "document_id": document.get("document_id") or "医疗材料",
+            }
 
     def assign_case_participant(self, case_id, user_id, case_role):
         now = datetime.now(timezone.utc).isoformat()
@@ -407,24 +1136,6 @@ class CaseStorage:
                 "DO UPDATE SET status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
                 (case_id, user_id, case_role, now),
             )
-            if case_role == "CUSTOMER":
-                db.execute(
-                    "UPDATE cases SET customer_user_id=?, updated_at=? WHERE case_id=?",
-                    (user_id, now, case_id),
-                )
-
-    def assign_medical_reviewer(self, case_id, reviewer_username):
-        with self._connect() as db:
-            reviewer = db.execute(
-                "SELECT u.user_id, u.display_name FROM users u "
-                "JOIN roles r ON r.role_id=u.role_id "
-                "WHERE u.username=? AND u.status='ACTIVE' AND r.role_code='MEDICAL'",
-                (reviewer_username,),
-            ).fetchone()
-        if reviewer is None:
-            raise WorkflowItemNotFound("医疗复核账号不存在或不可用")
-        self.assign_case_participant(case_id, reviewer["user_id"], "MEDICAL_REVIEWER")
-        return {"user_id": reviewer["user_id"], "display_name": reviewer["display_name"]}
 
     def user_can_access_case(self, user_id, case_id, permission_code):
         """Enforce role permission plus active case assignment."""
@@ -460,8 +1171,7 @@ class CaseStorage:
             db.execute("BEGIN IMMEDIATE")
             row = self._row(db, case_id)
             status = WorkflowStatus.RECEIVED
-            for kind, stage in (("ocr", WorkflowStatus.OCR_READY),
-                                ("structured", WorkflowStatus.STRUCTURED),
+            for kind, stage in (("structured", WorkflowStatus.STRUCTURED),
                                 ("pain", WorkflowStatus.PAIN_READY), ("care", WorkflowStatus.CARE_READY)):
                 if row[f"{kind}_result_json"] is not None:
                     status = stage
@@ -474,56 +1184,6 @@ class CaseStorage:
             db.execute("UPDATE case_results SET ocr_result_json=?, updated_at=? WHERE case_id=?",
                        (encode(documents), now, case_id))
             db.execute("UPDATE cases SET updated_at=? WHERE case_id=?", (now, case_id))
-
-    def save_ocr_review_draft(self, case_id, documents):
-        """Save reviewed OCR locally and invalidate downstream derived data."""
-
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            self._row(db, case_id)
-            now = datetime.now(timezone.utc).isoformat()
-            db.execute(
-                "UPDATE case_results SET ocr_result_json=?, structured_result_json=NULL, "
-                "pain_result_json=NULL, care_result_json=NULL, updated_at=? WHERE case_id=?",
-                (encode(documents), now, case_id),
-            )
-            db.execute(
-                "UPDATE cases SET status=?, care_status=?, "
-                "deidentification_status='pending_review', updated_at=? WHERE case_id=?",
-                (WorkflowStatus.OCR_READY.value, WorkflowStatus.OCR_READY.value, now, case_id),
-            )
-            self._invalidate_profile(db, case_id, clear_context=True)
-            self._invalidate_recommendations(db, case_id)
-
-    def confirm_deidentification(self, case_id, review_method="manual_confirmation", findings=None,
-                                 document_fingerprint=None):
-        """Confirm reviewed OCR and write the event to the canonical system log."""
-
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = self._row(db, case_id)
-            if row["consent_status"] != "authorized":
-                raise WorkflowConflict("外部模型处理前必须先确认材料使用授权")
-            now = datetime.now(timezone.utc).isoformat()
-            db.execute(
-                "UPDATE cases SET deidentification_status='confirmed', updated_at=? WHERE case_id=?",
-                (now, case_id),
-            )
-            db.execute(
-                "INSERT INTO system_logs(log_id, user_id, case_id, action, module, request_path, "
-                "ip_address, request_params_json, result, error_message, created_at) "
-                "VALUES (?, NULL, ?, 'confirm_deidentification', 'OCR_REVIEW', NULL, NULL, ?, "
-                "'allowed', NULL, ?)",
-                (
-                    str(uuid4()), case_id,
-                    encode({
-                        "review_method": review_method,
-                        "sensitive_pattern_findings": list(findings or []),
-                        "document_fingerprint": document_fingerprint,
-                    }),
-                    now,
-                ),
-            )
 
     def save_structured(self, case_id, result):
         payload = json.loads(encode(result))
@@ -552,6 +1212,21 @@ class CaseStorage:
             raise WorkflowConflict("请求痛点不是当前保存的痛点结果，请重新读取案件")
         return row
 
+    def _require_current_effective(self, db, case_id, case, pain=None):
+        """Accept the current field-review overlay for downstream profile wiring."""
+        row = self._row(db, case_id)
+        if row["status"] == WorkflowStatus.PROCESSING.value:
+            raise WorkflowConflict("案件正在重新结构化")
+        structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+        _fingerprint, _pending, _reviews, effective = self._field_review_state(
+            db, case_id, structured,
+        )
+        if encode(effective) != encode(case):
+            raise WorkflowConflict("请求病例不是当前有效结构化结果，请重新读取案件")
+        if pain is not None and row["pain_result_json"] != encode(pain):
+            raise WorkflowConflict("请求痛点不是当前保存的痛点结果，请重新读取案件")
+        return row
+
     def save_pain(self, case_id, result, case):
         if result.case_id != case_id:
             raise WorkflowConflict("痛点报告 case_id 不匹配")
@@ -574,93 +1249,6 @@ class CaseStorage:
                 raise WorkflowConflict("请先保存痛点分析结果")
             db.execute("UPDATE case_results SET care_result_json=? WHERE case_id=?", (encode(result), case_id))
             self._status(db, case_id, WorkflowStatus.CARE_READY)
-
-    def create_mobile_preview(
-        self,
-        case_id: str,
-        ttl_minutes: int = 30,
-        *,
-        delivery_content: dict | None = None,
-        content_fingerprint: str | None = None,
-    ):
-        """Create an expiring, non-persistent patient-facing snapshot."""
-
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=ttl_minutes)
-        token = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        public_case_id = f"PREVIEW-{secrets.token_hex(4).upper()}"
-        publication_id = f"MP-{secrets.token_hex(8).upper()}"
-        with self._connect() as db:
-            row = self._row(db, case_id)
-            if row["consent_status"] != "authorized" or row["deidentification_status"] != "confirmed":
-                raise WorkflowConflict("手机预览仅允许用于已授权并确认脱敏的案件")
-            if row["care_result_json"] is None:
-                raise WorkflowConflict("请先生成温度指引")
-            care = json.loads(row["care_result_json"])
-        content = delivery_content or {
-            "care_guide": care,
-            "recommendation": [],
-            "recommendation_unavailable_reason": None,
-        }
-        guide = (content.get("care_guide") or {}).get("guide")
-        if not isinstance(guide, dict):
-            raise WorkflowConflict("温度指引缺少可预览内容")
-        safe_content = {
-            "care_guide": content.get("care_guide"),
-            "recommendation": content.get("recommendation") or [],
-            "recommendation_unavailable_reason": content.get("recommendation_unavailable_reason"),
-        }
-
-        def replace_private_id(value):
-            if isinstance(value, dict):
-                return {key: replace_private_id(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [replace_private_id(item) for item in value]
-            return public_case_id if value == case_id else value
-
-        safe_content = replace_private_id(safe_content)
-        publication = {
-            "version": "patient-mobile-preview-v2-ephemeral",
-            "publication_id": publication_id,
-            "status": "preview",
-            "case_id": public_case_id,
-            "created_at": now.isoformat(),
-            "published_at": None,
-            "expires_at": expires_at.isoformat(),
-            "content_fingerprint": content_fingerprint,
-            "report": safe_content["care_guide"],
-            "delivery": {"status": "preview", "content": safe_content},
-        }
-        with self._preview_lock:
-            self._purge_previews(now)
-            self._preview_cache[token_hash] = publication
-        return {
-            "token": token,
-            "publication_id": publication_id,
-            "expires_at": expires_at.isoformat(),
-        }
-
-    def get_mobile_preview(self, token: str):
-        """Resolve a process-local preview by a raw token."""
-
-        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        now = datetime.now(timezone.utc)
-        with self._preview_lock:
-            self._purge_previews(now)
-            publication = self._preview_cache.get(token_hash)
-            if publication is None:
-                raise WorkflowItemNotFound("手机预览链接不存在、已过期或服务已重启")
-            return json.loads(json.dumps(publication, ensure_ascii=False))
-
-    @classmethod
-    def _purge_previews(cls, now: datetime):
-        expired = [
-            key for key, value in cls._preview_cache.items()
-            if datetime.fromisoformat(value["expires_at"]) <= now
-        ]
-        for key in expired:
-            cls._preview_cache.pop(key, None)
 
     def _invalidate_profile(self, db, case_id, clear_context=False):
         changed = db.execute("DELETE FROM profile_case_records WHERE case_id=? AND source_kind='workflow'",
@@ -921,7 +1509,7 @@ class CaseStorage:
     def save_profile_context(self, case_id, settings, case, pain=None):
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._require_current(db, case_id, case, pain)
+            self._require_current_effective(db, case_id, case, pain)
             current = db.execute("SELECT context_json FROM case_profile_contexts WHERE case_id=?", (case_id,)).fetchone()
             payload = encode(settings)
             if current and current[0] == payload:
@@ -945,7 +1533,9 @@ class CaseStorage:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if source_kind == "workflow":
-                self._require_current(db, payload.case.case_id, payload.case, payload.pain_report)
+                self._require_current_effective(
+                    db, payload.case.case_id, payload.case, payload.pain_report,
+                )
                 metadata = self._row(db, payload.case.case_id)
                 if metadata["consent_status"] != "authorized" or metadata["deidentification_status"] != "confirmed":
                     raise WorkflowConflict("画像数据入库需要已声明授权且已确认脱敏")
@@ -1008,13 +1598,19 @@ class CaseStorage:
         row = self._row(db, case_id)
         portfolio = db.execute("SELECT portfolio_json FROM quality_portfolios WHERE portfolio_key='current'").fetchone()
         context = db.execute("SELECT context_json FROM case_profile_contexts WHERE case_id=?", (case_id,)).fetchone()
+        structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+        _fingerprint, _pending, _reviews, effective_structured = \
+            self._field_review_state(db, case_id, structured)
         return {"case_id": case_id, "consent_status": row["consent_status"],
                 "deidentification_status": row["deidentification_status"], "data_source": row["data_source"],
                 "portfolio": json.loads(portfolio[0]) if portfolio else None,
                 "profile_context": json.loads(context[0]) if context else None,
-                "results": {f"{kind}_result": json.loads(row[f"{kind}_result_json"])
-                            if row[f"{kind}_result_json"] is not None else None
-                            for kind in ("ocr", "structured", "pain", "care")}}
+                "results": {
+                    "ocr_result": json.loads(row["ocr_result_json"]) if row["ocr_result_json"] else None,
+                    "structured_result": effective_structured,
+                    "pain_result": json.loads(row["pain_result_json"]) if row["pain_result_json"] else None,
+                    "care_result": json.loads(row["care_result_json"]) if row["care_result_json"] else None,
+                }}
 
     def delivery_input_snapshot(self, case_id):
         with self._connect() as db:
@@ -1089,7 +1685,7 @@ class CaseStorage:
                     "already_delivered": bool(delivered),
                     **authorization}
 
-    def save_review(self, prepared, request):
+    def save_review(self, prepared, request, reviewer_user_id=None):
         from .delivery_gate import GateDecision
         from .review_models import ReviewRecord
         with self._connect() as db:
@@ -1110,14 +1706,22 @@ class CaseStorage:
                                   created_at=datetime.now(timezone.utc).isoformat())
             db.execute(
                 "INSERT INTO reviews(review_id, case_id, content_fingerprint, target_type, decision, "
-                "record_json, created_at, comment) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "record_json, created_at, comment, reviewer_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (record.review_id, record.case_id, record.content_fingerprint, record.target_type.value,
-                 record.decision.value, encode(record), record.created_at, record.note),
+                 record.decision.value, encode(record), record.created_at, record.note, reviewer_user_id),
             )
             authorization = self._delivery_authorization(db, prepared)
             status = WorkflowStatus.REJECTED if authorization["review_status"] == "REJECTED" else \
                      WorkflowStatus.APPROVED if authorization["can_send"] else WorkflowStatus.REVIEW_REQUIRED
             self._status(db, record.case_id, status)
+            if record.decision.value == "APPROVED" and record.target_type.value in {
+                "recommendation", "combined_delivery"
+            }:
+                db.execute(
+                    "UPDATE recommendation_reports SET status='REVIEWED', updated_at=? "
+                    "WHERE case_id=? AND status='DRAFT'",
+                    (record.created_at, record.case_id),
+                )
             return record
 
     def list_reviews(self, case_id):
@@ -1173,16 +1777,11 @@ class CaseStorage:
         with self._connect() as db:
             return self._delivery_row(db, delivery_id)
 
-    def save_feedback(self, delivery_id, request, customer_user_id=None):
+    def save_feedback(self, delivery_id, request):
         from .feedback_models import FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpTask
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             delivery = self._delivery_row(db, delivery_id)
-            if customer_user_id is not None and db.execute(
-                "SELECT 1 FROM feedback WHERE delivery_id=? AND customer_user_id=?",
-                (delivery_id, customer_user_id),
-            ).fetchone():
-                raise WorkflowConflict("本次关怀结果已提交过反馈")
             if request.target_type == FeedbackTarget.RECOMMENDATION and not delivery["recommendation_included"]:
                 raise WorkflowConflict("本次触达未包含推荐，不能提交推荐内容评分")
             now = datetime.now(timezone.utc).isoformat()
@@ -1190,13 +1789,12 @@ class CaseStorage:
                                       case_id=delivery["case_id"], created_at=now)
             db.execute(
                 "INSERT INTO feedback(feedback_id, delivery_id, case_id, record_json, created_at, "
-                "customer_user_id, target_type, rating, helpful, category, comment, request_contact) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "target_type, rating, helpful, category, comment, request_contact) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (feedback.feedback_id, delivery_id, feedback.case_id, encode(feedback), now,
-                 customer_user_id,
                  feedback.target_type.value, feedback.rating, int(feedback.helpful),
                  feedback.category.value, feedback.comment,
-                 int(feedback.consent_to_contact)),
+                 int(feedback.category.value != "clear" or not feedback.helpful)),
             )
             needs_followup = request.rating <= 3 or not request.helpful or request.category != FeedbackCategory.CLEAR
             task = None
@@ -1251,92 +1849,261 @@ class CaseStorage:
                 (encode(task), task.resolved_at, task.resolution, task_id),
             )
             if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+                open_task = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (task.case_id,)).fetchone()
+                self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
+            return task
+
+    def assign_case_participant(self, case_id, user_id, case_role):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            self._row(db, case_id)
+            if db.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone() is None:
+                raise WorkflowItemNotFound("用户不存在")
+            db.execute(
+                "INSERT INTO case_participants(case_id, user_id, case_role, status, assigned_at) "
+                "VALUES (?, ?, ?, 'ACTIVE', ?) ON CONFLICT(case_id, user_id, case_role) "
+                "DO UPDATE SET status='ACTIVE', assigned_at=excluded.assigned_at, unassigned_at=NULL",
+                (case_id, user_id, case_role, now),
+            )
+            if case_role == "CUSTOMER":
+                db.execute(
+                    "UPDATE cases SET customer_user_id=?, updated_at=? WHERE case_id=?",
+                    (user_id, now, case_id),
+                )
+
+    def assign_medical_reviewer(self, case_id, reviewer_username):
+        with self._connect() as db:
+            reviewer = db.execute(
+                "SELECT u.user_id, u.display_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id "
+                "WHERE u.username=? AND u.status='ACTIVE' AND r.role_code='MEDICAL'",
+                (reviewer_username,),
+            ).fetchone()
+        if reviewer is None:
+            raise WorkflowItemNotFound("医疗复核账号不存在或不可用")
+        self.assign_case_participant(case_id, reviewer["user_id"], "MEDICAL_REVIEWER")
+        return {"user_id": reviewer["user_id"], "display_name": reviewer["display_name"]}
+
+    def finish_failed_processing(self, case_id):
+        """No FAILED state: return to the last successfully saved stage."""
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            status = WorkflowStatus.RECEIVED
+            for kind, stage in (("ocr", WorkflowStatus.OCR_READY),
+                                ("structured", WorkflowStatus.STRUCTURED),
+                                ("pain", WorkflowStatus.PAIN_READY), ("care", WorkflowStatus.CARE_READY)):
+                if row[f"{kind}_result_json"] is not None:
+                    status = stage
+            self._status(db, case_id, status)
+
+    def save_ocr_review_draft(self, case_id, documents):
+        """Save reviewed OCR locally and invalidate downstream derived data."""
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._row(db, case_id)
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE case_results SET ocr_result_json=?, structured_result_json=NULL, "
+                "pain_result_json=NULL, care_result_json=NULL, updated_at=? WHERE case_id=?",
+                (encode(documents), now, case_id),
+            )
+            db.execute(
+                "UPDATE cases SET status=?, care_status=?, "
+                "deidentification_status='pending_review', updated_at=? WHERE case_id=?",
+                (WorkflowStatus.OCR_READY.value, WorkflowStatus.OCR_READY.value, now, case_id),
+            )
+            self._invalidate_profile(db, case_id, clear_context=True)
+            self._invalidate_recommendations(db, case_id)
+
+    def confirm_deidentification(self, case_id, review_method="manual_confirmation", findings=None,
+                                 document_fingerprint=None):
+        """Confirm reviewed OCR and write the event to the canonical system log."""
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            if row["consent_status"] != "authorized":
+                raise WorkflowConflict("外部模型处理前必须先确认材料使用授权")
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE cases SET deidentification_status='confirmed', updated_at=? WHERE case_id=?",
+                (now, case_id),
+            )
+            db.execute(
+                "INSERT INTO system_logs(log_id, user_id, case_id, action, module, request_path, "
+                "ip_address, request_params_json, result, error_message, created_at) "
+                "VALUES (?, NULL, ?, 'confirm_deidentification', 'OCR_REVIEW', NULL, NULL, ?, "
+                "'allowed', NULL, ?)",
+                (
+                    str(uuid4()), case_id,
+                    encode({
+                        "review_method": review_method,
+                        "sensitive_pattern_findings": list(findings or []),
+                        "document_fingerprint": document_fingerprint,
+                    }),
+                    now,
+                ),
+            )
+
+    def create_mobile_preview(
+        self,
+        case_id: str,
+        ttl_minutes: int = 30,
+        *,
+        delivery_content: dict | None = None,
+        content_fingerprint: str | None = None,
+    ):
+        """Create an expiring, non-persistent patient-facing snapshot."""
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=ttl_minutes)
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        public_case_id = f"PREVIEW-{secrets.token_hex(4).upper()}"
+        publication_id = f"MP-{secrets.token_hex(8).upper()}"
+        with self._connect() as db:
+            row = self._row(db, case_id)
+            if row["consent_status"] != "authorized" or row["deidentification_status"] != "confirmed":
+                raise WorkflowConflict("手机预览仅允许用于已授权并确认脱敏的案件")
+            if row["care_result_json"] is None:
+                raise WorkflowConflict("请先生成温度指引")
+            care = json.loads(row["care_result_json"])
+        content = delivery_content or {
+            "care_guide": care,
+            "recommendation": [],
+            "recommendation_unavailable_reason": None,
+        }
+        guide = (content.get("care_guide") or {}).get("guide")
+        if not isinstance(guide, dict):
+            raise WorkflowConflict("温度指引缺少可预览内容")
+        safe_content = {
+            "care_guide": content.get("care_guide"),
+            "recommendation": content.get("recommendation") or [],
+            "recommendation_unavailable_reason": content.get("recommendation_unavailable_reason"),
+        }
+
+        def replace_private_id(value):
+            if isinstance(value, dict):
+                return {key: replace_private_id(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [replace_private_id(item) for item in value]
+            return public_case_id if value == case_id else value
+
+        safe_content = replace_private_id(safe_content)
+        publication = {
+            "version": "patient-mobile-preview-v2-ephemeral",
+            "publication_id": publication_id,
+            "status": "preview",
+            "case_id": public_case_id,
+            "created_at": now.isoformat(),
+            "published_at": None,
+            "expires_at": expires_at.isoformat(),
+            "content_fingerprint": content_fingerprint,
+            "report": safe_content["care_guide"],
+            "delivery": {"status": "preview", "content": safe_content},
+        }
+        with self._preview_lock:
+            self._purge_previews(now)
+            self._preview_cache[token_hash] = publication
+        return {
+            "token": token,
+            "publication_id": publication_id,
+            "expires_at": expires_at.isoformat(),
+        }
+
+    def get_mobile_preview(self, token: str):
+        """Resolve a process-local preview by a raw token."""
+
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc)
+        with self._preview_lock:
+            self._purge_previews(now)
+            publication = self._preview_cache.get(token_hash)
+            if publication is None:
+                raise WorkflowItemNotFound("手机预览链接不存在、已过期或服务已重启")
+            return json.loads(json.dumps(publication, ensure_ascii=False))
+
+    @classmethod
+    def _purge_previews(cls, now: datetime):
+        expired = [
+            key for key, value in cls._preview_cache.items()
+            if datetime.fromisoformat(value["expires_at"]) <= now
+        ]
+        for key in expired:
+            cls._preview_cache.pop(key, None)
+
+    def save_feedback(self, delivery_id, request, customer_user_id=None):
+        from .feedback_models import FeedbackRecord, FeedbackTarget, FeedbackCategory, FollowUpTask
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            delivery = self._delivery_row(db, delivery_id)
+            if customer_user_id is not None and db.execute(
+                "SELECT 1 FROM feedback WHERE delivery_id=? AND customer_user_id=?",
+                (delivery_id, customer_user_id),
+            ).fetchone():
+                raise WorkflowConflict("本次关怀结果已提交过反馈")
+            if request.target_type == FeedbackTarget.RECOMMENDATION and not delivery["recommendation_included"]:
+                raise WorkflowConflict("本次触达未包含推荐，不能提交推荐内容评分")
+            now = datetime.now(timezone.utc).isoformat()
+            feedback = FeedbackRecord(**request.model_dump(), feedback_id=str(uuid4()), delivery_id=delivery_id,
+                                      case_id=delivery["case_id"], created_at=now)
+            db.execute(
+                "INSERT INTO feedback(feedback_id, delivery_id, case_id, record_json, created_at, "
+                "customer_user_id, target_type, rating, helpful, category, comment, request_contact) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (feedback.feedback_id, delivery_id, feedback.case_id, encode(feedback), now,
+                 customer_user_id,
+                 feedback.target_type.value, feedback.rating, int(feedback.helpful),
+                 feedback.category.value, feedback.comment,
+                 int(feedback.consent_to_contact)),
+            )
+            needs_followup = request.rating <= 3 or not request.helpful or request.category != FeedbackCategory.CLEAR
+            task = None
+            if needs_followup:
+                task = FollowUpTask(task_id=str(uuid4()), case_id=feedback.case_id, feedback_id=feedback.feedback_id,
+                                    category=feedback.category, note=f"rating={feedback.rating}, helpful={feedback.helpful}, category={feedback.category.value}", created_at=now)
+                db.execute(
+                    "INSERT INTO follow_up_tasks(task_id, case_id, feedback_id, status, record_json, "
+                    "created_at, source_type, category, priority, note) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'DELIVERY_FEEDBACK', ?, 'MEDIUM', ?)",
+                    (task.task_id, task.case_id, task.feedback_id, task.status.value, encode(task), now,
+                     task.category.value, task.note),
+                )
+            if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+                self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
+                if db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (feedback.case_id,)).fetchone():
+                    self._status(db, feedback.case_id, WorkflowStatus.FOLLOWUP_PENDING)
+            return {"feedback": feedback.model_dump(mode="json"), "follow_up": task.model_dump(mode="json") if task else None}
+
+    def resolve_follow_up(self, task_id, resolution):
+        from .feedback_models import FollowUpTask, FollowUpStatus
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT record_json FROM follow_up_tasks WHERE task_id=?", (task_id,)).fetchone()
+            if row is None:
+                raise WorkflowItemNotFound("follow-up task 不存在")
+            task = FollowUpTask.model_validate_json(row[0])
+            if task.status == FollowUpStatus.RESOLVED:
+                if task.resolution != resolution:
+                    raise WorkflowConflict("该待办已解决，不能覆盖已保存的resolution")
+                return task
+            task.status = FollowUpStatus.RESOLVED
+            task.resolution = resolution
+            task.resolved_at = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE follow_up_tasks SET status='RESOLVED', record_json=?, resolved_at=?, resolution=? "
+                "WHERE task_id=?",
+                (encode(task), task.resolved_at, task.resolution, task_id),
+            )
+            if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 open_task = db.execute(
                     "SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status IN ('OPEN','PROCESSING')",
                     (task.case_id,),
                 ).fetchone()
                 self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
             return task
-
-    # Role workspaces intentionally expose narrow, permission-safe views.
-    # Customer/service APIs stay delivery-only. Medical reviewers may receive these
-    # fields only after case scope, consent and deidentification checks have passed.
-    def list_medical_cases(self, user_id, limit=100):
-        sql = """
-            SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status, c.status,
-                   c.consent_status, c.deidentification_status, c.created_at, c.updated_at,
-                   customer.display_name AS customer_display_name,
-                   CASE WHEN cr.ocr_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_ocr_result,
-                   CASE WHEN cr.structured_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_structured_result,
-                   CASE WHEN cr.pain_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_pain_result,
-                   CASE WHEN cr.care_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_care_result,
-                   (SELECT status FROM recommendation_reports rr WHERE rr.case_id=c.case_id
-                    ORDER BY rr.report_version DESC LIMIT 1) AS recommendation_status,
-                   (SELECT COUNT(*) FROM deliveries d WHERE d.case_id=c.case_id) AS delivery_count
-            FROM cases c
-            JOIN case_results cr ON cr.case_id=c.case_id
-            JOIN case_participants cp ON cp.case_id=c.case_id
-            LEFT JOIN users customer ON customer.user_id=c.customer_user_id
-            WHERE cp.user_id=? AND cp.case_role='MEDICAL_REVIEWER' AND cp.status='ACTIVE'
-            ORDER BY c.updated_at DESC LIMIT ?
-        """
-        with self._connect() as db:
-            rows = [dict(row) for row in db.execute(
-                sql, (user_id, max(1, min(int(limit), 200))),
-            )]
-            for row in rows:
-                row["customer_display_name"] = self._mask_customer_label(row["customer_display_name"])
-                for field in ("has_ocr_result", "has_structured_result", "has_pain_result", "has_care_result"):
-                    row[field] = bool(row[field])
-            return rows
-
-    def medical_dashboard(self, user_id):
-        cases = self.list_medical_cases(user_id, limit=200)
-        return {
-            "total": len(cases),
-            "awaiting_structure": sum(not item["has_structured_result"] for item in cases),
-            "awaiting_pain": sum(item["has_structured_result"] and not item["has_pain_result"] for item in cases),
-            "awaiting_care": sum(item["has_pain_result"] and not item["has_care_result"] for item in cases),
-            "awaiting_delivery_review": sum(
-                item["has_care_result"] and item["status"] in {"CARE_READY", "REVIEW_REQUIRED", "BLOCKED"}
-                for item in cases
-            ),
-            "recent_cases": cases[:8],
-        }
-
-    def get_medical_case_detail(self, user_id, case_id):
-        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
-            raise CaseNotFound(case_id)
-        with self._connect() as db:
-            row = db.execute(
-                "SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status, c.status, "
-                "c.consent_status, c.deidentification_status, c.created_at, c.updated_at, "
-                "customer.display_name AS customer_display_name, cr.ocr_result_json, "
-                "cr.structured_result_json, cr.pain_result_json, cr.care_result_json "
-                "FROM cases c JOIN case_results cr ON cr.case_id=c.case_id "
-                "LEFT JOIN users customer ON customer.user_id=c.customer_user_id WHERE c.case_id=?",
-                (case_id,),
-            ).fetchone()
-            if row is None:
-                raise CaseNotFound(case_id)
-            result = {key: row[key] for key in (
-                "case_id", "claim_event_id", "claim_status", "care_status", "status",
-                "consent_status", "deidentification_status", "created_at", "updated_at",
-                "customer_display_name",
-            )}
-            result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
-            allowed = row["consent_status"] == "authorized" and row["deidentification_status"] == "confirmed"
-            result["compliance_ready"] = allowed
-            for name in ("ocr", "structured", "pain", "care"):
-                value = row[f"{name}_result_json"]
-                result[f"{name}_result"] = json.loads(value) if allowed and value else None
-            result["reviews"] = [json.loads(review[0]) for review in db.execute(
-                "SELECT record_json FROM reviews WHERE case_id=? ORDER BY rowid DESC", (case_id,),
-            )]
-            result["deliveries"] = [json.loads(delivery[0]) for delivery in db.execute(
-                "SELECT record_json FROM deliveries WHERE case_id=? ORDER BY rowid DESC", (case_id,),
-            )]
-            return result
 
     def list_customer_cases(self, user_id, limit=100):
         sql = """

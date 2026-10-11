@@ -183,10 +183,10 @@ class DeliveryFeedbackLoopTest(unittest.TestCase):
             if kind == "warning": modified.warnings = ["existing medical warning"]
             self.assertEqual(evaluate_delivery_gate(modified, self.case, self.pain, {"reports": []}).decision, GateDecision.REVIEW_REQUIRED, kind)
 
-    def test_quality_conflict_requires_review(self):
+    def test_only_safety_relevant_structured_conflict_requires_review(self):
         case = self.case.model_copy(deep=True)
         case.quality_flags = [QualityFlag(code="COST_CONFLICT", severity="warning", message="existing conflict")]
-        self.assertEqual(evaluate_delivery_gate(self.care, case, self.pain, {"reports": []}).decision, GateDecision.REVIEW_REQUIRED)
+        self.assertEqual(evaluate_delivery_gate(self.care, case, self.pain, {"reports": []}).decision, GateDecision.AUTO_DELIVER)
         case.quality_flags = []
         case.diagnoses[0].name.status = FieldStatus.CONFLICT
         self.assertEqual(evaluate_delivery_gate(self.care, case, self.pain, {"reports": []}).decision, GateDecision.REVIEW_REQUIRED)

@@ -91,7 +91,9 @@ async function runFrontendHardening(root = path.resolve(__dirname, '..')) {
       result=emptyCase('A');painReport={case_id:'A'};careReport={case_id:'A'};qualityAudit={case_id:'A'};
       persistedPortfolio={};currentRecommendations={case_id:'A'};qualityContext={case_id:'A'};
       qualityCoverageReport={};deliveryReadiness={case_id:'A'};
-      inboxDeliveries=[{case_id:'A'}];deliveryFeedback=[{case_id:'A'}];deliveryFollowUps=[{case_id:'A'}];activeDeliveryId='old';`);
+      inboxDeliveries=[{case_id:'A'}];deliveryFeedback=[{case_id:'A'}];deliveryFollowUps=[{case_id:'A'}];activeDeliveryId='old';
+      document.getElementById('workflowDeidentified').checked=true;
+      document.getElementById('workflowSensitivePatternReviewed').checked=true;`);
   }
   seedA(); element('caseId').value='B';element('caseId').listeners.change();
   check(run('result.case_id') === 'B');

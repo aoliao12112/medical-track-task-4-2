@@ -240,7 +240,7 @@ def test_claim_upload_returns_business_status_without_medical_payload(tmp_path, 
     }).json()
     backend_module = importlib.import_module("web.backend.app")
 
-    async def fake_recognize(files, path):
+    async def fake_recognize(files, path, *, case_id=None):
         return []
 
     monkeypatch.setattr(backend_module, "recognize_uploaded_documents", fake_recognize)
