@@ -21,25 +21,27 @@ $env:DEEPSEEK_API_KEY="你的密钥"
 ## 启动
 
 ```powershell
-& '.\scripts\start_backend.ps1'
+& '.\scripts\start_portal.ps1'
 ```
 
 脚本自动加载 `web/backend/.env`，并兼容部分 Windows 中文用户名造成的 venv 启动器损坏。
-网页右上角点击“演示模式”，填写 `http://127.0.0.1:8000` 并检测连接。
+登录入口为 `http://127.0.0.1:8765/login`。当前客户、理赔、医疗复核和客服工作区使用
+HttpOnly Session Cookie 与同源 API，不要再用纯静态服务器占用 8765。
 
 ## 手机预览与二维码
 
-主后端必须继续绑定 `127.0.0.1:8000`，不要把包含 OCR、病例和模型能力的完整 API
+主角色门户必须继续绑定 `127.0.0.1:8765`，不要把包含 OCR、病例和模型能力的完整 API
 暴露到局域网。需要手机扫码演示时，另开一个 PowerShell 窗口，在项目根目录启动只读预览网关：
 
 ```powershell
-uvicorn web.mobile_gateway:app --host 0.0.0.0 --port 8766 --env-file web/backend/.env
+& '.\scripts\start_mobile_preview.ps1'
 ```
 
-该网关只提供 `patient.html`、对应 CSS/JS 和令牌保护的 `GET /api/mobile-preview`，不挂载
-OCR、DeepSeek、案件管理或审核接口。第三问生成温度指引后，点击“手机预览 / 二维码”，
-系统会创建默认 30 分钟有效的随机链接；数据库只保存令牌哈希，并使用新的预览编号替代真实
-案件编号。手机和电脑需连接同一可信 Wi-Fi 或手机热点。不要在校园公共群聊、社交平台或公开
+该网关只提供 `patient.html`、对应 CSS/JS，并将令牌保护的 `GET /api/mobile-preview`
+只读转发到本机主服务；它不挂载 OCR、DeepSeek、案件管理或审核接口。第三问生成温度指引后，
+在医疗复核工作区的“触达审核”中先运行安全门禁，再点击“手机扫码预览”。系统会创建默认
+30 分钟有效的内存快照，不写入新表，并使用新的预览编号替代真实案件编号。手机和电脑需连接
+同一可信 Wi-Fi 或手机热点。不要在校园公共群聊、社交平台或公开
 文档中传播预览链接；正式发送仍须通过触达安全审核。
 
 如果自动探测到错误网卡，可在 `.env` 中指定：

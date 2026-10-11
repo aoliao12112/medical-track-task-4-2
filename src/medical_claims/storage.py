@@ -413,6 +413,19 @@ class CaseStorage:
                     (user_id, now, case_id),
                 )
 
+    def assign_medical_reviewer(self, case_id, reviewer_username):
+        with self._connect() as db:
+            reviewer = db.execute(
+                "SELECT u.user_id, u.display_name FROM users u "
+                "JOIN roles r ON r.role_id=u.role_id "
+                "WHERE u.username=? AND u.status='ACTIVE' AND r.role_code='MEDICAL'",
+                (reviewer_username,),
+            ).fetchone()
+        if reviewer is None:
+            raise WorkflowItemNotFound("医疗复核账号不存在或不可用")
+        self.assign_case_participant(case_id, reviewer["user_id"], "MEDICAL_REVIEWER")
+        return {"user_id": reviewer["user_id"], "display_name": reviewer["display_name"]}
+
     def user_can_access_case(self, user_id, case_id, permission_code):
         """Enforce role permission plus active case assignment."""
         with self._connect() as db:
@@ -562,8 +575,15 @@ class CaseStorage:
             db.execute("UPDATE case_results SET care_result_json=? WHERE case_id=?", (encode(result), case_id))
             self._status(db, case_id, WorkflowStatus.CARE_READY)
 
-    def create_mobile_preview(self, case_id: str, ttl_minutes: int = 30):
-        """Create an expiring, non-persistent preview snapshot."""
+    def create_mobile_preview(
+        self,
+        case_id: str,
+        ttl_minutes: int = 30,
+        *,
+        delivery_content: dict | None = None,
+        content_fingerprint: str | None = None,
+    ):
+        """Create an expiring, non-persistent patient-facing snapshot."""
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=ttl_minutes)
@@ -578,11 +598,28 @@ class CaseStorage:
             if row["care_result_json"] is None:
                 raise WorkflowConflict("请先生成温度指引")
             care = json.loads(row["care_result_json"])
-        guide = care.get("guide")
+        content = delivery_content or {
+            "care_guide": care,
+            "recommendation": [],
+            "recommendation_unavailable_reason": None,
+        }
+        guide = (content.get("care_guide") or {}).get("guide")
         if not isinstance(guide, dict):
             raise WorkflowConflict("温度指引缺少可预览内容")
-        public_guide = json.loads(json.dumps(guide, ensure_ascii=False))
-        public_guide["case_id"] = public_case_id
+        safe_content = {
+            "care_guide": content.get("care_guide"),
+            "recommendation": content.get("recommendation") or [],
+            "recommendation_unavailable_reason": content.get("recommendation_unavailable_reason"),
+        }
+
+        def replace_private_id(value):
+            if isinstance(value, dict):
+                return {key: replace_private_id(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [replace_private_id(item) for item in value]
+            return public_case_id if value == case_id else value
+
+        safe_content = replace_private_id(safe_content)
         publication = {
             "version": "patient-mobile-preview-v2-ephemeral",
             "publication_id": publication_id,
@@ -591,7 +628,9 @@ class CaseStorage:
             "created_at": now.isoformat(),
             "published_at": None,
             "expires_at": expires_at.isoformat(),
-            "report": {"case_id": public_case_id, "guide": public_guide},
+            "content_fingerprint": content_fingerprint,
+            "report": safe_content["care_guide"],
+            "delivery": {"status": "preview", "content": safe_content},
         }
         with self._preview_lock:
             self._purge_previews(now)
@@ -1219,8 +1258,86 @@ class CaseStorage:
                 self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
             return task
 
-    # Customer and service workspaces intentionally expose narrow, role-safe views.
-    # Raw OCR, structured medical records and draft analysis never leave these methods.
+    # Role workspaces intentionally expose narrow, permission-safe views.
+    # Customer/service APIs stay delivery-only. Medical reviewers may receive these
+    # fields only after case scope, consent and deidentification checks have passed.
+    def list_medical_cases(self, user_id, limit=100):
+        sql = """
+            SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status, c.status,
+                   c.consent_status, c.deidentification_status, c.created_at, c.updated_at,
+                   customer.display_name AS customer_display_name,
+                   CASE WHEN cr.ocr_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_ocr_result,
+                   CASE WHEN cr.structured_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_structured_result,
+                   CASE WHEN cr.pain_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_pain_result,
+                   CASE WHEN cr.care_result_json IS NOT NULL THEN 1 ELSE 0 END AS has_care_result,
+                   (SELECT status FROM recommendation_reports rr WHERE rr.case_id=c.case_id
+                    ORDER BY rr.report_version DESC LIMIT 1) AS recommendation_status,
+                   (SELECT COUNT(*) FROM deliveries d WHERE d.case_id=c.case_id) AS delivery_count
+            FROM cases c
+            JOIN case_results cr ON cr.case_id=c.case_id
+            JOIN case_participants cp ON cp.case_id=c.case_id
+            LEFT JOIN users customer ON customer.user_id=c.customer_user_id
+            WHERE cp.user_id=? AND cp.case_role='MEDICAL_REVIEWER' AND cp.status='ACTIVE'
+            ORDER BY c.updated_at DESC LIMIT ?
+        """
+        with self._connect() as db:
+            rows = [dict(row) for row in db.execute(
+                sql, (user_id, max(1, min(int(limit), 200))),
+            )]
+            for row in rows:
+                row["customer_display_name"] = self._mask_customer_label(row["customer_display_name"])
+                for field in ("has_ocr_result", "has_structured_result", "has_pain_result", "has_care_result"):
+                    row[field] = bool(row[field])
+            return rows
+
+    def medical_dashboard(self, user_id):
+        cases = self.list_medical_cases(user_id, limit=200)
+        return {
+            "total": len(cases),
+            "awaiting_structure": sum(not item["has_structured_result"] for item in cases),
+            "awaiting_pain": sum(item["has_structured_result"] and not item["has_pain_result"] for item in cases),
+            "awaiting_care": sum(item["has_pain_result"] and not item["has_care_result"] for item in cases),
+            "awaiting_delivery_review": sum(
+                item["has_care_result"] and item["status"] in {"CARE_READY", "REVIEW_REQUIRED", "BLOCKED"}
+                for item in cases
+            ),
+            "recent_cases": cases[:8],
+        }
+
+    def get_medical_case_detail(self, user_id, case_id):
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status, c.status, "
+                "c.consent_status, c.deidentification_status, c.created_at, c.updated_at, "
+                "customer.display_name AS customer_display_name, cr.ocr_result_json, "
+                "cr.structured_result_json, cr.pain_result_json, cr.care_result_json "
+                "FROM cases c JOIN case_results cr ON cr.case_id=c.case_id "
+                "LEFT JOIN users customer ON customer.user_id=c.customer_user_id WHERE c.case_id=?",
+                (case_id,),
+            ).fetchone()
+            if row is None:
+                raise CaseNotFound(case_id)
+            result = {key: row[key] for key in (
+                "case_id", "claim_event_id", "claim_status", "care_status", "status",
+                "consent_status", "deidentification_status", "created_at", "updated_at",
+                "customer_display_name",
+            )}
+            result["customer_display_name"] = self._mask_customer_label(result["customer_display_name"])
+            allowed = row["consent_status"] == "authorized" and row["deidentification_status"] == "confirmed"
+            result["compliance_ready"] = allowed
+            for name in ("ocr", "structured", "pain", "care"):
+                value = row[f"{name}_result_json"]
+                result[f"{name}_result"] = json.loads(value) if allowed and value else None
+            result["reviews"] = [json.loads(review[0]) for review in db.execute(
+                "SELECT record_json FROM reviews WHERE case_id=? ORDER BY rowid DESC", (case_id,),
+            )]
+            result["deliveries"] = [json.loads(delivery[0]) for delivery in db.execute(
+                "SELECT record_json FROM deliveries WHERE case_id=? ORDER BY rowid DESC", (case_id,),
+            )]
+            return result
+
     def list_customer_cases(self, user_id, limit=100):
         sql = """
             SELECT c.case_id, c.claim_event_id, c.claim_status, c.care_status,

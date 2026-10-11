@@ -113,7 +113,7 @@ from medical_claims.external_model_policy import (
 from medical_claims.disease_provider_catalog import load_catalog
 from medical_claims.provider_discovery import LocalCapabilityCache
 from medical_claims.delivery import prepare_delivery_content, SendDeliveryRequest
-from medical_claims.review_models import ReviewRequest
+from medical_claims.review_models import ReviewDecision, ReviewRequest, ReviewTarget
 from medical_claims.feedback_models import (
     FeedbackCategory, FeedbackRequest, FollowUpPriority, ResolveFollowUpRequest,
 )
@@ -121,7 +121,7 @@ from urllib.parse import urlencode
 
 
 app = FastAPI(title="Medical Claims Structure API", version="0.6.0")
-BACKEND_REVISION = "2026-10-10-customer-service-portals"
+BACKEND_REVISION = "2026-10-11-medical-review-mobile-preview"
 # 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
 # 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
 LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
@@ -230,6 +230,25 @@ class ClaimCaseCreateRequest(StrictModel):
     deidentification_status: str = Field(default="pending", min_length=1, max_length=100)
 
 
+class AssignMedicalReviewerRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=200)
+
+
+class MedicalAnalysisRequest(StrictModel):
+    use_llm: bool = True
+
+
+class MedicalCareRequest(MedicalAnalysisRequest):
+    disease_topic: str | None = Field(default=None, max_length=200)
+
+
+class MedicalDeliveryReviewRequest(StrictModel):
+    decision: ReviewDecision
+    target_type: ReviewTarget = ReviewTarget.COMBINED_DELIVERY
+    note: str = Field(default="", max_length=4000)
+    content_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class ServiceConsultationCreateRequest(StrictModel):
     case_id: str = Field(min_length=1, max_length=200)
     channel: Literal["WECHAT", "INBOUND_CALL", "ONLINE", "APP_CHAT"]
@@ -272,6 +291,12 @@ def current_claim_user(identity: dict[str, Any] = Depends(current_user)) -> dict
 def current_customer_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     if identity["role_code"] != "CUSTOMER":
         raise HTTPException(status_code=403, detail="当前账号无权进入客户工作区")
+    return identity
+
+
+def current_medical_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    if identity["role_code"] != "MEDICAL":
+        raise HTTPException(status_code=403, detail="当前账号无权进入医疗复核工作区")
     return identity
 
 
@@ -387,6 +412,11 @@ def customer_page():
     return FileResponse(WEB_DIST / "customer.html")
 
 
+@app.get("/medical", include_in_schema=False)
+def medical_page():
+    return FileResponse(WEB_DIST / "medical.html")
+
+
 @app.get("/service", include_in_schema=False)
 def service_page():
     return FileResponse(WEB_DIST / "service.html")
@@ -400,7 +430,7 @@ def legacy_workbench():
 @app.get("/{asset_name}", include_in_schema=False)
 def portal_asset(asset_name: str):
     allowed = {
-        "portal.css", "login.js", "claim.js", "customer.js", "service.js",
+        "portal.css", "login.js", "claim.js", "customer.js", "medical.js", "service.js",
         "styles.css", "app.js",
     }
     if asset_name not in allowed:
@@ -589,6 +619,17 @@ def claim_trigger_care(case_id: str, identity: dict[str, Any] = Depends(current_
     return get_case_storage().trigger_care(identity["user_id"], case_id)
 
 
+@app.post("/api/claim/cases/{case_id}/medical-reviewer")
+def claim_assign_medical_reviewer(
+    case_id: str,
+    request: AssignMedicalReviewerRequest,
+    identity: dict[str, Any] = Depends(current_claim_user),
+):
+    require_case_permission(identity, case_id, "CASE_UPDATE")
+    reviewer = get_case_storage().assign_medical_reviewer(case_id, request.username.strip())
+    return {"case_id": case_id, "reviewer": reviewer, "message": "医疗复核人员已分配"}
+
+
 @app.post("/api/claim/cases/{case_id}/documents/process")
 async def claim_process_documents(
     case_id: str,
@@ -624,6 +665,131 @@ async def claim_process_documents(
     finally:
         if storage.get_case(case_id)["status"] == "PROCESSING":
             storage.finish_failed_processing(case_id)
+
+
+@app.get("/api/medical/dashboard")
+def medical_dashboard(identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().medical_dashboard(identity["user_id"])
+
+
+@app.get("/api/medical/cases")
+def medical_cases(identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().list_medical_cases(identity["user_id"])
+
+
+@app.get("/api/medical/cases/{case_id}")
+def medical_case_detail(
+    case_id: str,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    result = get_case_storage().get_medical_case_detail(identity["user_id"], case_id)
+    result["recommendations"] = case_recommendations(get_case_storage(), case_id)
+    return result
+
+
+@app.patch("/api/medical/cases/{case_id}/structured")
+def medical_update_structured_case(
+    case_id: str,
+    request: ClaimCase,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "STRUCTURED_EDIT")
+    if request.case_id != case_id:
+        raise HTTPException(status_code=422, detail="结构化结果 case_id 与当前案件不一致")
+    detail = get_case_storage().get_medical_case_detail(identity["user_id"], case_id)
+    if not detail["compliance_ready"]:
+        raise HTTPException(status_code=409, detail="案件授权或脱敏状态未通过，不能保存结构化结果")
+    get_case_storage().save_structured(case_id, request)
+    return {"case_id": case_id, "message": "第一问结构化修正已保存；下游结果已按规则失效"}
+
+
+@app.post("/api/medical/cases/{case_id}/pain/analyze")
+def medical_analyze_pain(
+    case_id: str,
+    request: MedicalAnalysisRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "PAIN_REVIEW")
+    saved = get_case_storage().get_medical_case_detail(identity["user_id"], case_id)
+    if saved["structured_result"] is None:
+        raise HTTPException(status_code=409, detail="请先完成并保存第一问结构化结果")
+    return analyze_case_pain_points(PainAnalysisRequest(
+        case=ClaimCase.model_validate(saved["structured_result"]), use_llm=request.use_llm,
+    ))
+
+
+@app.post("/api/medical/cases/{case_id}/care/generate")
+def medical_generate_care(
+    case_id: str,
+    request: MedicalCareRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "CARE_REVIEW")
+    saved = get_case_storage().get_medical_case_detail(identity["user_id"], case_id)
+    if saved["structured_result"] is None:
+        raise HTTPException(status_code=409, detail="请先完成并保存第一问结构化结果")
+    if saved["pain_result"] is None:
+        raise HTTPException(status_code=409, detail="请先完成第二问痛点分析")
+    return generate_case_care_guide(CareGuideRequest(
+        case=ClaimCase.model_validate(saved["structured_result"]),
+        pain_report=PainPointReport.model_validate(saved["pain_result"]),
+        disease_topic=request.disease_topic.strip() if request.disease_topic else None,
+        use_llm=request.use_llm,
+    ))
+
+
+@app.post("/api/medical/cases/{case_id}/delivery/prepare")
+def medical_prepare_delivery(
+    case_id: str,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "DELIVERY_APPROVE")
+    storage = get_case_storage()
+    return storage.prepare_delivery(prepare_delivery_content(storage, case_id))
+
+
+@app.post("/api/medical/cases/{case_id}/mobile-preview", status_code=201)
+def medical_create_mobile_preview(
+    case_id: str,
+    request: MobilePreviewCreateRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "DELIVERY_APPROVE")
+    return _create_mobile_preview_payload(case_id, request)
+
+
+@app.post("/api/medical/cases/{case_id}/delivery/review", status_code=201)
+def medical_review_delivery(
+    case_id: str,
+    request: MedicalDeliveryReviewRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    permission = "DELIVERY_APPROVE" if request.decision == ReviewDecision.APPROVED else "DELIVERY_BLOCK"
+    require_case_permission(identity, case_id, permission)
+    storage = get_case_storage()
+    prepared = prepare_delivery_content(storage, case_id)
+    return storage.save_review(prepared, ReviewRequest(
+        reviewer=identity["display_name"], decision=request.decision,
+        target_type=request.target_type, note=request.note,
+        content_fingerprint=request.content_fingerprint,
+    ))
+
+
+@app.post("/api/medical/cases/{case_id}/delivery/send")
+def medical_send_delivery(
+    case_id: str,
+    request: SendDeliveryRequest | None = None,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "DELIVERY_APPROVE")
+    storage = get_case_storage()
+    prepared = prepare_delivery_content(storage, case_id)
+    if request and request.content_fingerprint and request.content_fingerprint != prepared["content_fingerprint"]:
+        raise WorkflowConflict("触达页面内容已过时，请重新准备")
+    return storage.send_delivery(prepared)
 
 
 @app.get("/api/customer/dashboard")
@@ -1749,8 +1915,21 @@ def prepare_case_delivery(case_id: str):
 def create_case_mobile_preview(case_id: str, request: MobilePreviewCreateRequest):
     """Create an internal, expiring mobile preview without bypassing delivery safety."""
 
-    created = get_case_storage().create_mobile_preview(
-        case_id, ttl_minutes=request.expires_in_minutes
+    return _create_mobile_preview_payload(case_id, request)
+
+
+def _create_mobile_preview_payload(case_id: str, request: MobilePreviewCreateRequest):
+    storage = get_case_storage()
+    prepared = prepare_delivery_content(storage, case_id)
+    readiness = storage.prepare_delivery(prepared)
+    if readiness["decision"] == "BLOCKED":
+        raise WorkflowConflict("当前内容被安全门禁阻断，不能生成手机预览")
+
+    created = storage.create_mobile_preview(
+        case_id,
+        ttl_minutes=request.expires_in_minutes,
+        delivery_content=prepared["content"],
+        content_fingerprint=prepared["content_fingerprint"],
     )
     host = _discover_mobile_preview_host()
     gateway_base = os.getenv(

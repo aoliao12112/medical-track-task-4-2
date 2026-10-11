@@ -1,14 +1,16 @@
 """Narrow LAN gateway for expiring patient previews only.
 
-This process intentionally does not import or mount the main OCR/LLM API.
+This process intentionally does not import or mount the main OCR/LLM API. It
+only proxies token reads to the loopback-only main backend so both processes
+share the main process's expiring in-memory preview cache.
 """
 
+import os
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Header
 from fastapi.responses import FileResponse, JSONResponse
-
-from medical_claims.storage import CaseStorage, WorkflowItemNotFound
 
 
 DIST_ROOT = Path(__file__).resolve().parent / "dist"
@@ -34,11 +36,6 @@ async def preview_security_headers(request, call_next):
     return response
 
 
-@app.exception_handler(WorkflowItemNotFound)
-async def preview_not_found_handler(request, exc):
-    return JSONResponse(status_code=404, content={"detail": str(exc)})
-
-
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "mobile-preview-only"}
@@ -46,7 +43,23 @@ def health():
 
 @app.get("/api/mobile-preview")
 def get_mobile_preview(x_preview_token: str = Header(min_length=20, max_length=200)):
-    return CaseStorage().get_mobile_preview(x_preview_token)
+    backend_base = os.getenv(
+        "MOBILE_PREVIEW_BACKEND_BASE_URL", "http://127.0.0.1:8765"
+    ).rstrip("/")
+    try:
+        response = httpx.get(
+            f"{backend_base}/api/mobile-preview",
+            headers={"X-Preview-Token": x_preview_token},
+            timeout=10,
+            trust_env=False,
+        )
+    except httpx.HTTPError:
+        return JSONResponse(status_code=502, content={"detail": "手机预览主服务暂不可用"})
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"detail": "手机预览主服务返回了无效响应"}
+    return JSONResponse(status_code=response.status_code, content=payload)
 
 
 @app.get("/")

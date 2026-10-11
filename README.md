@@ -35,24 +35,32 @@ Copy-Item '.\web\backend\.env.example' '.\web\backend\.env'
 notepad '.\web\backend\.env'
 ```
 
-在 `.env` 中只填写本机使用的 `DEEPSEEK_API_KEY`，禁止提交。随后分别打开两个终端：
+在 `.env` 中只填写本机使用的 `DEEPSEEK_API_KEY`，禁止提交。角色门户与 API 必须同源，
+在第一个终端启动主服务：
 
 ```powershell
-& '.\scripts\start_backend.ps1'
+& '.\scripts\start_portal.ps1'
 ```
 
+需要手机扫码预览时，再在第二个终端启动只读网关：
+
 ```powershell
-& '.\scripts\start_frontend.ps1'
+& '.\scripts\start_mobile_preview.ps1'
 ```
 
 访问：
 
-- 综合工作台：<http://127.0.0.1:8765/>
-- 角色门户：<http://127.0.0.1:8765/roles.html>
-- API 文档：<http://127.0.0.1:8000/docs>
-- 健康检查：<http://127.0.0.1:8000/api/health>
+- 登录入口：<http://127.0.0.1:8765/login>
+- 理赔工作区：<http://127.0.0.1:8765/claim>
+- 医疗复核工作区：<http://127.0.0.1:8765/medical>
+- 客户工作区：<http://127.0.0.1:8765/customer>
+- 客服工作区：<http://127.0.0.1:8765/service>
+- 旧综合工作台：<http://127.0.0.1:8765/legacy>
+- API 文档：<http://127.0.0.1:8765/docs>
+- 健康检查：<http://127.0.0.1:8765/api/health>
 
-启动脚本可以兼容部分 Windows 中文用户名导致的 venv 启动器损坏问题。完整安装、API 请求和
+`start_backend.ps1` 与 `start_frontend.ps1` 保留给旧版分离调试；当前角色门户不要再把
+8765 启动成纯静态服务器，否则登录、Session 和相对路径 API 会失效。完整安装、API 请求和
 队友协作说明见 [`docs/team-setup-and-api-guide.md`](docs/team-setup-and-api-guide.md)。
 
 ## 第一问：病历结构化与医疗事件重建

@@ -262,12 +262,20 @@
       const handedOff = !["RECEIVED", "STRUCTURED"].includes(data.care_status);
       panel.innerHTML = `<div class="section-title"><div><h2>医护关怀</h2><p class="muted">将满足条件的理赔案件正式交给后续医疗工作流</p></div>${status(data.care_status)}</div>
         ${handedOff ? '<div class="notice"><strong>已移交医护关怀</strong><br>下一阶段：等待医疗处理 / 医疗复核。理赔人员无需操作医学内容。</div>' : blockers.length ? `<div class="notice error"><strong>暂不能移交</strong><br>${blockers.map(esc).join("；")}</div>` : '<div class="notice"><strong>可以移交</strong><br>材料、授权和脱敏条件均已满足。</div>'}
-        ${!handedOff ? `<div style="margin-top:18px"><button id="triggerCare" class="btn primary" ${blockers.length ? "disabled" : ""}>移交医护关怀</button></div>` : ""}`;
+        ${!handedOff ? `<div style="margin-top:18px"><button id="triggerCare" class="btn primary" ${blockers.length ? "disabled" : ""}>移交医护关怀</button></div>` : ""}
+        <div class="reviewer-assign"><div><strong>分配医疗复核人员</strong><p class="muted">使用医疗复核账号；分配后该人员才能在医疗工作区看到本案。</p></div><div class="inline-form"><input id="medicalReviewerUsername" class="input" maxlength="200" placeholder="例如 medical_demo"><button id="assignMedicalReviewer" class="btn secondary">确认分配</button></div></div>`;
       const button = document.getElementById("triggerCare");
       if (button) button.onclick = async () => {
         button.disabled = true;
         try { const result = await api(`/api/claim/cases/${encodeURIComponent(data.case_id)}/care/trigger`, { method: "POST" }); toast(result.message); await openCase(data.case_id, "care"); }
         catch (error) { toast(error.message); button.disabled = false; }
+      };
+      document.getElementById("assignMedicalReviewer").onclick = async () => {
+        const username = document.getElementById("medicalReviewerUsername").value.trim();
+        if (!username) { toast("请输入医疗复核账号"); return; }
+        const assignButton = document.getElementById("assignMedicalReviewer"); assignButton.disabled = true;
+        try { const result = await api(`/api/claim/cases/${encodeURIComponent(data.case_id)}/medical-reviewer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }) }); toast(`${result.message}：${result.reviewer.display_name}`); }
+        catch (error) { toast(error.message); assignButton.disabled = false; }
       };
     }
   }

@@ -1,4 +1,5 @@
 import hashlib
+import httpx
 import json
 import sqlite3
 from unittest.mock import patch
@@ -112,6 +113,8 @@ def test_mobile_preview_api_returns_local_qr_and_header_protected_content(tmp_pa
         )
         assert preview.status_code == 200
         assert preview.json()["report"]["guide"]["disease_topic"] == "测试病种"
+        assert preview.json()["delivery"]["content"]["care_guide"]["guide"]["disease_topic"] == "测试病种"
+        assert preview.json()["content_fingerprint"]
         assert client.get("/api/mobile-preview").status_code == 422
 
 
@@ -119,8 +122,14 @@ def test_mobile_gateway_exposes_only_patient_assets_and_token_preview(tmp_path):
     database = tmp_path / "preview-gateway.db"
     storage, workflow = saved_care_case(database)
     created = storage.create_mobile_preview(workflow.case_id, ttl_minutes=30)
+    publication = storage.get_mobile_preview(created["token"])
+    upstream = httpx.Response(
+        200,
+        json=publication,
+        request=httpx.Request("GET", "http://127.0.0.1:8765/api/mobile-preview"),
+    )
 
-    with patch.dict("os.environ", {"COMPETITION_DB_PATH": str(database)}):
+    with patch("web.mobile_gateway.httpx.get", return_value=upstream) as proxy_get:
         client = TestClient(mobile_gateway_app)
         assert client.get("/health").json()["service"] == "mobile-preview-only"
         assert client.get("/docs").status_code == 404
@@ -134,3 +143,18 @@ def test_mobile_gateway_exposes_only_patient_assets_and_token_preview(tmp_path):
         )
         assert preview.status_code == 200
         assert preview.json()["status"] == "preview"
+        proxy_get.assert_called_once_with(
+            "http://127.0.0.1:8765/api/mobile-preview",
+            headers={"X-Preview-Token": created["token"]},
+            timeout=10,
+            trust_env=False,
+        )
+
+
+def test_mobile_gateway_reports_main_backend_outage_without_exposing_details():
+    with patch("web.mobile_gateway.httpx.get", side_effect=httpx.ConnectError("private detail")):
+        response = TestClient(mobile_gateway_app).get(
+            "/api/mobile-preview", headers={"X-Preview-Token": "x" * 32},
+        )
+    assert response.status_code == 502
+    assert response.json() == {"detail": "手机预览主服务暂不可用"}

@@ -203,6 +203,7 @@ def test_customer_and_service_pages_share_login_and_api_conventions(tmp_path, mo
     assert client.get("/service.js").status_code == 200
     login_source = Path("web/dist/login.js").read_text(encoding="utf-8")
     assert "CUSTOMER:'/customer'" in login_source
+    assert "MEDICAL:'/medical'" in login_source
     assert "SERVICE:'/service'" in login_source
     for source_name in ("customer.js", "service.js"):
         source = Path("web/dist", source_name).read_text(encoding="utf-8")
