@@ -44,9 +44,10 @@ def provider_context_from_saved_ocr(case_id, documents):
 def current_profile_input(storage: CaseStorage, case_id: str, provider=None):
     metadata = storage.get_case(case_id)
     results = storage.get_results(case_id)
-    if results["structured_result"] is None:
+    effective_state = storage.get_effective_case_state(case_id)
+    if effective_state["effective"] is None:
         raise WorkflowConflict("请先保存结构化病例")
-    case = ClaimCase.model_validate(results["structured_result"])
+    case = ClaimCase.model_validate(effective_state["effective"])
     settings = storage.get_profile_context(case_id)
     context = provider or (ConfirmedProviderContext.model_validate(settings["provider"]) if settings else
                           ConfirmedProviderContext(context=CaseProviderContext(case_id=case_id)))
@@ -74,7 +75,8 @@ def build_saved_portfolio(storage: CaseStorage, minimum_sample_size=3):
 def case_recommendations(storage: CaseStorage, case_id: str):
     metadata = storage.get_case(case_id)
     saved = storage.get_results(case_id)
-    case = ClaimCase.model_validate(saved["structured_result"]) if saved["structured_result"] else None
+    effective = storage.get_effective_case_state(case_id)["effective"]
+    case = ClaimCase.model_validate(effective) if effective else None
     disease = resolve_disease_group(case) if case else "unavailable"
     portfolio = storage.load_portfolio()
     assembly = build_profile_case_record(current_profile_input(storage, case_id)) if case else None

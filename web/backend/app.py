@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -84,6 +85,7 @@ from medical_claims.quality_phase1_models import (
     ProviderDiscoveryQuery,
     ProviderDiscoveryResult,
     RecommendationIntent,
+    PatientRecommendationContext,
     TreatmentEvaluationRequestV2,
 )
 from medical_claims.quality_phase1_service import (
@@ -95,6 +97,7 @@ from medical_claims.quality_phase1_service import (
 )
 from medical_claims.recommendation_intent import (
     build_recommendation_fact_pack,
+    disease_group_from_intent,
     validate_recommendation_intent,
 )
 from medical_claims.recommendation_prompt import build_recommendation_planner_body
@@ -106,7 +109,13 @@ from medical_claims.external_model_policy import (
 from medical_claims.disease_provider_catalog import load_catalog
 from medical_claims.provider_discovery import LocalCapabilityCache
 from medical_claims.delivery import prepare_delivery_content, SendDeliveryRequest
-from medical_claims.review_models import ReviewRequest
+from medical_claims.review_models import (
+    FieldReviewRequest,
+    ReviewDecision,
+    ReviewRequest,
+    ReviewTarget,
+)
+from medical_claims.medical_orchestration import MedicalModule, eligibility, primary_disease
 from medical_claims.feedback_models import FeedbackRequest, ResolveFollowUpRequest
 app = FastAPI(title="Medical Claims Structure API", version="0.4.0")
 BACKEND_REVISION = "2026-10-06-competition-hardening"
@@ -130,6 +139,14 @@ _ocr_engine: Any | None = None
 _auth_sessions = SessionStore(ttl_hours=int(os.getenv("AUTH_SESSION_TTL_HOURS", "12")))
 AUTH_COOKIE_NAME = "medical_claims_session"
 WEB_DIST = Path(__file__).resolve().parents[1] / "dist"
+
+
+def private_document_root() -> Path:
+    """Private medical materials are never mounted as static web content."""
+    return Path(os.getenv(
+        "PRIVATE_DOCUMENT_ROOT",
+        str(Path(__file__).resolve().parents[2] / "outputs" / "private_case_documents"),
+    ))
 
 
 def get_case_storage() -> CaseStorage:
@@ -183,6 +200,33 @@ class ChangePasswordRequest(StrictModel):
     confirm_new_password: str = Field(min_length=1, max_length=500)
 
 
+class MedicalReviewRequest(StrictModel):
+    decision: str = Field(pattern=r"^(APPROVED|RETURNED|NEEDS_CONFIRMATION)$")
+    comment: str = Field(default="", max_length=4000)
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str) -> str:
+        return value.strip()
+
+
+class MedicalAnalysisPrepareRequest(StrictModel):
+    modules: list[MedicalModule] = Field(default_factory=lambda: list(MedicalModule))
+    use_llm: bool = True
+    city: str | None = Field(default=None, max_length=100)
+    province: str | None = Field(default=None, max_length=100)
+    nearby_major_cities: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("city", "province")
+    @classmethod
+    def normalize_region(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+class MedicalModuleReviewRequest(MedicalReviewRequest):
+    module: MedicalModule
+
+
 class ClaimCaseCreateRequest(StrictModel):
     claim_event_id: str = Field(min_length=1, max_length=200)
     data_source: str = Field(default="user_upload", min_length=1, max_length=200)
@@ -208,6 +252,12 @@ def current_user(request: Request) -> dict[str, Any]:
 def current_claim_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     if identity["role_code"] != "CLAIM":
         raise HTTPException(status_code=403, detail="当前账号无权进入理赔工作区")
+    return identity
+
+
+def current_medical_user(identity: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    if identity["role_code"] != "MEDICAL":
+        raise HTTPException(status_code=403, detail="当前账号无权进入医疗复核工作区")
     return identity
 
 
@@ -312,6 +362,11 @@ def claim_page():
     return FileResponse(WEB_DIST / "claim.html")
 
 
+@app.get("/medical", include_in_schema=False)
+def medical_page():
+    return FileResponse(WEB_DIST / "medical.html")
+
+
 @app.get("/legacy", include_in_schema=False)
 def legacy_workbench():
     return FileResponse(WEB_DIST / "index.html")
@@ -319,7 +374,7 @@ def legacy_workbench():
 
 @app.get("/{asset_name}", include_in_schema=False)
 def portal_asset(asset_name: str):
-    allowed = {"portal.css", "login.js", "claim.js", "styles.css", "app.js"}
+    allowed = {"portal.css", "login.js", "claim.js", "medical.js", "styles.css", "app.js"}
     if asset_name not in allowed:
         raise HTTPException(status_code=404, detail="资源不存在")
     return FileResponse(WEB_DIST / asset_name)
@@ -440,10 +495,14 @@ async def claim_process_documents(
     if not files:
         raise HTTPException(status_code=400, detail="一个案件至少需要一份材料")
     storage = get_case_storage()
+    case_metadata = storage.get_case(case_id)
+    if case_metadata["consent_status"] != "authorized" or \
+            case_metadata["deidentification_status"] != "confirmed":
+        raise HTTPException(status_code=409, detail="仅可处理已获授权并确认脱敏的医疗材料")
     storage.begin_processing(case_id)
     try:
         with tempfile.TemporaryDirectory(prefix="medical-claim-") as tmp:
-            documents = await recognize_uploaded_documents(files, Path(tmp))
+            documents = await recognize_uploaded_documents(files, Path(tmp), case_id=case_id)
             storage.save_ocr(case_id, documents)
             case = structure_case_with_long_document_support(case_id, documents)
             storage.save_structured(case_id, case)
@@ -465,6 +524,292 @@ async def claim_process_documents(
     finally:
         if storage.get_case(case_id)["status"] == "PROCESSING":
             storage.finish_failed_processing(case_id)
+
+
+@app.get("/api/medical/dashboard")
+def medical_dashboard(identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().medical_dashboard(identity["user_id"])
+
+
+@app.get("/api/medical/cases")
+def medical_cases(
+    pending_only: bool = False,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().list_medical_cases(identity["user_id"], pending_only=pending_only)
+
+
+@app.get("/api/medical/cases/{case_id}")
+def medical_case_detail(case_id: str, identity: dict[str, Any] = Depends(current_medical_user)):
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    storage = get_case_storage()
+    detail = storage.get_medical_case_detail(identity["user_id"], case_id)
+    try:
+        prepared = prepare_delivery_content(storage, case_id)
+        detail["review_gate"] = {
+            "decision": prepared["gate"].decision.value,
+            "reasons": prepared["gate"].reasons,
+            "review_targets": [item.value for item in prepared["gate"].review_targets],
+            "content_fingerprint": prepared["content_fingerprint"],
+        }
+    except WorkflowConflict as exc:
+        detail["review_gate"] = {"decision": "NOT_READY", "reasons": [str(exc)],
+                                 "review_targets": [], "content_fingerprint": None}
+    return detail
+
+
+def _medical_pain_result(case: ClaimCase, use_llm: bool) -> PainPointReport:
+    case = normalize_case(case.model_copy(deep=True))
+    semantic_points = []
+    warnings: list[str] = []
+    if use_llm:
+        try:
+            semantic_points = semantic_pain_points_with_deepseek(case).pain_points
+        except Exception as exc:
+            logger.exception("MEDICAL semantic pain analysis failed; using deterministic rules")
+            warnings.append(f"语义痛点分析暂不可用，已使用确定性规则：{type(exc).__name__}")
+    else:
+        warnings.append("本次未调用外部模型，仅运行确定性痛点规则。")
+    return analyze_pain_points(case, semantic_points, warnings)
+
+
+def _medical_care_result(case: ClaimCase, pain: PainPointReport, use_llm: bool) -> CareGuideReport:
+    case = normalize_case(case.model_copy(deep=True))
+    warnings: list[str] = []
+    card = match_knowledge_card(diagnosis_names(case), None)
+    disease_topic = infer_disease_topic(case, None, card)
+    method = GenerationMethod.RULES_FALLBACK
+    if use_llm:
+        try:
+            require_external_model_authorization(
+                get_case_storage().get_case(case.case_id), ExternalModelPurpose.CARE_GUIDE,
+            )
+            draft = care_guide_with_deepseek(case, pain, disease_topic, card)
+            method = GenerationMethod.LLM
+        except Exception as exc:
+            logger.exception("MEDICAL Care generation failed; using safe fallback")
+            warnings.append(f"温度指引外部模型暂不可用，已生成安全降级草稿：{type(exc).__name__}")
+            draft = build_fallback_draft(case, pain, card, disease_topic)
+    else:
+        warnings.append("本次未调用外部模型，仅生成安全降级草稿。")
+        draft = build_fallback_draft(case, pain, card, disease_topic)
+    return finalize_care_guide(case, draft, card, method, warnings)
+
+
+@app.post("/api/medical/cases/{case_id}/analysis/prepare")
+def prepare_medical_analysis(
+    case_id: str,
+    request: MedicalAnalysisPrepareRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    """Generate every eligible MEDICAL result from the field-review overlay.
+
+    Failures are isolated per module.  Existing results remain persisted and
+    viewable; a failed refresh therefore cannot erase the last reviewable result.
+    """
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    storage = get_case_storage()
+    state = storage.get_effective_case_state(case_id)
+    if not state["effective"] or not state["raw"]:
+        raise HTTPException(status_code=409, detail="结构化病例尚未生成")
+    effective_case = ClaimCase.model_validate(state["effective"])
+    raw_case = ClaimCase.model_validate(state["raw"])
+    effective_fingerprint = state["effective_fingerprint"]
+    results = storage.get_results(case_id)
+    pain = PainPointReport.model_validate(results["pain_result"]) if results["pain_result"] else None
+    selected = list(dict.fromkeys(request.modules))
+    generation_permissions = {
+        MedicalModule.PAIN: "PAIN_REVIEW",
+        MedicalModule.CARE: "CARE_REVIEW",
+        MedicalModule.TREATMENT_QUALITY: "CARE_REVIEW",
+        MedicalModule.RECOMMENDATION: "RECOMMEND_REVIEW",
+    }
+    for module in selected:
+        require_permission(identity, generation_permissions[module])
+    outcomes: dict[str, dict[str, Any]] = {}
+
+    def unavailable(module: MedicalModule, blockers: list[str], warnings: list[str]):
+        outcomes[module.value] = {"status": "INPUT_INSUFFICIENT", "blockers": blockers,
+                                  "warnings": warnings}
+
+    for module in selected:
+        allowed, blockers, warnings = eligibility(
+            module, effective_case, pain_available=pain is not None, city=request.city,
+        )
+        if not allowed:
+            unavailable(module, blockers, warnings)
+            continue
+        try:
+            if module == MedicalModule.PAIN:
+                pain = _medical_pain_result(effective_case, request.use_llm)
+                storage.save_medical_pain(
+                    case_id, pain, raw_case, effective_fingerprint, identity["user_id"],
+                )
+            elif module == MedicalModule.CARE:
+                if pain is None:
+                    unavailable(module, ["痛点分析尚未生成"], warnings)
+                    continue
+                care = _medical_care_result(effective_case, pain, request.use_llm)
+                storage.save_medical_care(
+                    case_id, care, raw_case, effective_fingerprint, identity["user_id"],
+                )
+            elif module == MedicalModule.TREATMENT_QUALITY:
+                disease_group = resolve_disease_group(effective_case)
+                if disease_group == "unavailable":
+                    label = primary_disease(effective_case) or "未确认病种"
+                    disease_group = "diagnosis:" + re.sub(r"[^\w\u3400-\u9fff-]", "", label).lower()
+                evaluation = run_treatment_evaluation(TreatmentEvaluationRequestV2(
+                    case=effective_case, disease_group=disease_group, pain_report=pain,
+                ))
+                storage.save_treatment_evaluation(
+                    case_id, evaluation, disease_group, effective_fingerprint, identity["user_id"],
+                )
+            elif module == MedicalModule.RECOMMENDATION:
+                require_external_model_authorization(
+                    storage.get_case(case_id), ExternalModelPurpose.RECOMMENDATION_INTENT,
+                )
+                label = primary_disease(effective_case)
+                context = PatientRecommendationContext(
+                    case_id=case_id,
+                    disease_group=resolve_disease_group(effective_case),
+                    disease_label=label,
+                    province=request.province,
+                    city=request.city,
+                    nearby_major_cities=request.nearby_major_cities,
+                )
+                saved_care = storage.get_results(case_id).get("care_result")
+                upstream = None
+                if saved_care:
+                    upstream = CareGuideReport.model_validate(saved_care).guide.disease_topic
+                intent = recommendation_intent_with_deepseek(
+                    effective_case, context, upstream_primary_disease=upstream,
+                )
+                context = context.model_copy(update={
+                    "disease_group": disease_group_from_intent(intent),
+                    "disease_label": intent.primary_disease,
+                })
+                report = run_hospital_recommendation(
+                    HospitalRecommendationRequestV2(
+                        context=context, recommendation_intent=intent, top_k=5,
+                    ),
+                    historical_records=storage.load_profile_records(),
+                )
+                clinicians = run_clinician_recommendation(ClinicianRecommendationRequestV2(
+                    disease_group=context.disease_group,
+                    profiles=report.candidate_clinician_profiles,
+                    allowed_hospital_ids=[item.hospital_id for item in report.recommendations],
+                    recommendation_intent=intent,
+                    top_k=5,
+                ))
+                storage.save_recommendation_report(case_id, report, clinicians, status="DRAFT")
+                storage.record_medical_module_generation(
+                    case_id, "recommendation", effective_fingerprint, identity["user_id"],
+                )
+            outcomes[module.value] = {"status": "GENERATED", "blockers": [], "warnings": warnings}
+        except Exception as exc:
+            logger.exception("MEDICAL module generation failed: %s", module.value)
+            outcomes[module.value] = {
+                "status": "FAILED", "blockers": [str(exc)], "warnings": warnings,
+            }
+    return {"case_id": case_id, "outcomes": outcomes,
+            "case": storage.get_medical_case_detail(identity["user_id"], case_id)}
+
+
+@app.post("/api/medical/cases/{case_id}/module-reviews", status_code=201)
+def submit_medical_module_review(
+    case_id: str,
+    request: MedicalModuleReviewRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    if request.decision != "APPROVED" and not request.comment:
+        raise HTTPException(status_code=422, detail="退回或需进一步确认时必须填写复核意见")
+    target = {
+        MedicalModule.PAIN: ReviewTarget.PAIN_REPORT,
+        MedicalModule.CARE: ReviewTarget.CARE_GUIDE,
+        MedicalModule.TREATMENT_QUALITY: ReviewTarget.TREATMENT_QUALITY,
+        MedicalModule.RECOMMENDATION: ReviewTarget.RECOMMENDATION,
+    }[request.module]
+    require_permission(identity, {
+        MedicalModule.PAIN: "PAIN_REVIEW",
+        MedicalModule.CARE: "CARE_REVIEW",
+        MedicalModule.TREATMENT_QUALITY: "CARE_REVIEW",
+        MedicalModule.RECOMMENDATION: "RECOMMEND_REVIEW",
+    }[request.module])
+    content = get_case_storage().module_review_content(case_id, request.module.value)
+    record = get_case_storage().save_module_review(
+        identity["user_id"], case_id, target.value,
+        {"APPROVED": ReviewDecision.APPROVED, "RETURNED": ReviewDecision.REJECTED,
+         "NEEDS_CONFIRMATION": ReviewDecision.NEEDS_CONFIRMATION}[request.decision],
+        request.comment, content,
+    )
+    return record.model_dump(mode="json")
+
+
+@app.post("/api/medical/cases/{case_id}/review", status_code=201)
+def submit_medical_review(
+    case_id: str,
+    request: MedicalReviewRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    require_permission(identity, "DELIVERY_APPROVE" if request.decision == "APPROVED" else "DELIVERY_BLOCK")
+    if request.decision != "APPROVED" and not request.comment:
+        raise HTTPException(status_code=422, detail="退回或标记进一步确认时必须填写复核意见")
+    storage = get_case_storage()
+    prepared = prepare_delivery_content(storage, case_id)
+    decision = {
+        "APPROVED": ReviewDecision.APPROVED,
+        "RETURNED": ReviewDecision.REJECTED,
+        "NEEDS_CONFIRMATION": ReviewDecision.NEEDS_CONFIRMATION,
+    }[request.decision]
+    record = storage.save_review(
+        prepared,
+        ReviewRequest(
+            target_type=ReviewTarget.COMBINED_DELIVERY,
+            reviewer=identity["display_name"],
+            decision=decision,
+            note=request.comment,
+            content_fingerprint=prepared["content_fingerprint"],
+        ),
+        reviewer_user_id=identity["user_id"],
+    )
+    return {"review": record.model_dump(mode="json"),
+            "review_status": storage.get_medical_case_detail(identity["user_id"], case_id)["review_status"]}
+
+
+@app.post("/api/medical/cases/{case_id}/field-reviews", status_code=201)
+def submit_medical_field_review(
+    case_id: str,
+    request: FieldReviewRequest,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    record = get_case_storage().save_field_review(identity["user_id"], case_id, request)
+    return record.model_dump(mode="json")
+
+
+@app.get("/api/medical/cases/{case_id}/documents/{resource_id}")
+def medical_document_preview(
+    case_id: str,
+    resource_id: str,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
+    try:
+        resource = get_case_storage().get_medical_document_resource(
+            identity["user_id"], case_id, resource_id
+        )
+    except (CaseNotFound, WorkflowItemNotFound):
+        raise HTTPException(status_code=404, detail="医疗材料不存在或当前账号无权访问")
+    case_dir = (private_document_root() / case_id).resolve()
+    path = (case_dir / resource["stored_filename"]).resolve()
+    if case_dir not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="医疗材料文件未保留")
+    return FileResponse(path, media_type=resource["media_type"],
+                        headers={"Cache-Control": "private, no-store"})
 
 
 def normalize_document_id(value: str) -> str:
@@ -543,7 +888,7 @@ def document_ocr_confidence(document: dict[str, Any]) -> float | None:
 
 
 async def recognize_uploaded_documents(
-    files: list[UploadFile], tmp_path: Path
+    files: list[UploadFile], tmp_path: Path, *, case_id: str | None = None
 ) -> list[dict[str, Any]]:
     filenames = [
         normalize_document_id(upload.filename or "image.jpg") for upload in files
@@ -555,14 +900,30 @@ async def recognize_uploaded_documents(
         if suffix not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
             raise ValueError(f"当前OCR后端暂不处理 {suffix or '未知格式'}，请先转为图片")
         target = tmp_path / f"{page:04d}{suffix}"
-        target.write_bytes(await upload.read())
+        content = await upload.read()
+        target.write_bytes(content)
         original_name = normalize_document_id(upload.filename or target.name)
         document_id = (
             original_name
             if filename_counts[original_name] == 1
             else f"{page:04d}-{original_name}"
         )
-        documents.append(recognize_image(target, document_id, page))
+        document = recognize_image(target, document_id, page)
+        if case_id is not None:
+            resource_id = uuid4().hex
+            case_dir = private_document_root() / case_id
+            case_dir.mkdir(parents=True, exist_ok=True)
+            stored_filename = f"{resource_id}{suffix}"
+            (case_dir / stored_filename).write_bytes(content)
+            document.update({
+                "resource_id": resource_id,
+                "stored_filename": stored_filename,
+                "media_type": {
+                    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                    ".bmp": "image/bmp", ".webp": "image/webp",
+                }[suffix],
+            })
+        documents.append(document)
     return documents
 
 
@@ -1369,7 +1730,8 @@ def get_case_quality_context(case_id: str):
     saved = storage.get_results(case_id)
     settings = storage.get_profile_context(case_id)
     candidates = provider_context_from_saved_ocr(case_id, saved["ocr_result"]) if saved["ocr_result"] else None
-    case = ClaimCase.model_validate(saved["structured_result"]) if saved["structured_result"] else None
+    effective = storage.get_effective_case_state(case_id)["effective"]
+    case = ClaimCase.model_validate(effective) if effective else None
     assembly = build_profile_case_record(current_profile_input(storage, case_id)) if case else None
     return {"case_id": case_id, "disease_group": resolve_disease_group(case) if case else "unavailable",
             "candidates": candidates.model_dump(mode="json") if candidates else None,
