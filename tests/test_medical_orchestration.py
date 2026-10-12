@@ -12,11 +12,17 @@ from medical_claims.models import (
     FieldStatus, FieldValue, Medication,
 )
 from medical_claims.pain_engine import analyze_pain_points
+from medical_claims.pain_models import (
+    DetectorInfo, DetectorMethod, PainDimension, PainPoint, PainPointReport,
+    PainPointSummary, PainPointType, PainSeverity,
+)
 from medical_claims.quality_phase1_service import run_treatment_evaluation
 from medical_claims.quality_phase1_models import TreatmentEvaluationRequestV2
 from medical_claims.review_models import FieldReviewDecision, FieldReviewRequest, ReviewDecision
 from medical_claims.storage import CaseStorage
 from medical_claims.workflow_models import CreateCaseRequest
+from fastapi import HTTPException
+from web.backend.app import MedicalModuleReviewRequest, _care_review_payload, _medical_review_matrix
 
 
 def field(value, *, status=FieldStatus.EXTRACTED, confidence=.95):
@@ -37,6 +43,23 @@ def case_fixture(case_id):
         costs=Costs(total_amount=field(
             1000, status=FieldStatus.REVIEW_REQUIRED, confidence=.7,
         )),
+    )
+
+
+def pain_fixture(case_id):
+    return PainPointReport(
+        case_id=case_id,
+        summary=PainPointSummary(total=1, clinical=0, cost=0, experience=1, high_priority=0),
+        pain_points=[PainPoint(
+            pain_point_id="P1", dimension=PainDimension.EXPERIENCE,
+            type=PainPointType.CARE_GUIDANCE_INCOMPLETE, title="复诊安排需要确认",
+            severity=PainSeverity.MEDIUM, severity_score=50, confidence=.8,
+            description="材料中未见明确复诊时间。",
+            evidence=[Evidence(document_id="fixture.jpg", page=1, text="出院记录")],
+            related_fields=["diagnoses[0].name"], recommended_action="复诊时向医生确认",
+            review_required=True,
+            detector=DetectorInfo(method=DetectorMethod.RULE, version="test", rule_id="TEST"),
+        )],
     )
 
 
@@ -181,6 +204,152 @@ def test_identical_regeneration_does_not_reuse_old_module_review(tmp_path):
     assert storage.get_medical_case_detail(
         medical_id, raw.case_id,
     )["module_states"]["pain"]["review_status"] == "REVIEW_REQUIRED"
+
+
+def test_field_pending_count_excludes_pain_and_care_review_flags(tmp_path):
+    storage, medical_id, raw = storage_fixture(tmp_path)
+    state = storage.get_effective_case_state(raw.case_id)
+    effective = ClaimCase.model_validate(state["effective"])
+    pain = analyze_pain_points(effective, [], [])
+    storage.save_medical_pain(raw.case_id, pain, raw, state["effective_fingerprint"], medical_id)
+    care = finalize_care_guide(
+        effective, build_fallback_draft(effective, pain, None, "肺炎"), None,
+        GenerationMethod.RULES_FALLBACK, [],
+    )
+    storage.save_medical_care(raw.case_id, care, raw, state["effective_fingerprint"], medical_id)
+    storage.save_field_review(medical_id, raw.case_id, FieldReviewRequest(
+        field_path="costs.total_amount", decision=FieldReviewDecision.CONFIRMED,
+    ))
+    detail = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert detail["field_review_summary"]["pending"] == 0
+    assert detail["field_review_summary"]["unresolved"] == 0
+    assert detail["pending_confirmation_count"] == 0
+    assert detail["medical_attention_count"] > 0
+
+
+def test_pain_review_overlay_edits_and_hides_without_overwriting_model_result(tmp_path):
+    storage, medical_id, raw = storage_fixture(tmp_path)
+    state = storage.get_effective_case_state(raw.case_id)
+    effective = ClaimCase.model_validate(state["effective"])
+    pain = pain_fixture(raw.case_id)
+    storage.save_medical_pain(raw.case_id, pain, raw, state["effective_fingerprint"], medical_id)
+    point = pain.pain_points[0]
+    storage.save_module_review(
+        medical_id, raw.case_id, "pain_report", ReviewDecision.APPROVED, "已逐条复核",
+        storage.module_review_content(raw.case_id, "pain"),
+        {"item_decisions": [{
+            "pain_point_id": point.pain_point_id, "decision": "EDIT",
+            "title": "人工修订标题", "description": "人工修订说明",
+            "recommended_action": "复诊时向医生确认",
+        }]},
+    )
+    detail = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert detail["pain_result"]["pain_points"][0]["title"] == point.title
+    assert detail["pain_effective_result"]["pain_points"][0]["title"] == "人工修订标题"
+    assert detail["pain_effective_result"]["pain_points"][0]["review_required"] is False
+    storage.save_module_review(
+        medical_id, raw.case_id, "pain_report", ReviewDecision.APPROVED, "隐藏该项",
+        storage.module_review_content(raw.case_id, "pain"),
+        {"item_decisions": [{"pain_point_id": point.pain_point_id, "decision": "HIDE"}]},
+    )
+    detail = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert all(item["pain_point_id"] != point.pain_point_id
+               for item in detail["pain_effective_result"]["pain_points"])
+
+
+def test_pain_regeneration_invalidates_item_overlay(tmp_path):
+    storage, medical_id, raw = storage_fixture(tmp_path)
+    state = storage.get_effective_case_state(raw.case_id)
+    effective = ClaimCase.model_validate(state["effective"])
+    pain = pain_fixture(raw.case_id)
+    storage.save_medical_pain(raw.case_id, pain, raw, state["effective_fingerprint"], medical_id)
+    point = pain.pain_points[0]
+    storage.save_module_review(
+        medical_id, raw.case_id, "pain_report", ReviewDecision.APPROVED, "隐藏该项",
+        storage.module_review_content(raw.case_id, "pain"),
+        {"item_decisions": [{"pain_point_id": point.pain_point_id, "decision": "HIDE"}]},
+    )
+    storage.save_medical_pain(raw.case_id, pain, raw, state["effective_fingerprint"], medical_id)
+    detail = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert detail["pain_item_decisions"] == []
+    assert detail["module_states"]["pain"]["review_status"] == "REVIEW_REQUIRED"
+
+
+def test_care_revision_allows_emotional_text_without_evidence_but_rejects_invalid_fact_reference():
+    case = case_fixture("CASE-CARE-REVISION")
+    pain = pain_fixture(case.case_id)
+    report = finalize_care_guide(
+        case, build_fallback_draft(case, pain, None, "肺炎"), None,
+        GenerationMethod.RULES_FALLBACK, [],
+    )
+    guide = report.guide.model_dump(mode="json")
+    guide["opening"]["evidence_fields"] = []
+    guide["psychological_support"]["evidence_fields"] = []
+    valid = MedicalModuleReviewRequest(
+        module=MedicalModule.CARE, decision="APPROVED",
+        care_revision={"guide": guide},
+    )
+    payload = _care_review_payload(
+        case.case_id, report.model_dump(mode="json"), case.model_dump(mode="json"), valid,
+    )
+    assert payload["validation"]["invalid_evidence"] == []
+    guide["diagnosis_explanation"]["evidence_fields"] = ["diagnoses[9].name"]
+    invalid = MedicalModuleReviewRequest(
+        module=MedicalModule.CARE, decision="APPROVED",
+        care_revision={"guide": guide},
+    )
+    try:
+        _care_review_payload(
+            case.case_id, report.model_dump(mode="json"), case.model_dump(mode="json"), invalid,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "引用不存在" in str(exc.detail)
+    else:
+        raise AssertionError("无效事实引用不应允许通过")
+
+
+def test_care_revision_overlay_preserves_original_and_drives_delivery_snapshot(tmp_path):
+    storage, medical_id, raw = storage_fixture(tmp_path)
+    state = storage.get_effective_case_state(raw.case_id)
+    effective = ClaimCase.model_validate(state["effective"])
+    pain = pain_fixture(raw.case_id)
+    storage.save_medical_pain(raw.case_id, pain, raw, state["effective_fingerprint"], medical_id)
+    care = finalize_care_guide(
+        effective, build_fallback_draft(effective, pain, None, "肺炎"), None,
+        GenerationMethod.RULES_FALLBACK, [],
+    )
+    storage.save_medical_care(raw.case_id, care, raw, state["effective_fingerprint"], medical_id)
+    guide = care.guide.model_dump(mode="json")
+    guide["opening"]["content"] = "这是医疗人员修订后的开场关怀。"
+    storage.save_module_review(
+        medical_id, raw.case_id, "care_guide", ReviewDecision.APPROVED, "已修订",
+        storage.module_review_content(raw.case_id, "care"),
+        {"care_revision": {"guide": guide}},
+    )
+    detail = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert detail["care_result"]["guide"]["opening"]["content"] != guide["opening"]["content"]
+    assert detail["care_effective_result"]["guide"]["opening"]["content"] == guide["opening"]["content"]
+    snapshot = storage.delivery_input_snapshot(raw.case_id)
+    assert snapshot["results"]["care_result"]["guide"]["opening"]["content"] == guide["opening"]["content"]
+
+
+def test_final_review_matrix_blocks_stale_and_unapproved_customer_visible_modules():
+    detail = {
+        "structured_result": {"case_id": "C1"},
+        "field_review_summary": {"pending": 0, "unresolved": 0},
+        "module_states": {
+            "pain": {"result_available": True, "generation_status": "GENERATED", "review_status": "APPROVED"},
+            "care": {"result_available": True, "generation_status": "STALE", "review_status": "APPROVED"},
+            "treatment_quality": {"result_available": True, "generation_status": "GENERATED", "review_status": "REVIEW_REQUIRED"},
+            "recommendation": {"result_available": False, "generation_status": "READY", "review_status": "NOT_REVIEWED"},
+        },
+    }
+    matrix = _medical_review_matrix(detail)
+    assert matrix["can_final_approve"] is False
+    assert "温度指引结果已过期" in matrix["blockers"]
+    assert "本次就医品质评价尚未通过医疗复核" in matrix["blockers"]
+    assert all("推荐" not in item for item in matrix["blockers"])
 
 
 def test_noncritical_cost_conflict_does_not_force_case_delivery_review():

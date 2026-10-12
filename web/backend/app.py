@@ -39,6 +39,7 @@ from medical_claims.care_engine import (
     diagnosis_names,
     finalize_care_guide,
     infer_disease_topic,
+    validate_care_guide,
 )
 from medical_claims.care_knowledge import match_knowledge_card
 from medical_claims.care_models import (
@@ -267,6 +268,8 @@ class MedicalAnalysisPrepareRequest(StrictModel):
 
 class MedicalModuleReviewRequest(MedicalReviewRequest):
     module: MedicalModule
+    item_decisions: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    care_revision: dict[str, Any] | None = None
 
 
 class ClaimCaseCreateRequest(StrictModel):
@@ -826,6 +829,7 @@ def medical_case_detail(case_id: str, identity: dict[str, Any] = Depends(current
         detail["review_gate"] = {"decision": "NOT_READY", "reasons": [str(exc)],
                                  "review_targets": [], "content_fingerprint": None}
     detail["final_gate"] = storage.medical_final_gate(detail).model_dump(mode="json")
+    detail["final_review_matrix"] = _medical_review_matrix(detail)
     return detail
 
 
@@ -986,6 +990,114 @@ def prepare_medical_analysis(
             "case": storage.get_medical_case_detail(identity["user_id"], case_id)}
 
 
+def _path_has_value(source: Any, path: str) -> bool:
+    current = source
+    for name, index in re.findall(r"([^.\[\]]+)(?:\[(\d+)\])?", path):
+        if not isinstance(current, dict) or name not in current:
+            return False
+        current = current[name]
+        if index:
+            if not isinstance(current, list) or int(index) >= len(current):
+                return False
+            current = current[int(index)]
+    if isinstance(current, dict) and "value" in current:
+        return current.get("normalized_value") is not None or current.get("value") is not None
+    return current is not None
+
+
+def _pain_review_payload(result: dict[str, Any], request: MedicalModuleReviewRequest) -> dict[str, Any]:
+    known = {item.get("pain_point_id") for item in (result.get("content", result) or {}).get("pain_points", [])}
+    decisions = []
+    seen = set()
+    for raw in request.item_decisions:
+        item_id = str(raw.get("pain_point_id") or "").strip()
+        decision = str(raw.get("decision") or "").upper()
+        if item_id not in known or item_id in seen:
+            raise HTTPException(status_code=422, detail="痛点条目已变化，请刷新后重新复核")
+        if decision not in {"CONFIRM", "HIDE", "EDIT"}:
+            raise HTTPException(status_code=422, detail="痛点复核操作无效")
+        item = {"pain_point_id": item_id, "decision": decision}
+        if decision == "EDIT":
+            for key, label_text in (("title", "标题"), ("description", "说明"),
+                                    ("recommended_action", "建议")):
+                value = str(raw.get(key) or "").strip()
+                if not value:
+                    raise HTTPException(status_code=422, detail=f"修改后展示的{label_text}不能为空")
+                item[key] = value[:2000]
+        decisions.append(item)
+        seen.add(item_id)
+    return {"item_decisions": decisions}
+
+
+def _care_review_payload(case_id: str, content: dict[str, Any], effective: dict[str, Any],
+                         request: MedicalModuleReviewRequest) -> dict[str, Any]:
+    report_data = content.get("content", content)
+    guide_data = (request.care_revision or {}).get("guide") or report_data.get("guide")
+    try:
+        guide = CareGuideDraft.model_validate(guide_data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="温度指引修订内容不完整，请检查各段文字") from exc
+    if guide.case_id != case_id:
+        raise HTTPException(status_code=422, detail="温度指引与当前案件不一致")
+    structured = ClaimCase.model_validate(effective)
+    serialized = structured.model_dump(mode="json")
+    invalid = []
+    for section_name in ("diagnosis_explanation", "treatment_review", "cost_explanation"):
+        section = getattr(guide, section_name)
+        if not section.evidence_fields:
+            invalid.append(f"{section.title}尚未选择病例依据")
+        invalid.extend(f"{section.title}引用不存在：{path}" for path in section.evidence_fields
+                       if not _path_has_value(serialized, path))
+    for section_name in ("opening", "psychological_support"):
+        section = getattr(guide, section_name)
+        invalid.extend(f"{section.title}引用不存在：{path}" for path in section.evidence_fields
+                       if not _path_has_value(serialized, path))
+    for action in [*guide.recovery_plan, *guide.follow_up_plan]:
+        invalid.extend(f"行动建议引用不存在：{path}" for path in action.evidence_fields
+                       if not _path_has_value(serialized, path))
+    card = match_knowledge_card(diagnosis_names(structured), None)
+    checks, _, _ = validate_care_guide(structured, guide, card)
+    blocked = [item.message for item in checks if item.status.value == "blocked"]
+    if request.decision == "APPROVED" and (invalid or blocked):
+        raise HTTPException(status_code=409, detail="；".join([*invalid, *blocked]))
+    return {"care_revision": {"guide": guide.model_dump(mode="json")},
+            "validation": {"invalid_evidence": invalid, "blocked_reasons": blocked}}
+
+
+def _medical_review_matrix(detail: dict[str, Any]) -> dict[str, Any]:
+    fields = detail.get("field_review_summary") or {}
+    modules = detail.get("module_states") or {}
+    rows = [{
+        "module": "structured", "label": "结构化关键字段", "tab": "structured",
+        "generation_status": "GENERATED" if detail.get("structured_result") else "NOT_GENERATED",
+        "review_status": "REVIEW_REQUIRED" if fields.get("pending") or fields.get("unresolved") else "APPROVED",
+        "required_for_delivery": False,
+    }]
+    labels = {"pain": "痛点分析", "care": "温度指引",
+              "treatment_quality": "本次就医品质评价", "recommendation": "推荐"}
+    for module in ("pain", "care", "treatment_quality", "recommendation"):
+        state = modules.get(module) or {}
+        available = bool(state.get("result_available"))
+        rows.append({
+            "module": module, "label": labels[module],
+            "tab": "quality" if module == "treatment_quality" else module,
+            "generation_status": state.get("generation_status", "NOT_GENERATED"),
+            "review_status": state.get("review_status", "NOT_REVIEWED"),
+            "required_for_delivery": module in {"pain", "care"} or available,
+        })
+    blockers = []
+    for row in rows:
+        if not row["required_for_delivery"]:
+            continue
+        if row["generation_status"] == "STALE":
+            blockers.append(f"{row['label']}结果已过期")
+        elif row["generation_status"] != "GENERATED":
+            blockers.append(f"{row['label']}尚未生成")
+        elif row["review_status"] != "APPROVED":
+            blockers.append(f"{row['label']}尚未通过医疗复核")
+    return {"modules": rows, "can_final_approve": not blockers, "blockers": blockers}
+
+
 @app.post("/api/medical/cases/{case_id}/module-reviews", status_code=201)
 def submit_medical_module_review(
     case_id: str,
@@ -994,7 +1106,7 @@ def submit_medical_module_review(
 ):
     require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
     if request.decision != "APPROVED" and not request.comment:
-        raise HTTPException(status_code=422, detail="退回或需进一步确认时必须填写复核意见")
+        raise HTTPException(status_code=422, detail="退回修改时必须填写复核意见")
     target = {
         MedicalModule.PAIN: ReviewTarget.PAIN_REPORT,
         MedicalModule.CARE: ReviewTarget.CARE_GUIDE,
@@ -1007,12 +1119,21 @@ def submit_medical_module_review(
         MedicalModule.TREATMENT_QUALITY: "CARE_REVIEW",
         MedicalModule.RECOMMENDATION: "RECOMMEND_REVIEW",
     }[request.module])
-    content = get_case_storage().module_review_content(case_id, request.module.value)
-    record = get_case_storage().save_module_review(
+    storage = get_case_storage()
+    content = storage.module_review_content(case_id, request.module.value)
+    detail = storage.get_medical_case_detail(identity["user_id"], case_id)
+    payload = {}
+    if request.module == MedicalModule.PAIN:
+        payload = _pain_review_payload(content, request)
+    elif request.module == MedicalModule.CARE:
+        payload = _care_review_payload(
+            case_id, content, detail["structured_effective_result"], request,
+        )
+    record = storage.save_module_review(
         identity["user_id"], case_id, target.value,
         {"APPROVED": ReviewDecision.APPROVED, "RETURNED": ReviewDecision.REJECTED,
          "NEEDS_CONFIRMATION": ReviewDecision.NEEDS_CONFIRMATION}[request.decision],
-        request.comment, content,
+        request.comment, content, payload,
     )
     return record.model_dump(mode="json")
 
@@ -1068,14 +1189,19 @@ def submit_medical_review(
     require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
     require_permission(identity, "DELIVERY_APPROVE" if request.decision == "APPROVED" else "DELIVERY_BLOCK")
     if request.decision != "APPROVED" and not request.comment:
-        raise HTTPException(status_code=422, detail="退回或标记进一步确认时必须填写复核意见")
+        raise HTTPException(status_code=422, detail="退回修改时必须填写复核意见")
     storage = get_case_storage()
     if request.decision == "APPROVED":
         detail = storage.get_medical_case_detail(identity["user_id"], case_id)
         final_gate = storage.medical_final_gate(detail)
         if final_gate.decision != "READY_FOR_FINAL_REVIEW":
             raise WorkflowConflict("最终发布门禁未通过：" + "；".join(final_gate.reasons))
+        matrix = _medical_review_matrix(detail)
+        if not matrix["can_final_approve"]:
+            raise HTTPException(status_code=409, detail="；".join(matrix["blockers"]))
     prepared = prepare_delivery_content(storage, case_id)
+    if request.decision == "APPROVED" and prepared["gate"].decision.value == "BLOCKED":
+        raise HTTPException(status_code=409, detail="安全门禁已阻断，不能批准发布")
     decision = {
         "APPROVED": ReviewDecision.APPROVED,
         "RETURNED": ReviewDecision.REJECTED,
@@ -1231,7 +1357,14 @@ def medical_send_delivery(
         raise WorkflowConflict("最终发布门禁未通过：" + "；".join(final_gate.reasons))
     if detail["review_status"] != "APPROVED":
         raise WorkflowConflict("请先完成案件级医疗发布审核")
+    matrix = _medical_review_matrix(detail)
+    if not matrix["can_final_approve"]:
+        raise WorkflowConflict("拒绝发送：" + "；".join(matrix["blockers"]))
     prepared = prepare_delivery_content(storage, case_id)
+    if prepared["gate"].decision.value == "BLOCKED":
+        raise WorkflowConflict("拒绝发送：安全门禁已阻断")
+    if storage.get_medical_case_detail(identity["user_id"], case_id)["review_status"] != "APPROVED":
+        raise WorkflowConflict("拒绝发送：最终医疗复核尚未批准")
     if request and request.content_fingerprint and request.content_fingerprint != prepared["content_fingerprint"]:
         raise WorkflowConflict("触达页面内容已过时，请重新准备")
     return storage.send_delivery(prepared)

@@ -26,6 +26,7 @@ class ReviewRequest(StrictModel):
     decision: ReviewDecision
     note: str = Field(default="", max_length=4000)
     content_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("reviewer")
     @classmethod

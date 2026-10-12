@@ -385,6 +385,11 @@ def test_medical_review_is_validated_and_bound_to_logged_in_reviewer(tmp_path, m
     assert medical.post(f"/api/medical/cases/{case_id}/review", json={
         "decision": "RETURNED", "comment": "",
     }).status_code == 422
+    for module in ("pain", "care"):
+        module_review = medical.post(f"/api/medical/cases/{case_id}/module-reviews", json={
+            "module": module, "decision": "APPROVED", "comment": "",
+        })
+        assert module_review.status_code == 201, module_review.text
     approved = medical.post(f"/api/medical/cases/{case_id}/review", json={
         "decision": "APPROVED", "comment": "结构化、痛点和指引已核对。",
     })
@@ -436,11 +441,12 @@ def test_medical_frontend_and_login_routing_are_present(tmp_path, monkeypatch):
     for required in (
         "/api/medical/dashboard", "/api/medical/cases", "结构化病例", "痛点分析",
         "温度指引", "本次就医品质评价", "就医推荐", "医疗复核", "批准发布",
-        "退回修改", "需进一步确认", "/api/auth/change-password",
+        "退回修改", "返回该模块", "/api/auth/change-password",
         "/field-reviews", "确认无误", "修改并确认", "无法确认", "原始材料页面",
     ):
         assert required in source
     assert "total_score=" not in source
+    assert 'data-decision="NEEDS_CONFIRMATION"' not in source
     assert "localStorage" not in source
     assert "MEDICAL:'/medical'" in Path("web/dist/login.js").read_text(encoding="utf-8")
 

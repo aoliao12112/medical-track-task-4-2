@@ -34,6 +34,9 @@ class ModuleReviewStatus(str, Enum):
     NOT_REVIEWED = "NOT_REVIEWED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     APPROVED = "APPROVED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
+    # Compatibility values remain readable for historical review records.
     REJECTED = "REJECTED"
     NEEDS_CONFIRMATION = "NEEDS_CONFIRMATION"
 
