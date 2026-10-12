@@ -393,6 +393,11 @@ class CaseStorage:
         return value[0] + "*" * (len(value) - 2) + value[-1]
 
     @staticmethod
+    def _mask_phone_last4(value):
+        digits = re.sub(r"\D", "", str(value or ""))
+        return f"****{digits[-4:]}" if len(digits) >= 4 else None
+
+    @staticmethod
     def _claim_material_status(workflow_status, ocr_payload, structured_payload):
         if workflow_status == "PROCESSING":
             return "processing"
@@ -2705,12 +2710,14 @@ class CaseStorage:
             params.append(status)
         sql = f"""
             SELECT t.*, c.claim_event_id, assignee.display_name AS assignee_name,
+                   customer.phone AS customer_phone,
                    f.comment AS feedback_comment, f.rating AS feedback_rating,
                    f.helpful AS feedback_helpful, f.request_contact
             FROM follow_up_tasks t
             JOIN cases c ON c.case_id=t.case_id
             JOIN case_participants cp ON cp.case_id=c.case_id
             LEFT JOIN users assignee ON assignee.user_id=t.assignee_user_id
+            LEFT JOIN users customer ON customer.user_id=c.customer_user_id
             LEFT JOIN feedback f ON f.feedback_id=t.feedback_id
             WHERE {' AND '.join(clauses)} ORDER BY
               CASE lower(t.priority) WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
@@ -2720,6 +2727,7 @@ class CaseStorage:
             results = []
             for row in db.execute(sql, params):
                 item = json.loads(row["record_json"])
+                request_contact = bool(row["request_contact"])
                 item.update({
                     "status": row["status"], "priority": str(row["priority"]).lower(),
                     "assignee": row["assignee_name"], "claim_event_id": row["claim_event_id"],
@@ -2728,7 +2736,9 @@ class CaseStorage:
                     "feedback_rating": row["feedback_rating"],
                     "feedback_helpful": bool(row["feedback_helpful"])
                     if row["feedback_helpful"] is not None else None,
-                    "request_contact": bool(row["request_contact"]),
+                    "request_contact": request_contact,
+                    "customer_phone_masked": self._mask_phone_last4(row["customer_phone"])
+                    if request_contact else None,
                 })
                 results.append(item)
             return results

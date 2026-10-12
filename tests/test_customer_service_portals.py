@@ -17,12 +17,13 @@ from web.backend.app import _auth_sessions, app
 PASSWORD = "safe-password-123"
 
 
-def _user(storage: CaseStorage, username: str, role: str) -> str:
+def _user(storage: CaseStorage, username: str, role: str, phone: str | None = None) -> str:
     return storage.create_user(
         username=username,
         password_hash=hash_password(PASSWORD),
         role_code=role,
         display_name=f"{username}-{role}",
+        phone=phone,
     )
 
 
@@ -112,7 +113,7 @@ def _setup(tmp_path, monkeypatch):
     _auth_sessions.clear()
     storage = CaseStorage()
     owner_id = _user(storage, "claim-owner", "CLAIM")
-    customer_a = _user(storage, "customer-a", "CUSTOMER")
+    customer_a = _user(storage, "customer-a", "CUSTOMER", phone="13800123456")
     customer_b = _user(storage, "customer-b", "CUSTOMER")
     service_a = _user(storage, "service-a", "SERVICE")
     service_b = _user(storage, "service-b", "SERVICE")
@@ -229,6 +230,9 @@ def test_service_consultation_routing_and_follow_up_are_scoped(tmp_path, monkeyp
 
     tasks = client.get("/api/service/follow-ups").json()
     assert len(tasks) == 1
+    assert tasks[0]["request_contact"] is True
+    assert tasks[0]["customer_phone_masked"] == "****3456"
+    assert "13800123456" not in json.dumps(tasks, ensure_ascii=False)
     task_id = tasks[0]["task_id"]
     claimed = client.post(f"/api/service/follow-ups/{task_id}/claim")
     assert claimed.status_code == 200, claimed.text
@@ -238,6 +242,25 @@ def test_service_consultation_routing_and_follow_up_are_scoped(tmp_path, monkeyp
     )
     assert resolved.status_code == 200, resolved.text
     assert resolved.json()["status"] == "RESOLVED"
+
+
+def test_service_follow_up_hides_phone_without_contact_consent(tmp_path, monkeypatch):
+    _, _, _, delivery_a, _ = _setup(tmp_path, monkeypatch)
+    customer = TestClient(app)
+    _login(customer, "customer-a")
+    response = customer.post(f"/api/customer/deliveries/{delivery_a}/feedback", json={
+        "target_type": "overall_service", "rating": 2, "helpful": False,
+        "category": "not_clear", "comment": "内容需要说明", "consent_to_contact": False,
+    })
+    assert response.status_code == 201, response.text
+
+    service = TestClient(app)
+    _login(service, "service-a")
+    tasks = service.get("/api/service/follow-ups").json()
+    assert len(tasks) == 1
+    assert tasks[0]["request_contact"] is False
+    assert tasks[0]["customer_phone_masked"] is None
+    assert "13800123456" not in json.dumps(tasks, ensure_ascii=False)
 
 
 def test_customer_and_service_pages_share_login_and_api_conventions(tmp_path, monkeypatch):
