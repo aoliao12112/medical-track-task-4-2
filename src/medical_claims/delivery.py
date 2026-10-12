@@ -72,7 +72,10 @@ def prepare_delivery_content(storage: CaseStorage, case_id: str):
     available = [entry["report"] for entry in recommendation["reports"]
                  if entry["status"] == "available" and entry["report"]["recommendations"]]
     unavailable = [entry["report"] for entry in recommendation["reports"] if entry["status"] != "available"]
-    content = {"care_guide": care.model_dump(mode="json"), "recommendation": available,
+    content = {"care_guide": care.model_dump(mode="json"),
+               "attention_items": storage.customer_attention_items(case_id),
+               "quality_observation": None,
+               "recommendation": available,
                "recommendation_unavailable_reason": UNAVAILABLE_RECOMMENDATION_NOTICE if unavailable else None,
                "unavailable_recommendation_reports": unavailable,
                "data_source": snapshot["data_source"], "mock_notice": "模拟用户触达 · mock_web_inbox"}

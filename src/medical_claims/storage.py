@@ -660,7 +660,8 @@ class CaseStorage:
         return fingerprint, pending, list(reviews_by_path.values()), effective
 
     @classmethod
-    def _medical_pending_count(cls, structured, pain, care, handled_paths=None):
+    def _medical_pending_count(cls, structured, pain, care, handled_paths=None,
+                               pain_item_reviews=None):
         handled_paths = set(handled_paths or [])
         count = sum(item["field_path"] not in handled_paths
                     for item in cls._field_review_candidates(structured))
@@ -668,7 +669,11 @@ class CaseStorage:
             flag.get("severity") in {"warning", "error"} and not flag.get("field_path")
             for flag in (structured or {}).get("quality_flags", [])
         )
-        count += sum(bool(item.get("review_required")) for item in (pain or {}).get("pain_points", []))
+        if pain_item_reviews is None:
+            count += sum(bool(item.get("review_required"))
+                         for item in (pain or {}).get("pain_points", []))
+        else:
+            count += cls._pain_review_summary(pain, pain_item_reviews)["pending"]
         if care and (care.get("review_required") or care.get("warnings")):
             count += 1
         return count
@@ -732,6 +737,36 @@ class CaseStorage:
         return cls._content_fingerprint({
             "module": module, "generation_id": generation_id, "content": content,
         })
+
+    @classmethod
+    def _latest_pain_item_reviews(cls, db, case_id, pain):
+        """Return one current decision per pain point, ignoring stale reports."""
+        if not pain:
+            return []
+        fingerprint = cls._module_content_fingerprint(db, case_id, "pain", pain)
+        rows = db.execute(
+            "SELECT record_json FROM reviews WHERE case_id=? AND content_fingerprint=? "
+            "AND target_type LIKE 'pain_item:%' ORDER BY rowid DESC",
+            (case_id, fingerprint),
+        ).fetchall()
+        latest = {}
+        for row in rows:
+            record = json.loads(row[0])
+            latest.setdefault(record["pain_point_id"], record)
+        point_order = [item.get("pain_point_id") for item in pain.get("pain_points", [])]
+        return [latest[point_id] for point_id in point_order if point_id in latest]
+
+    @staticmethod
+    def _pain_review_summary(pain, reviews):
+        point_ids = [item.get("pain_point_id") for item in (pain or {}).get("pain_points", [])]
+        decisions = {item.get("pain_point_id"): item.get("decision") for item in reviews}
+        return {
+            "total": len(point_ids),
+            "pending": sum(point_id not in decisions for point_id in point_ids),
+            "show": sum(value == "SHOW" for value in decisions.values()),
+            "edit": sum(value == "EDIT" for value in decisions.values()),
+            "hide": sum(value == "HIDE" for value in decisions.values()),
+        }
 
     def get_effective_case_state(self, case_id):
         """Return the raw extraction plus the field-review overlay used downstream."""
@@ -858,6 +893,116 @@ class CaseStorage:
                         if content is not None and generation_id else content)
             raise WorkflowConflict("未知复核模块")
 
+    def save_pain_item_review(self, user_id, case_id, pain_point_id, request):
+        """Save a customer-visibility decision bound to the current pain report."""
+        from .contracts import PainItemReviewRecordV1
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
+            if pain is None:
+                raise WorkflowConflict("痛点分析尚未生成")
+            structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+            _raw_fp, _pending, _field_reviews, effective = self._field_review_state(
+                db, case_id, structured,
+            )
+            generated_from = self._latest_module_fingerprint(db, case_id, "pain")
+            effective_fingerprint = self._structured_fingerprint(effective)
+            if generated_from and generated_from != effective_fingerprint:
+                raise WorkflowConflict("痛点分析已过期，请先重新生成")
+            point = next(
+                (item for item in pain.get("pain_points", [])
+                 if item.get("pain_point_id") == pain_point_id),
+                None,
+            )
+            if point is None:
+                raise WorkflowItemNotFound("痛点条目不存在或已变化")
+            reviewer = db.execute(
+                "SELECT display_name FROM users WHERE user_id=?", (user_id,),
+            ).fetchone()
+            if reviewer is None:
+                raise WorkflowConflict("当前复核用户不存在")
+            now = datetime.now(timezone.utc).isoformat()
+            content_fingerprint = self._module_content_fingerprint(db, case_id, "pain", pain)
+            record = PainItemReviewRecordV1(
+                **request.model_dump(), review_id=str(uuid4()), case_id=case_id,
+                pain_point_id=pain_point_id, content_fingerprint=content_fingerprint,
+                original_title=point.get("title") or "需要关注",
+                original_summary=point.get("description") or "",
+                original_suggestion=point.get("recommended_action") or "",
+                severity=point.get("severity") or "low",
+                reviewer_user_id=user_id, reviewer_name=reviewer["display_name"],
+                reviewed_at=now,
+            )
+            db.execute(
+                "INSERT INTO reviews(review_id, case_id, content_fingerprint, target_type, decision, "
+                "record_json, created_at, comment, reviewer_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record.review_id, case_id, content_fingerprint,
+                 f"pain_item:{pain_point_id}", record.decision.value, encode(record), now,
+                 record.note, user_id),
+            )
+            return record
+
+    def save_care_revision(self, user_id, case_id, request, revised_report):
+        """Persist an auditable before/after revision and make it the current Care result."""
+        from .contracts import CareRevisionRecordV1
+        from .care_models import CareGuideReport
+        if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
+            raise CaseNotFound(case_id)
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            current = json.loads(row["care_result_json"]) if row["care_result_json"] else None
+            if current is None:
+                raise WorkflowConflict("温度指引尚未生成")
+            current_fingerprint = self._module_content_fingerprint(db, case_id, "care", current)
+            if request.base_content_fingerprint != current_fingerprint:
+                raise WorkflowConflict("温度指引已更新，请重新打开后再修订")
+            if revised_report.case_id != case_id:
+                raise WorkflowConflict("修订稿 case_id 与当前案件不一致")
+            structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+            _raw_fp, _pending, _field_reviews, effective = self._field_review_state(
+                db, case_id, structured,
+            )
+            effective_fingerprint = self._structured_fingerprint(effective)
+            reviewer = db.execute(
+                "SELECT display_name FROM users WHERE user_id=?", (user_id,),
+            ).fetchone()
+            if reviewer is None:
+                raise WorkflowConflict("当前复核用户不存在")
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute(
+                "UPDATE case_results SET care_result_json=?, updated_at=? WHERE case_id=?",
+                (encode(revised_report), now, case_id),
+            )
+            self._record_module_state(
+                db, case_id, "care", effective_fingerprint, user_id=user_id,
+            )
+            revised_payload = CareGuideReport.model_validate(revised_report).model_dump(mode="json")
+            revised_fingerprint = self._module_content_fingerprint(
+                db, case_id, "care", revised_payload,
+            )
+            record = CareRevisionRecordV1(
+                revision_id=str(uuid4()), case_id=case_id,
+                reviewer=reviewer["display_name"], reviewer_user_id=user_id,
+                note=request.note.strip(),
+                base_content_fingerprint=request.base_content_fingerprint,
+                content_fingerprint=revised_fingerprint,
+                original_report=CareGuideReport.model_validate(current),
+                revised_report=CareGuideReport.model_validate(revised_payload),
+                created_at=now,
+            )
+            db.execute(
+                "INSERT INTO reviews(review_id, case_id, content_fingerprint, target_type, decision, "
+                "record_json, created_at, comment, reviewer_user_id) VALUES (?, ?, ?, 'care_revision', "
+                "'CORRECTED', ?, ?, ?, ?)",
+                (record.revision_id, case_id, revised_fingerprint, encode(record), now,
+                 record.note, user_id),
+            )
+            return record
+
     def save_module_review(self, user_id, case_id, target_type, decision, note, content):
         """Persist a review for one immutable module result, independent of delivery review."""
         from .review_models import ReviewRecord, ReviewRequest, ReviewTarget
@@ -871,6 +1016,29 @@ class CaseStorage:
             raise WorkflowConflict("该模块尚无可复核结果")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            row = self._row(db, case_id)
+            structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
+            _raw_fp, _pending, _field_reviews, effective = self._field_review_state(
+                db, case_id, structured,
+            )
+            module = {
+                "pain_report": "pain", "care_guide": "care",
+                "treatment_quality": "treatment_quality", "recommendation": "recommendation",
+            }[target.value]
+            generated_from = self._latest_module_fingerprint(db, case_id, module)
+            if generated_from and generated_from != self._structured_fingerprint(effective):
+                raise WorkflowConflict("该模块已过期，请重新生成后再复核")
+            if decision.value == "APPROVED" and module == "pain":
+                pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
+                item_reviews = self._latest_pain_item_reviews(db, case_id, pain)
+                if self._pain_review_summary(pain, item_reviews)["pending"]:
+                    raise WorkflowConflict("请先完成所有痛点条目的 SHOW / EDIT / HIDE 决策")
+            if decision.value == "APPROVED" and module == "care":
+                care = json.loads(row["care_result_json"]) if row["care_result_json"] else None
+                blocked = [item for item in (care or {}).get("safety_checks", [])
+                           if item.get("status") == "blocked"]
+                if blocked:
+                    raise WorkflowConflict("温度指引存在阻断级安全检查，不能通过")
             reviewer = db.execute("SELECT display_name FROM users WHERE user_id=?", (user_id,)).fetchone()
             if reviewer is None:
                 raise WorkflowConflict("当前复核用户不存在")
@@ -970,7 +1138,7 @@ class CaseStorage:
                 "cp.assigned_at AS care_entered_at, customer.display_name AS customer_display_name, "
                 "cr.structured_result_json, cr.pain_result_json, cr.care_result_json, "
                 "(SELECT decision FROM reviews rv WHERE rv.case_id=c.case_id "
-                "AND rv.target_type NOT LIKE 'structured_field:%' ORDER BY rv.rowid DESC LIMIT 1) "
+                "AND rv.target_type='combined_delivery' ORDER BY rv.rowid DESC LIMIT 1) "
                 "AS latest_review_decision FROM cases c "
                 "JOIN case_participants cp ON cp.case_id=c.case_id "
                 "JOIN case_results cr ON cr.case_id=c.case_id "
@@ -987,6 +1155,7 @@ class CaseStorage:
                 care = json.loads(row["care_result_json"]) if row["care_result_json"] else None
                 fingerprint = self._structured_fingerprint(structured)
                 handled = self._latest_field_reviews(db, row["case_id"], fingerprint) if fingerprint else {}
+                pain_item_reviews = self._latest_pain_item_reviews(db, row["case_id"], pain)
                 review_status = self._medical_review_status(row["latest_review_decision"], row["care_status"])
                 if pending_only and review_status == "APPROVED":
                     continue
@@ -998,7 +1167,7 @@ class CaseStorage:
                     "analysis_ready": {"structured": structured is not None, "pain": pain is not None,
                                        "care": care is not None},
                     "pending_confirmation_count": self._medical_pending_count(
-                        structured, pain, care, handled.keys()),
+                        structured, pain, care, handled.keys(), pain_item_reviews),
                     "care_entered_at": row["care_entered_at"], "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                 })
@@ -1031,8 +1200,10 @@ class CaseStorage:
                 raise CaseNotFound(case_id)
             raw_structured = json.loads(row["structured_result_json"]) if row["structured_result_json"] else None
             structured = self._without_bbox(raw_structured) if raw_structured else None
-            pain = self._without_bbox(json.loads(row["pain_result_json"])) if row["pain_result_json"] else None
-            care = self._without_bbox(json.loads(row["care_result_json"])) if row["care_result_json"] else None
+            raw_pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
+            raw_care = json.loads(row["care_result_json"]) if row["care_result_json"] else None
+            pain = self._without_bbox(raw_pain) if raw_pain else None
+            care = self._without_bbox(raw_care) if raw_care else None
             raw_ocr = json.loads(row["ocr_result_json"]) if row["ocr_result_json"] else []
             ocr = [{
                 "document_id": item.get("document_id"), "page": item.get("page"),
@@ -1046,7 +1217,9 @@ class CaseStorage:
             } for item in raw_ocr]
             reviews = [json.loads(item[0]) for item in db.execute(
                 "SELECT record_json FROM reviews WHERE case_id=? "
-                "AND target_type NOT LIKE 'structured_field:%' ORDER BY rowid DESC", (case_id,)
+                "AND target_type NOT LIKE 'structured_field:%' "
+                "AND target_type NOT LIKE 'pain_item:%' AND target_type<>'care_revision' "
+                "ORDER BY rowid DESC", (case_id,)
             )]
             structured_fingerprint, pending_fields, field_reviews, effective_structured = \
                 self._field_review_state(db, case_id, raw_structured)
@@ -1082,9 +1255,22 @@ class CaseStorage:
                 historical_profiles.append(profile)
             recommendation = self.load_recommendation_report(case_id)
             module_states = self._module_states(
-                db, case_id, effective_structured, pain, care, observations, recommendation,
+                db, case_id, effective_structured, raw_pain, raw_care, observations, recommendation,
             )
-            latest_decision = reviews[0].get("decision") if reviews else None
+            pain_item_reviews = self._latest_pain_item_reviews(db, case_id, raw_pain)
+            pain_review_summary = self._pain_review_summary(raw_pain, pain_item_reviews)
+            care_revisions = [json.loads(item[0]) for item in db.execute(
+                "SELECT record_json FROM reviews WHERE case_id=? AND target_type='care_revision' "
+                "ORDER BY rowid DESC", (case_id,),
+            )]
+            latest_delivery_review = next(
+                (item for item in reviews if item.get("target_type") == "combined_delivery"), None,
+            )
+            latest_decision = latest_delivery_review.get("decision") if latest_delivery_review else None
+            medical_contract_enforced = bool(db.execute(
+                "SELECT 1 FROM system_logs WHERE case_id=? AND action='MEDICAL_MODULE_GENERATED' "
+                "LIMIT 1", (case_id,),
+            ).fetchone())
             hospitalization = (effective_structured or {}).get("hospitalization") or {}
             return {
                 "case_id": row["case_id"], "claim_event_id": row["claim_event_id"],
@@ -1098,7 +1284,8 @@ class CaseStorage:
                 "discharge_date": (hospitalization.get("discharge_date") or {}).get("value"),
                 "created_at": row["created_at"], "updated_at": row["updated_at"],
                 "pending_confirmation_count": self._medical_pending_count(
-                    structured, pain, care, {item["field_path"] for item in field_reviews}),
+                    structured, pain, care, {item["field_path"] for item in field_reviews},
+                    pain_item_reviews),
                 "ocr_documents": ocr,
                 # Compatibility alias contains the same sanitized view and never
                 # exposes private filenames, filesystem paths, or OCR boxes.
@@ -1114,6 +1301,9 @@ class CaseStorage:
                     "corrected": sum(item.get("decision") == "CORRECTED" for item in field_reviews),
                     "unresolved": sum(item.get("decision") == "UNRESOLVED" for item in field_reviews),
                 },
+                "pain_item_reviews": self._without_bbox(pain_item_reviews),
+                "pain_review_summary": pain_review_summary,
+                "care_revisions": self._without_bbox(care_revisions),
                 "care_result": care, "quality": {
                     "case_observations": observations,
                     "historical_profiles": historical_profiles,
@@ -1121,7 +1311,73 @@ class CaseStorage:
                 },
                 "recommendation": recommendation, "reviews": reviews,
                 "module_states": module_states,
+                "medical_contract_enforced": medical_contract_enforced,
             }
+
+    @classmethod
+    def medical_final_gate(cls, detail):
+        """Evaluate the frozen MedicalReviewV1 publication matrix."""
+        from .contracts import MedicalFinalGateV1
+        if not detail.get("medical_contract_enforced"):
+            legacy_matrix = {
+                "case_id": detail.get("case_id"), "mode": "legacy-grandfathered",
+                "structured_fingerprint": detail.get("structured_fingerprint"),
+            }
+            return MedicalFinalGateV1(
+                decision="READY_FOR_FINAL_REVIEW",
+                reasons=["历史案件沿用原发布安全检查；重新生成任一医疗模块后将启用 MedicalReviewV1"],
+                required_modules=[], approved_modules=[],
+                content_fingerprint=cls._content_fingerprint(legacy_matrix),
+            )
+        reasons = []
+        blocked = False
+        if not detail.get("compliance_ready"):
+            reasons.append("案件授权或脱敏状态未通过")
+            blocked = True
+        field_summary = detail.get("field_review_summary") or {}
+        if field_summary.get("pending"):
+            reasons.append(f"仍有 {field_summary['pending']} 个结构化字段待确认")
+        if field_summary.get("unresolved"):
+            reasons.append(f"仍有 {field_summary['unresolved']} 个结构化字段无法确认")
+        pain_summary = detail.get("pain_review_summary") or {}
+        if pain_summary.get("pending"):
+            reasons.append(f"仍有 {pain_summary['pending']} 条痛点未完成 SHOW / EDIT / HIDE 决策")
+        states = detail.get("module_states") or {}
+        required = ["pain", "care"]
+        for optional in ("treatment_quality", "recommendation"):
+            if (states.get(optional) or {}).get("result_available"):
+                required.append(optional)
+        approved = []
+        for module in required:
+            state = states.get(module) or {}
+            generation = state.get("generation_status")
+            review = state.get("review_status")
+            if generation != "GENERATED":
+                reasons.append(f"{module} 模块不是当前可发布版本：{generation or 'NOT_GENERATED'}")
+            elif review != "APPROVED":
+                reasons.append(f"{module} 模块尚未审核通过：{review or 'NOT_REVIEWED'}")
+            else:
+                approved.append(module)
+        blocked_checks = [
+            item for item in (detail.get("care_result") or {}).get("safety_checks", [])
+            if item.get("status") == "blocked"
+        ]
+        if blocked_checks:
+            blocked = True
+            reasons.extend("护理安全检查阻断：" + (item.get("message") or item.get("code") or "未知")
+                           for item in blocked_checks)
+        matrix = {
+            "case_id": detail.get("case_id"), "compliance_ready": detail.get("compliance_ready"),
+            "field_review_summary": field_summary, "pain_review_summary": pain_summary,
+            "required_modules": required,
+            "module_states": {name: states.get(name) for name in required},
+        }
+        return MedicalFinalGateV1(
+            decision="BLOCKED" if blocked else "NOT_READY" if reasons else "READY_FOR_FINAL_REVIEW",
+            reasons=list(dict.fromkeys(reasons)) or ["字段、痛点、护理和当前展示模块已全部复核通过"],
+            required_modules=required, approved_modules=approved,
+            content_fingerprint=cls._content_fingerprint(matrix),
+        )
 
     def save_field_review(self, user_id, case_id, request):
         """Persist a field decision without overwriting the model extraction."""
@@ -1778,7 +2034,8 @@ class CaseStorage:
                     "already_delivered": bool(delivered),
                     **authorization}
 
-    def save_review(self, prepared, request, reviewer_user_id=None):
+    def save_review(self, prepared, request, reviewer_user_id=None,
+                    allow_low_risk_combined=False):
         from .delivery_gate import GateDecision
         from .review_models import ReviewRecord
         with self._connect() as db:
@@ -1786,8 +2043,12 @@ class CaseStorage:
             self._verify_delivery_snapshot(db, prepared)
             if request.content_fingerprint != prepared["content_fingerprint"]:
                 raise WorkflowConflict("审核页面内容已过时，请重新准备并核对当前内容")
+            if prepared["gate"].decision == GateDecision.BLOCKED:
+                raise WorkflowConflict("BLOCKED 内容不能由批准绕过")
             if prepared["gate"].decision != GateDecision.REVIEW_REQUIRED:
-                raise WorkflowConflict("仅 REVIEW_REQUIRED 内容可提交审核；BLOCKED 不能由批准绕过，低风险无需批准")
+                if not (allow_low_risk_combined
+                        and request.target_type.value == "combined_delivery"):
+                    raise WorkflowConflict("低风险内容无需人工批准")
             if self._row(db, prepared["case_id"])["status"] == "PROCESSING":
                 raise WorkflowConflict("案件正在处理，不能审核旧内容")
             if db.execute("SELECT 1 FROM deliveries WHERE case_id=? AND content_fingerprint=?",
@@ -1866,6 +2127,28 @@ class CaseStorage:
         with self._connect() as db:
             self._row(db, case_id)
             return [json.loads(row[0]) for row in db.execute("SELECT record_json FROM deliveries WHERE case_id=? ORDER BY rowid DESC", (case_id,))]
+
+    def customer_attention_items(self, case_id):
+        """Build customer-safe attention items only from current medical decisions."""
+        with self._connect() as db:
+            row = self._row(db, case_id)
+            pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
+            reviews = self._latest_pain_item_reviews(db, case_id, pain)
+            review_by_id = {item["pain_point_id"]: item for item in reviews}
+            output = []
+            for point in (pain or {}).get("pain_points", []):
+                decision = review_by_id.get(point.get("pain_point_id"))
+                if not decision or decision.get("decision") == "HIDE":
+                    continue
+                output.append({
+                    "pain_point_id": point["pain_point_id"],
+                    "title": decision.get("title") or point.get("title") or "需要关注",
+                    "summary": decision.get("summary") or point.get("description") or "请结合本次就诊材料与医生确认。",
+                    "suggestion": decision.get("suggestion") or point.get("recommended_action")
+                    or "请在下次就诊时向医生确认。",
+                    "severity": point.get("severity") or "low",
+                })
+            return output
 
     def _delivery_row(self, db, delivery_id):
         row = db.execute("SELECT record_json FROM deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
@@ -2514,19 +2797,25 @@ class CaseStorage:
 
     @staticmethod
     def _customer_delivery_payload(delivery):
+        from .contracts import CustomerDeliveryV1
         content = delivery.get("content") or {}
         recommendations = CaseStorage._customer_recommendation_payload(content.get("recommendation"))
-        return {
+        payload = {
+            "schema_version": "customer-delivery-v1",
             "delivery_id": delivery.get("delivery_id"),
+            "case_id": delivery.get("case_id"),
             "created_at": delivery.get("created_at"),
             "status": delivery.get("status"),
             "recommendation_included": bool(recommendations),
             "content": {
                 "care_guide": CaseStorage._customer_care_payload(content.get("care_guide")),
+                "attention_items": content.get("attention_items") or [],
+                "quality_observation": content.get("quality_observation"),
                 "recommendation": recommendations,
                 "recommendation_unavailable_reason": content.get("recommendation_unavailable_reason"),
             },
         }
+        return CustomerDeliveryV1.model_validate(payload).model_dump(mode="json")
 
     def get_customer_case_detail(self, user_id, case_id):
         if not self.user_can_access_case(user_id, case_id, "OWN_CASE_VIEW"):

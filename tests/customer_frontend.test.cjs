@@ -34,6 +34,7 @@ const delivery = {
       follow_up_plan: [{ action: "按期复查", timing: "遵医嘱", reason: "确认恢复情况" }],
       red_flags: [], limitations: ["本指引不能替代医生诊疗。"],
     } },
+    attention_items: [{ pain_point_id: "pain-1", title: "用药信息需确认", summary: "材料未记录完整用法。", suggestion: "复诊时请医生核对。", severity: "medium" }],
     recommendation: [{ recommendations: [{
       item_type: "HOSPITAL", entity_name: "测试医院", city: "上海", department: "康复医学科",
       reasons: [{ title: "专科匹配", explanation: "公开资料显示设有相关专科。" }],
@@ -99,6 +100,7 @@ async function flush() {
     assert.match(html, new RegExp(heading));
   }
   assert.match(html, /测试医院/);
+  assert.match(html, /用药信息需确认/);
   assert.doesNotMatch(html, /entity_id|HOSP-SECRET|source_ids|evidence_fields|fingerprint/);
   assert.ok(requests.some((item) => item.path === "/api/customer/cases/CASE-1"));
   console.log(JSON.stringify({ checks: 12, scope: "CUSTOMER result information architecture and API wiring" }));

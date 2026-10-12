@@ -122,6 +122,10 @@ from medical_claims.review_models import (
     ReviewRequest,
     ReviewTarget,
 )
+from medical_claims.contracts import (
+    CareRevisionRequestV1,
+    PainItemReviewRequestV1,
+)
 from medical_claims.medical_orchestration import MedicalModule, eligibility, primary_disease
 from medical_claims.feedback_models import (
     FeedbackCategory, FeedbackRequest, FollowUpPriority, ResolveFollowUpRequest,
@@ -821,6 +825,7 @@ def medical_case_detail(case_id: str, identity: dict[str, Any] = Depends(current
     except WorkflowConflict as exc:
         detail["review_gate"] = {"decision": "NOT_READY", "reasons": [str(exc)],
                                  "review_targets": [], "content_fingerprint": None}
+    detail["final_gate"] = storage.medical_final_gate(detail).model_dump(mode="json")
     return detail
 
 
@@ -1012,6 +1017,48 @@ def submit_medical_module_review(
     return record.model_dump(mode="json")
 
 
+@app.post("/api/medical/cases/{case_id}/pain-points/{pain_point_id}/review", status_code=201)
+def submit_medical_pain_item_review(
+    case_id: str,
+    pain_point_id: str,
+    request: PainItemReviewRequestV1,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "PAIN_REVIEW")
+    record = get_case_storage().save_pain_item_review(
+        identity["user_id"], case_id, pain_point_id, request,
+    )
+    return record.model_dump(mode="json")
+
+
+@app.put("/api/medical/cases/{case_id}/care/revision", status_code=200)
+def revise_medical_care_guide(
+    case_id: str,
+    request: CareRevisionRequestV1,
+    identity: dict[str, Any] = Depends(current_medical_user),
+):
+    require_case_permission(identity, case_id, "CARE_REVIEW")
+    storage = get_case_storage()
+    state = storage.get_effective_case_state(case_id)
+    if not state["effective"]:
+        raise WorkflowConflict("结构化病例尚未生成")
+    detail = storage.get_medical_case_detail(identity["user_id"], case_id)
+    if not detail["care_result"]:
+        raise WorkflowConflict("温度指引尚未生成")
+    if request.guide.case_id != case_id:
+        raise WorkflowConflict("修订稿 case_id 与当前案件不一致")
+    case = ClaimCase.model_validate(state["effective"])
+    original = CareGuideReport.model_validate(detail["care_result"])
+    card = match_knowledge_card(diagnosis_names(case), None)
+    revised = finalize_care_guide(
+        case, request.guide, card, original.generation_method, [],
+    )
+    record = storage.save_care_revision(
+        identity["user_id"], case_id, request, revised,
+    )
+    return record.model_dump(mode="json")
+
+
 @app.post("/api/medical/cases/{case_id}/review", status_code=201)
 def submit_medical_review(
     case_id: str,
@@ -1023,6 +1070,11 @@ def submit_medical_review(
     if request.decision != "APPROVED" and not request.comment:
         raise HTTPException(status_code=422, detail="退回或标记进一步确认时必须填写复核意见")
     storage = get_case_storage()
+    if request.decision == "APPROVED":
+        detail = storage.get_medical_case_detail(identity["user_id"], case_id)
+        final_gate = storage.medical_final_gate(detail)
+        if final_gate.decision != "READY_FOR_FINAL_REVIEW":
+            raise WorkflowConflict("最终发布门禁未通过：" + "；".join(final_gate.reasons))
     prepared = prepare_delivery_content(storage, case_id)
     decision = {
         "APPROVED": ReviewDecision.APPROVED,
@@ -1039,6 +1091,7 @@ def submit_medical_review(
             content_fingerprint=prepared["content_fingerprint"],
         ),
         reviewer_user_id=identity["user_id"],
+        allow_low_risk_combined=True,
     )
     return {"review": record.model_dump(mode="json"),
             "review_status": storage.get_medical_case_detail(identity["user_id"], case_id)["review_status"]}
@@ -1161,7 +1214,7 @@ def medical_review_delivery(
         reviewer=identity["display_name"], decision=request.decision,
         target_type=request.target_type, note=request.note,
         content_fingerprint=request.content_fingerprint,
-    ))
+    ), reviewer_user_id=identity["user_id"], allow_low_risk_combined=True)
 
 
 @app.post("/api/medical/cases/{case_id}/delivery/send")
@@ -1172,6 +1225,12 @@ def medical_send_delivery(
 ):
     require_case_permission(identity, case_id, "DELIVERY_APPROVE")
     storage = get_case_storage()
+    detail = storage.get_medical_case_detail(identity["user_id"], case_id)
+    final_gate = storage.medical_final_gate(detail)
+    if final_gate.decision != "READY_FOR_FINAL_REVIEW":
+        raise WorkflowConflict("最终发布门禁未通过：" + "；".join(final_gate.reasons))
+    if detail["review_status"] != "APPROVED":
+        raise WorkflowConflict("请先完成案件级医疗发布审核")
     prepared = prepare_delivery_content(storage, case_id)
     if request and request.content_fingerprint and request.content_fingerprint != prepared["content_fingerprint"]:
         raise WorkflowConflict("触达页面内容已过时，请重新准备")

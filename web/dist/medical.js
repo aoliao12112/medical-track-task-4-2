@@ -8,6 +8,7 @@
   let profileMode = "view";
   let currentCaseData = null;
   let fieldReviewContext = null;
+  let painReviewContext = null;
 
   const labels = {
     ACTIVE: "启用", CARE_TRIGGERED: "新进入医护关怀", PROCESSING: "处理中",
@@ -25,7 +26,9 @@
     extracted: "已提取", derived: "推导", review_required: "待确认",
     conflict: "存在冲突", not_present_in_document: "未见记录", not_applicable: "不适用",
     OBSERVED: "已有观察", DATA_UNAVAILABLE: "数据缺失", AVAILABLE: "可查看", UNAVAILABLE: "未保留"
-    ,CONFIRMED: "人工已确认", CORRECTED: "人工已修正", UNRESOLVED: "暂无法确认"
+    ,CONFIRMED: "人工已确认", CORRECTED: "人工已修正", UNRESOLVED: "暂无法确认",
+    SHOW: "向客户展示", EDIT: "修订后展示", HIDE: "不向客户展示",
+    READY_FOR_FINAL_REVIEW: "可进行最终审核", NOT_READY: "尚未满足发布条件"
   };
   function esc(value) { return String(value == null ? "—" : value).replace(/[&<>'"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[c]); }
   function label(value) { return labels[value] || (value == null || value === "" ? "—" : String(value)); }
@@ -104,6 +107,18 @@
     document.querySelectorAll(".module-generate").forEach(button=>button.onclick=()=>prepareModules(data,[button.dataset.module]));
     document.querySelectorAll(".module-review-action").forEach(button=>button.onclick=async()=>{const module=button.dataset.module;const note=document.querySelector(`.module-review-note[data-module="${module}"]`)?.value||"";button.disabled=true;try{await api(`/api/medical/cases/${encodeURIComponent(data.case_id)}/module-reviews`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({module,decision:button.dataset.decision,comment:note})});toast("模块复核结果已保存");await openCase(data.case_id,activeTab);}catch(error){toast(error.message);button.disabled=false;}});
   }
+  function openPainReview(data,button){
+    const point=(data.pain_result&&data.pain_result.pain_points||[]).find(item=>item.pain_point_id===button.dataset.id);if(!point)return;
+    const decision=button.dataset.decision;painReviewContext={caseId:data.case_id,painPointId:point.pain_point_id,decision};
+    document.getElementById("painReviewTitle").textContent=decision==="SHOW"?"确认向客户展示":decision==="EDIT"?"修订后向客户展示":"确认不向客户展示";
+    document.getElementById("painReviewModel").textContent=point.title+"："+point.description;
+    document.getElementById("painEditFields").classList.toggle("hidden",decision!=="EDIT");
+    document.getElementById("painReviewItemTitle").value=point.title||"";document.getElementById("painReviewSummary").value=point.description||"";document.getElementById("painReviewSuggestion").value=point.recommended_action||"";document.getElementById("painReviewNote").value="";document.getElementById("painReviewError").textContent="";document.getElementById("painReviewDialog").classList.remove("hidden");
+  }
+  function bindMedicalEdits(data){
+    document.querySelectorAll(".pain-item-action").forEach(button=>button.onclick=()=>openPainReview(data,button));
+    const saveCare=document.getElementById("saveCareRevision");if(saveCare)saveCare.onclick=async()=>{saveCare.disabled=true;try{let guide;try{guide=JSON.parse(document.getElementById("careRevisionJson").value);}catch(_error){throw new Error("修订内容不是有效 JSON");}const fingerprint=((data.module_states||{}).care||{}).content_fingerprint;if(!fingerprint)throw new Error("当前温度指引缺少版本指纹");await api(`/api/medical/cases/${encodeURIComponent(data.case_id)}/care/revision`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({base_content_fingerprint:fingerprint,guide,note:document.getElementById("careRevisionNote").value})});toast("修订稿已保存，安全检查已重新计算");await openCase(data.case_id,"care");}catch(error){toast(error.message);saveCare.disabled=false;}};
+  }
   function valueOf(field){if(!field||typeof field!=="object")return field??"—";return field.normalized_value??field.value??"—";}
   function fieldReviewFor(data,path){return (data.field_reviews||[]).find(item=>item.field_path===path);}
   function evidenceOf(field,path){const evidence=(field&&field.evidence)||[];if(!evidence.length)return "";return `<button class="link-btn source-action" data-path="${esc(path)}">查看来源</button>`;}
@@ -133,9 +148,10 @@
   }
   function renderPain(data){
     const p=data.pain_result;if(!p)return '<div class="empty">痛点分析尚未生成</div>';
-    return `${modulePanel("pain",data)}<div class="summary-grid"><div class="summary-box"><h3>临床痛点</h3><strong>${p.summary.clinical}</strong></div><div class="summary-box"><h3>费用痛点</h3><strong>${p.summary.cost}</strong></div><div class="summary-box"><h3>就医体验痛点</h3><strong>${p.summary.experience}</strong></div></div>
-      ${entityList("分析结果",p.pain_points,i=>`<article class="medical-item"><div class="section-title"><strong>${esc(i.title)}</strong><span>${tag(i.dimension)} ${tag(i.severity)}</span></div><p>${esc(i.description)}</p><p><strong>建议：</strong>${esc(i.recommended_action)}</p><small class="muted">可信度：${Math.round((i.confidence||0)*100)}% · ${i.review_required?"待医疗人员确认":"无需额外确认"}</small>
-      ${i.evidence&&i.evidence.length?`<details class="evidence-details"><summary>查看证据</summary>${i.evidence.map(e=>`<p>${esc(e.text)} <small>${esc(e.document_id)} · 第 ${esc(e.page||"—")} 页</small></p>`).join("")}</details>`:""}</article>`)}`;
+    const byId=Object.fromEntries((data.pain_item_reviews||[]).map(item=>[item.pain_point_id,item]));const summary=data.pain_review_summary||{};
+    return `${modulePanel("pain",data)}<div class="notice ${summary.pending?"warning":""}">逐条决策：${summary.total||0} 条，待处理 ${summary.pending||0} 条。只有 SHOW 和 EDIT 条目可进入客户“需要关注”。</div><div class="summary-grid"><div class="summary-box"><h3>临床痛点</h3><strong>${p.summary.clinical}</strong></div><div class="summary-box"><h3>费用痛点</h3><strong>${p.summary.cost}</strong></div><div class="summary-box"><h3>就医体验痛点</h3><strong>${p.summary.experience}</strong></div></div>
+      ${entityList("分析结果",p.pain_points,i=>{const review=byId[i.pain_point_id];return `<article class="medical-item"><div class="section-title"><strong>${esc(i.title)}</strong><span>${tag(i.dimension)} ${tag(i.severity)} ${review?tag(review.decision):tag("PENDING")}</span></div><p>${esc(i.description)}</p><p><strong>建议：</strong>${esc(i.recommended_action)}</p>${review&&review.decision==="EDIT"?`<div class="notice"><strong>修订后客户内容</strong><p>${esc(review.title||i.title)}：${esc(review.summary||i.description)}</p><p>${esc(review.suggestion||i.recommended_action)}</p></div>`:""}<small class="muted">可信度：${Math.round((i.confidence||0)*100)}%</small>
+      ${i.evidence&&i.evidence.length?`<details class="evidence-details"><summary>查看证据</summary>${i.evidence.map(e=>`<p>${esc(e.text)} <small>${esc(e.document_id)} · 第 ${esc(e.page||"—")} 页</small></p>`).join("")}</details>`:""}<div class="field-actions"><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="SHOW">展示</button><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="EDIT">修订后展示</button><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="HIDE">隐藏</button></div></article>`;})}`;
   }
   function careSection(title,section){return `<article class="medical-item"><h3>${esc(title)}</h3><p>${esc(section&&section.content||"暂无内容")}</p></article>`;}
   function renderCare(data){
@@ -145,7 +161,7 @@
       ${entityList("康复建议",g.recovery_plan,i=>`<article class="medical-item"><strong>${esc(i.action)}</strong><p>${esc(i.timing)} · ${esc(i.reason)}</p></article>`)}
       ${entityList("下一步建议",g.follow_up_plan,i=>`<article class="medical-item"><strong>${esc(i.action)}</strong><p>${esc(i.timing)} · ${esc(i.reason)}</p></article>`)}
       ${entityList("安全检查",r.safety_checks,i=>`<article class="medical-item"><div class="section-title"><strong>${esc(i.message)}</strong>${tag(i.status==="blocked"?"BLOCKED":i.status==="review"?"REVIEW_REQUIRED":"APPROVED")}</div></article>`)}
-      ${r.warnings&&r.warnings.length?`<div class="notice error">${r.warnings.map(esc).join("；")}</div>`:""}`;
+      ${r.warnings&&r.warnings.length?`<div class="notice error">${r.warnings.map(esc).join("；")}</div>`:""}<details class="json-editor"><summary>修订温度指引</summary><p class="muted">仅修订 guide 内容；证据覆盖、知识状态和安全检查由后端重新计算。</p><textarea id="careRevisionJson" class="input textarea json-area">${esc(JSON.stringify(g,null,2))}</textarea><div class="form-field"><label for="careRevisionNote">修订说明</label><textarea id="careRevisionNote" class="input textarea" maxlength="4000"></textarea></div><button id="saveCareRevision" class="btn primary">保存修订稿</button></details>`;
   }
   function renderQuality(data){
     const q=data.quality||{};const observations=q.case_observations||[];const profiles=q.historical_profiles||[];
@@ -169,16 +185,16 @@
       ${item.evidence&&item.evidence.length?`<details class="evidence-details"><summary>查看推荐依据</summary>${item.evidence.map(e=>`<div class="evidence-row"><strong>${esc(e.reason)}</strong><p>${esc(e.evidence_summary||"公开资料有限")}</p><small>${esc(e.source_name||"来源待补充")} · ${esc(label(e.evidence_status))}</small>${e.source_url?`<p><a href="${esc(e.source_url)}" target="_blank" rel="noopener">查看原始页面</a></p>`:""}</div>`).join("")}</details>`:""}</article>`;
   }
   function renderReview(data){
-    const gate=data.review_gate||{};const ready=gate.decision==="REVIEW_REQUIRED";
-    const parts=[["结构化病例",!!data.structured_result],["痛点分析",!!data.pain_result],["温度指引",!!data.care_result],["品质评价",(data.quality.case_observations||[]).length>0],["就医推荐",!!data.recommendation]];
+    const gate=data.review_gate||{};const finalGate=data.final_gate||{};const ready=finalGate.decision==="READY_FOR_FINAL_REVIEW";
+    const parts=Object.entries(data.module_states||{}).map(([name,state])=>[moduleNames[name]||name,state.review_status==="APPROVED"]);
     return `<div class="detail-grid">${parts.map(([name,ok])=>detailItem(name,tag(ok?"APPROVED":"PENDING"),true)).join("")}${detailItem("待确认问题",data.pending_confirmation_count+" 项")}${detailItem("当前复核状态",tag(data.review_status),true)}</div>
       ${((data.field_review_summary||{}).pending||0)||((data.field_review_summary||{}).unresolved||0)?`<div class="notice warning" style="margin-top:20px">当前仍有 ${(data.field_review_summary||{}).pending||0} 个结构化字段待处理、${(data.field_review_summary||{}).unresolved||0} 个字段暂无法确认。提交案件级复核前请结合风险判断。</div>`:""}
       ${(data.field_review_summary||{}).corrected?'<div class="notice warning" style="margin-top:12px">字段人工修正已保存；现有痛点、关怀或推荐可能基于修正前结果。</div>':""}
-      <div class="notice ${gate.decision==="BLOCKED"?"error":""}" style="margin-top:20px"><strong>发布门禁：${esc(label(gate.decision))}</strong><br>${(gate.reasons||[]).map(esc).join("；")||"暂无门禁说明"}</div>
+      <div class="notice ${finalGate.decision==="BLOCKED"?"error":finalGate.decision==="NOT_READY"?"warning":""}" style="margin-top:20px"><strong>最终医疗门禁：${esc(label(finalGate.decision))}</strong><br>${(finalGate.reasons||[]).map(esc).join("；")||"暂无门禁说明"}</div><div class="notice ${gate.decision==="BLOCKED"?"error":""}" style="margin-top:12px"><strong>内容安全门禁：${esc(label(gate.decision))}</strong><br>${(gate.reasons||[]).map(esc).join("；")||"暂无门禁说明"}</div>
       ${entityList("历史复核记录",data.reviews||[],r=>`<article class="medical-item"><div class="section-title"><strong>${esc(r.reviewer)}</strong>${tag(r.decision)}</div><p>${esc(r.note||"未填写意见")}</p><small class="muted">${formatTime(r.created_at)}</small></article>`)}
       <form id="reviewForm" class="profile-form"><div class="form-field"><label for="reviewComment">医疗复核意见</label><textarea id="reviewComment" class="input textarea" maxlength="4000" placeholder="退回修改或标记进一步确认时必须填写"></textarea></div>
       <p id="reviewError" class="form-error"></p><div class="profile-actions"><button type="button" class="btn primary review-action" data-decision="APPROVED" ${ready?"":"disabled"}>批准发布</button><button type="button" class="btn secondary review-action" data-decision="RETURNED" ${ready?"":"disabled"}>退回修改</button><button type="button" class="btn secondary review-action" data-decision="NEEDS_CONFIRMATION" ${ready?"":"disabled"}>需进一步确认</button></div></form>
-      <section class="medical-section"><h3>客户触达核对</h3><p class="muted">扫码仅用于预览；比赛演示将结果写入客户站内收件箱，不发送真实短信或企微消息。</p><div class="profile-actions">${data.care_result?'<button type="button" class="btn secondary" id="mobilePreview">手机扫码预览</button>':""}${data.review_status==="APPROVED"?'<button type="button" class="btn primary" id="sendDelivery">发送到客户站内收件箱（比赛演示）</button>':""}</div></section>`;
+      <section class="medical-section"><h3>客户触达核对</h3><p class="muted">扫码仅用于预览；比赛演示将结果写入客户站内收件箱，不发送真实短信或企微消息。</p><div class="profile-actions">${data.care_result?'<button type="button" class="btn secondary" id="mobilePreview">手机扫码预览</button>':""}${data.review_status==="APPROVED"&&ready?'<button type="button" class="btn primary" id="sendDelivery">发送到客户站内收件箱（比赛演示）</button>':""}</div></section>`;
   }
   function bindReview(data){
     document.querySelectorAll(".review-action").forEach(button=>button.onclick=async()=>{
@@ -212,7 +228,7 @@
     if(activeTab==="care")panel.innerHTML=data.care_result?renderCare(data):modulePanel("care",data)+'<div class="empty">温度指引尚未生成</div>';
     if(activeTab==="quality")panel.innerHTML=renderQuality(data);
     if(activeTab==="recommendation")panel.innerHTML=data.recommendation?renderRecommendation(data):modulePanel("recommendation",data)+'<div class="empty">当前案件尚无已保存的推荐报告</div>';
-    if(["pain","care","quality","recommendation"].includes(activeTab))bindModuleControls(data);
+    if(["pain","care","quality","recommendation"].includes(activeTab)){bindModuleControls(data);bindMedicalEdits(data);}
     if(activeTab==="review"){panel.innerHTML=renderReview(data);bindReview(data);}
   }
 
@@ -232,8 +248,10 @@
   }
   function navigate(view){activeView=view;activeCaseId=null;profileMode="view";document.querySelectorAll(".nav-item").forEach(n=>n.classList.toggle("active",n.dataset.view===view));render();}
   document.getElementById("cancelFieldReview").onclick=()=>document.getElementById("fieldReviewDialog").classList.add("hidden");
+  document.getElementById("cancelPainReview").onclick=()=>document.getElementById("painReviewDialog").classList.add("hidden");
   document.getElementById("closeSourceDialog").onclick=()=>document.getElementById("sourceDialog").classList.add("hidden");
   document.getElementById("saveFieldReview").onclick=async()=>{if(!fieldReviewContext)return;const button=document.getElementById("saveFieldReview"),error=document.getElementById("fieldReviewError");button.disabled=true;button.textContent="保存中…";error.textContent="";try{await api(`/api/medical/cases/${encodeURIComponent(fieldReviewContext.caseId)}/field-reviews`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({field_path:fieldReviewContext.path,decision:fieldReviewContext.action,reviewed_value:fieldReviewContext.action==="CORRECTED"?document.getElementById("fieldReviewValue").value:null,reason:document.getElementById("fieldReviewReason").value})});document.getElementById("fieldReviewDialog").classList.add("hidden");toast("字段复核结果已保存");await openCase(fieldReviewContext.caseId,"structured");}catch(e){error.textContent=e.message;}finally{button.disabled=false;button.textContent="保存";}};
+  document.getElementById("savePainReview").onclick=async()=>{if(!painReviewContext)return;const button=document.getElementById("savePainReview"),error=document.getElementById("painReviewError");button.disabled=true;button.textContent="保存中…";error.textContent="";try{const editing=painReviewContext.decision==="EDIT";await api(`/api/medical/cases/${encodeURIComponent(painReviewContext.caseId)}/pain-points/${encodeURIComponent(painReviewContext.painPointId)}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:painReviewContext.decision,title:editing?document.getElementById("painReviewItemTitle").value:null,summary:editing?document.getElementById("painReviewSummary").value:null,suggestion:editing?document.getElementById("painReviewSuggestion").value:null,note:document.getElementById("painReviewNote").value})});document.getElementById("painReviewDialog").classList.add("hidden");toast("痛点条目决策已保存");await openCase(painReviewContext.caseId,"pain");}catch(e){error.textContent=e.message;}finally{button.disabled=false;button.textContent="保存决策";}};
   async function render(){loading();try{if(activeView==="home")await home();if(activeView==="pending")await listCases(true);if(activeView==="cases")await listCases(false);if(activeView==="profile")await profile();}catch(e){errorState(e);}}
   document.querySelectorAll(".nav-item").forEach(n=>n.onclick=()=>navigate(n.dataset.view));
   document.getElementById("logoutButton").onclick=async()=>{try{await api("/api/auth/logout",{method:"POST"});}finally{location.replace("/login");}};

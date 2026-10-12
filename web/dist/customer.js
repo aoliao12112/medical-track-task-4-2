@@ -101,12 +101,14 @@
       const openingHtml = guide && guide.opening ? resultSection("给您的话", guide.opening.title || "关怀说明", `<p class="customer-opening">${esc(guide.opening.content)}</p>`, "customer-opening-card") : "";
       const reviewBody = guide ? [careSection(guide.diagnosis_explanation), careSection(guide.treatment_review), careSection(guide.cost_explanation)].filter(Boolean).join("") : "";
       const reviewHtml = resultSection("本次就医", "本次就医回顾", reviewBody || emptyResult("本次交付暂未包含可展示的病情、治疗或费用回顾。"));
-      const attentionHtml = resultSection("医疗审核后展示", "需要关注", emptyResult("经医疗人员审核后可面向客户展示的关注事项，将在确认后显示在这里。"));
+      const attentionItems = delivery && delivery.content.attention_items || [];
+      const attentionHtml = resultSection("医疗审核后展示", "需要关注", attentionItems.length ? `<div class="action-list">${attentionItems.map(item => `<div><strong>${esc(item.title)}</strong><span>${esc(label(item.severity))}</span><p>${esc(item.summary)}</p><p class="muted">建议：${esc(item.suggestion)}</p></div>`).join("")}</div>` : emptyResult("经医疗人员审核后可面向客户展示的关注事项，将在确认后显示在这里。"));
       const nextBody = guide ? [actionList("康复计划", guide.recovery_plan), careSection(guide.psychological_support), actionList("复诊与随访", guide.follow_up_plan),
         (guide.red_flags || []).length ? `<article class="notice error"><strong>需要及时就医的情况</strong><ul>${guide.red_flags.map(flag => `<li>${esc(flag)}</li>`).join("")}</ul></article>` : "",
         (guide.limitations || []).length ? `<article class="notice"><strong>使用说明</strong><ul>${guide.limitations.map(note => `<li>${esc(note)}</li>`).join("")}</ul></article>` : ""].filter(Boolean).join("") : "";
       const nextHtml = resultSection("康复关怀", "康复与下一步建议", nextBody || emptyResult("本次交付暂未包含可展示的康复与随访建议。"));
-      const qualityHtml = resultSection("本次病例", "本次就医品质观察", `${emptyResult("本次交付暂未包含经医疗审核、可面向客户展示的品质观察。")}<div class="customer-boundary">单次病例观察不代表医院或医生的长期质量。</div>`);
+      const quality = delivery && delivery.content.quality_observation;
+      const qualityHtml = resultSection("本次病例", "本次就医品质观察", `${quality?`<p>${esc(quality.summary)}</p>`:emptyResult("本次交付暂未包含经医疗审核、可面向客户展示的品质观察。")}<div class="customer-boundary">${esc(quality&&quality.disclaimer||"单次病例观察不代表医院或医生的长期质量。")}</div>`);
       const recommendationHtml = recommendationCards(delivery && delivery.content.recommendation, delivery && delivery.content.recommendation_unavailable_reason);
       content.innerHTML = `<button class="link-btn back-link" id="backCases">← 返回我的案件</button><section class="card case-header"><div class="case-header-main"><div><h1>${esc(item.claim_event_id)}</h1><div class="case-meta">${status(item.claim_status)}${status(item.care_status)}${delivery ? '<span class="tag success">结果已送达</span>' : '<span class="tag warning">结果准备中</span>'}</div></div><div><span class="muted">最近更新</span><p><strong>${esc(formatTime(item.updated_at))}</strong></p></div></div></section>
         ${delivery ? `<div class="customer-result-stack">${openingHtml}${reviewHtml}${attentionHtml}${nextHtml}${qualityHtml}${recommendationHtml}${feedbackForm(delivery, item.feedback_submitted)}</div>` : '<section class="card"><div class="empty">您的关怀结果尚未正式送达，请稍后再来查看。</div></section>'}`;
