@@ -976,10 +976,17 @@ def prepare_medical_analysis(
                     recommendation_intent=intent,
                     top_k=5,
                 ))
-                storage.save_recommendation_report(case_id, report, clinicians, status="DRAFT")
-                storage.record_medical_module_generation(
-                    case_id, "recommendation", effective_fingerprint, identity["user_id"],
+                saved_recommendation = storage.save_recommendation_report(
+                    case_id, report, clinicians, status="DRAFT",
+                    effective_fingerprint=effective_fingerprint,
+                    user_id=identity["user_id"],
                 )
+                outcomes[module.value] = {
+                    "status": "GENERATED", "blockers": [], "warnings": warnings,
+                    "report_version": saved_recommendation["report_version"],
+                    "generation_id": saved_recommendation["generation_id"],
+                }
+                continue
             outcomes[module.value] = {"status": "GENERATED", "blockers": [], "warnings": warnings}
         except Exception as exc:
             logger.exception("MEDICAL module generation failed: %s", module.value)

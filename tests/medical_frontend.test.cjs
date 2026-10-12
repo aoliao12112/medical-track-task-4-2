@@ -47,7 +47,7 @@ const context = {
 };
 vm.createContext(context);
 const source = fs.readFileSync("web/dist/medical.js", "utf8");
-const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems};})();");
+const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems,modulePanel};})();");
 vm.runInContext(testableSource, context);
 for (const required of [
   "/field-reviews", "确认无误", "修改并确认", "无法确认", "preview_available",
@@ -57,6 +57,7 @@ for (const required of [
   "修订文字和病例依据", "发布前模块状态", "返回该模块",
   "已引用依据摘要", "查看详细依据", "修改依据", "care-evidence-search",
   "手术/治疗", "住院信息", "推荐理由与证据", "查看来源", "aggregateRecommendationItems",
+  "data-review-module=\"${module}\"", "复核通过", "退回修改",
 ]) {
   assert.ok(source.includes(required), `medical field review UI missing: ${required}`);
 }
@@ -95,6 +96,18 @@ assert.equal(aggregated[0].evidence.length,3,"raw evidence must remain available
 assert.equal(aggregated[0]._displaySources.length,2,"same source_url must display once");
 assert.equal(aggregated[0]._displayEvidence.length,1,"similar capability reasons must be grouped");
 assert.ok(aggregated[0]._displayEvidence.length<=4,"default recommendation reasons must be limited to four");
+
+const recommendationReview = context.__medicalDisplayTest.modulePanel("recommendation", {
+  recommendation: {items: []},
+  module_states: {recommendation: {
+    generation_status: "GENERATED", review_status: "REVIEW_REQUIRED",
+    result_available: false, blockers: [], warnings: [],
+  }},
+  field_review_summary: {pending: 0, unresolved: 0},
+});
+assert.match(recommendationReview,/data-review-module="recommendation"/);
+assert.match(recommendationReview,/data-decision="APPROVED">复核通过/);
+assert.match(recommendationReview,/data-decision="RETURNED">退回修改/);
 
 async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
 (async () => {

@@ -48,6 +48,7 @@ class ModuleState(StrictModel):
     blockers: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     result_available: bool = False
+    current_generation_id: str | None = None
     content_fingerprint: str | None = None
 
 

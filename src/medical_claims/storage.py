@@ -694,14 +694,16 @@ class CaseStorage:
     @staticmethod
     def _record_module_state(db, case_id, module, effective_fingerprint, *, user_id=None,
                              action="MEDICAL_MODULE_GENERATED"):
+        generation_id = str(uuid4())
         db.execute(
             "INSERT INTO system_logs(log_id, user_id, case_id, action, module, request_path, "
             "ip_address, request_params_json, result, error_message, created_at) "
             "VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 'SUCCESS', NULL, ?)",
-            (str(uuid4()), user_id, case_id, action, module,
+            (generation_id, user_id, case_id, action, module,
              encode({"effective_fingerprint": effective_fingerprint}),
              datetime.now(timezone.utc).isoformat()),
         )
+        return generation_id
 
     @staticmethod
     def _latest_module_fingerprint(db, case_id, module):
@@ -1031,6 +1033,19 @@ class CaseStorage:
             if decision.value == "APPROVED" and module == "pain":
                 pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
                 item_reviews = self._latest_pain_item_reviews(db, case_id, pain)
+                # The current UI saves item decisions individually, while older callers
+                # submit the complete overlay together with the module review.  Treat
+                # both representations as the same review contract when deciding
+                # whether approval is safe.  Partial overlays still fail this check.
+                inline_decisions = (payload or {}).get("item_decisions") or []
+                inline_ids = {
+                    item.get("pain_point_id") for item in inline_decisions
+                    if item.get("pain_point_id")
+                }
+                item_reviews = [
+                    item for item in item_reviews
+                    if item.get("pain_point_id") not in inline_ids
+                ] + inline_decisions
                 if self._pain_review_summary(pain, item_reviews)["pending"]:
                     raise WorkflowConflict("请先完成所有痛点条目的 SHOW / EDIT / HIDE 决策")
             if decision.value == "APPROVED" and module == "care":
@@ -1157,6 +1172,7 @@ class CaseStorage:
                 module, case, pain_available=pain is not None, city=city,
             )
             generated_from = self._latest_module_fingerprint(db, case_id, module.value)
+            generation_id = self._latest_module_generation_id(db, case_id, module.value)
             if module == MedicalModule.RECOMMENDATION and available \
                     and recommendation.get("status") == "INVALIDATED":
                 generation = GenerationStatus.STALE
@@ -1191,6 +1207,7 @@ class CaseStorage:
             states[module.value] = ModuleState(
                 module=module, generation_status=generation, review_status=review,
                 blockers=blockers, warnings=warnings, result_available=available,
+                current_generation_id=generation_id,
                 content_fingerprint=content_fingerprint,
             ).model_dump(mode="json")
         return states
@@ -1801,7 +1818,8 @@ class CaseStorage:
             return output
 
     def save_recommendation_report(self, case_id, report, clinician_recommendations=None,
-                                   status="DRAFT"):
+                                   status="DRAFT", *, effective_fingerprint=None,
+                                   user_id=None):
         """Persist a V2 recommendation as a versioned report and normalized children.
 
         The method does not calculate, filter or reorder recommendations.  It only
@@ -1830,6 +1848,7 @@ class CaseStorage:
             for evidence in profile.get("evidence_records", []):
                 evidence_records[evidence.get("evidence_id")] = evidence
 
+        generation_id = None
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self._row(db, case_id)
@@ -1920,7 +1939,14 @@ class CaseStorage:
                              str(ev_status).upper(), evidence.get("evidence_confidence", 0.5),
                              now if str(ev_status).lower() == "verified" else None, now),
                         )
-        return {"report_id": report_id, "report_version": version, "status": status}
+            if effective_fingerprint:
+                generation_id = self._record_module_state(
+                    db, case_id, "recommendation", effective_fingerprint, user_id=user_id,
+                )
+        return {
+            "report_id": report_id, "report_version": version,
+            "status": status, "generation_id": generation_id,
+        }
 
     def load_recommendation_report(self, case_id, report_version=None):
         with self._connect() as db:

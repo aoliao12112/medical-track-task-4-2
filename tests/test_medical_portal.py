@@ -200,6 +200,7 @@ from medical_claims.models import (
 )
 from medical_claims.pain_engine import analyze_pain_points
 from medical_claims.pain_models import PainPointReport
+from medical_claims.review_models import FieldReviewDecision, FieldReviewRequest
 from medical_claims.storage import CaseStorage
 from medical_claims.quality_phase1_models import (
     GeographicRecommendationStrategy, RecommendationIntent,
@@ -396,7 +397,12 @@ def test_medical_review_is_validated_and_bound_to_logged_in_reviewer(tmp_path, m
     assert approved.status_code == 201, approved.text
     assert approved.json()["review_status"] == "APPROVED"
     with storage._connect() as db:
-        row = db.execute("SELECT reviewer_user_id, comment FROM reviews WHERE case_id=?", (case_id,)).fetchone()
+        row = db.execute(
+            "SELECT reviewer_user_id, comment FROM reviews "
+            "WHERE case_id=? AND target_type='combined_delivery' "
+            "ORDER BY rowid DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
     assert row["reviewer_user_id"] == medical_id
     assert row["comment"] == "结构化、痛点和指引已核对。"
     saved = storage.get_results(case_id)
@@ -445,7 +451,8 @@ def test_medical_frontend_and_login_routing_are_present(tmp_path, monkeypatch):
         "/field-reviews", "确认无误", "修改并确认", "无法确认", "原始材料页面",
     ):
         assert required in source
-    assert "total_score=" not in source
+    customer_source = Path("web/dist/customer.js").read_text(encoding="utf-8")
+    assert "total_score=" not in customer_source
     assert 'data-decision="NEEDS_CONFIRMATION"' not in source
     assert "localStorage" not in source
     assert "MEDICAL:'/medical'" in Path("web/dist/login.js").read_text(encoding="utf-8")
@@ -731,3 +738,58 @@ def test_formal_medical_recommendation_is_persisted_in_existing_v2_tables(tmp_pa
             "SELECT COUNT(*) FROM recommendation_items WHERE report_id=?",
             (saved["report_id"],),
         ).fetchone()[0] == len(saved["items"])
+
+    approved = client.post(
+        f"/api/medical/cases/{metadata.case_id}/module-reviews",
+        json={"module": "recommendation", "decision": "APPROVED", "comment": "推荐依据已核对。"},
+    )
+    assert approved.status_code == 201, approved.text
+    detail = client.get(f"/api/medical/cases/{metadata.case_id}").json()
+    assert detail["module_states"]["recommendation"]["review_status"] == "APPROVED"
+    old_state = detail["module_states"]["recommendation"]
+    old_generation_id = old_state["current_generation_id"]
+    old_content_fingerprint = old_state["content_fingerprint"]
+
+    storage.save_field_review(medical_id, metadata.case_id, FieldReviewRequest(
+        field_path="procedures[0].name",
+        decision=FieldReviewDecision.CORRECTED,
+        reviewed_value="白内障超声乳化联合人工晶体植入术（人工核对）",
+        reason="依据手术记录核对",
+    ))
+    detail = client.get(f"/api/medical/cases/{metadata.case_id}").json()
+    assert detail["module_states"]["recommendation"]["generation_status"] == "STALE"
+    assert detail["module_states"]["recommendation"]["current_generation_id"] == old_generation_id
+
+    regenerated = client.post(
+        f"/api/medical/cases/{metadata.case_id}/analysis/prepare",
+        json={
+            "modules": ["recommendation"], "use_llm": True,
+            "city": "重庆市", "province": "重庆市",
+            "nearby_major_cities": ["成都市", "西安市"],
+        },
+    )
+    assert regenerated.status_code == 200, regenerated.text
+    outcome = regenerated.json()["outcomes"]["recommendation"]
+    assert outcome["status"] == "GENERATED"
+    assert outcome["generation_id"] != old_generation_id
+    detail = client.get(f"/api/medical/cases/{metadata.case_id}").json()
+    new_state = detail["module_states"]["recommendation"]
+    assert new_state["generation_status"] == "GENERATED"
+    assert new_state["result_available"] is True
+    assert new_state["review_status"] == "REVIEW_REQUIRED"
+    assert new_state["current_generation_id"] == outcome["generation_id"]
+    assert new_state["content_fingerprint"] != old_content_fingerprint
+    assert storage.load_recommendation_report(metadata.case_id)["report_version"] == 2
+
+    reapproved = client.post(
+        f"/api/medical/cases/{metadata.case_id}/module-reviews",
+        json={"module": "recommendation", "decision": "APPROVED", "comment": "新版本推荐已核对。"},
+    )
+    assert reapproved.status_code == 201, reapproved.text
+    detail = client.get(f"/api/medical/cases/{metadata.case_id}").json()
+    recommendation_row = next(
+        row for row in detail["final_review_matrix"]["modules"]
+        if row["module"] == "recommendation"
+    )
+    assert recommendation_row["generation_status"] == "GENERATED"
+    assert recommendation_row["review_status"] == "APPROVED"
