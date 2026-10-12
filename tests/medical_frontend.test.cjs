@@ -51,7 +51,7 @@ const source = fs.readFileSync("web/dist/medical.js", "utf8");
 for (const required of [
   "/field-reviews", "确认无误", "修改并确认", "无法确认", "preview_available",
   "/analysis/prepare", "/module-reviews", "准备医疗分析结果", "生成状态", "复核状态",
-  "该结果基于旧病例版本生成", "本次病例观察",
+  "该结果基于旧病例版本生成", "本次病例观察", "发送到客户站内收件箱（比赛演示）",
 ]) {
   assert.ok(source.includes(required), `medical field review UI missing: ${required}`);
 }

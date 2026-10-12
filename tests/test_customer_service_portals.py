@@ -50,20 +50,48 @@ def _delivery(storage: CaseStorage, case_id: str) -> str:
         "delivery_id": delivery_id,
         "case_id": case_id,
         "status": "DELIVERED_MOCK",
-        "recommendation_included": False,
+        "recommendation_included": True,
         "created_at": now,
         "content": {
             "care_guide": {
                 "guide": {
                     "disease_topic": "康复关怀",
-                    "opening": {"title": "给您的话", "content": "请按医嘱稳步康复。"},
+                    "opening": {
+                        "title": "给您的话", "content": "请按医嘱稳步康复。",
+                        "evidence_fields": ["diagnoses[0].name"],
+                    },
                     "recovery_plan": [],
                     "follow_up_plan": [],
                     "red_flags": [],
                     "limitations": ["本指引不能替代医生诊疗。"],
                 }
             },
-            "recommendation": [],
+            "recommendation": [{
+                "report_id": "internal-report-id",
+                "warnings": ["internal-warning"],
+                "recommendations": [{
+                    "item_type": "HOSPITAL",
+                    "entity_id": "HOSP-SECRET",
+                    "entity_name": "测试医院",
+                    "city": "上海",
+                    "department": "康复医学科",
+                    "total_score": 88,
+                    "scores": [{
+                        "dimension_name": "专科匹配",
+                        "score": 90,
+                        "reason": "公开资料显示设有相关专科。",
+                    }],
+                    "evidence": [{
+                        "reason": "具备相关服务能力",
+                        "evidence_type": "internal-field",
+                        "source_name": "医院官网",
+                        "source_url": "https://example.test/hospital",
+                        "evidence_summary": "官网列出了相关科室。",
+                        "evidence_status": "VERIFIED",
+                    }],
+                    "profile_snapshot_id": "internal-snapshot",
+                }],
+            }],
             "recommendation_unavailable_reason": "当前暂无服务推荐。",
             "internal_marker": "must-not-leak",
         },
@@ -109,8 +137,26 @@ def test_customer_workspace_is_case_scoped_and_exposes_only_delivered_content(tm
     assert detail.status_code == 200, detail.text
     payload = detail.json()
     assert payload["delivery"]["content"]["care_guide"]["guide"]["disease_topic"] == "康复关怀"
+    recommendation = payload["delivery"]["content"]["recommendation"][0]["recommendations"][0]
+    assert recommendation == {
+        "item_type": "HOSPITAL",
+        "entity_name": "测试医院",
+        "city": "上海",
+        "department": "康复医学科",
+        "reasons": [{"title": "专科匹配", "explanation": "公开资料显示设有相关专科。"}],
+        "limitations": [],
+        "sources": [{
+            "name": "医院官网",
+            "url": "https://example.test/hospital",
+            "summary": "官网列出了相关科室。",
+        }],
+    }
     serialized = json.dumps(payload, ensure_ascii=False)
-    for forbidden in ("ocr_result", "structured_result", "pain_result", "internal_marker", "risk_gate_result"):
+    for forbidden in (
+        "ocr_result", "structured_result", "pain_result", "internal_marker", "risk_gate_result",
+        "entity_id", "total_score", "scores", "evidence_fields", "evidence_type",
+        "evidence_status", "profile_snapshot_id", "report_id", "warnings",
+    ):
         assert forbidden not in serialized
 
 
@@ -209,6 +255,11 @@ def test_customer_and_service_pages_share_login_and_api_conventions(tmp_path, mo
         source = Path("web/dist", source_name).read_text(encoding="utf-8")
         assert "credentials: \"same-origin\"" in source
         assert "localStorage" not in source
+    customer_html = Path("web/dist/customer.html").read_text(encoding="utf-8")
+    customer_source = Path("web/dist/customer.js").read_text(encoding="utf-8")
+    assert 'data-view="apply"' not in customer_html
+    assert "发起理赔申请" not in customer_source
+    assert ".entity_id" not in customer_source
 
 
 def test_customer_self_service_routes_to_claim_acceptance_and_service_follow_up(tmp_path, monkeypatch):

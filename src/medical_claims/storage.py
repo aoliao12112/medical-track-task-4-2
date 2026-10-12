@@ -2402,16 +2402,123 @@ class CaseStorage:
         }
 
     @staticmethod
+    def _customer_care_payload(care):
+        if not isinstance(care, dict) or not isinstance(care.get("guide"), dict):
+            return None
+        guide = care["guide"]
+
+        def section(value):
+            if not isinstance(value, dict) or not value.get("content"):
+                return None
+            return {"title": value.get("title") or "关怀说明", "content": value["content"]}
+
+        def actions(values):
+            return [
+                {
+                    "action": value.get("action"),
+                    "timing": value.get("timing") or "遵医嘱",
+                    "reason": value.get("reason"),
+                }
+                for value in (values or [])
+                if isinstance(value, dict) and value.get("action") and value.get("reason")
+            ]
+
+        return {"guide": {
+            "disease_topic": guide.get("disease_topic"),
+            "opening": section(guide.get("opening")),
+            "diagnosis_explanation": section(guide.get("diagnosis_explanation")),
+            "treatment_review": section(guide.get("treatment_review")),
+            "cost_explanation": section(guide.get("cost_explanation")),
+            "recovery_plan": actions(guide.get("recovery_plan")),
+            "psychological_support": section(guide.get("psychological_support")),
+            "follow_up_plan": actions(guide.get("follow_up_plan")),
+            "red_flags": [str(value) for value in (guide.get("red_flags") or []) if value],
+            "limitations": [str(value) for value in (guide.get("limitations") or []) if value],
+        }}
+
+    @staticmethod
+    def _customer_recommendation_payload(reports):
+        type_names = {
+            "institution": "HOSPITAL", "clinician": "DOCTOR", "treatment_plan": "TREATMENT",
+            "HOSPITAL": "HOSPITAL", "DOCTOR": "DOCTOR", "TREATMENT": "TREATMENT",
+        }
+        safe_reports = []
+        for report in reports or []:
+            if not isinstance(report, dict):
+                continue
+            report_type = type_names.get(report.get("entity_type"), report.get("entity_type"))
+            safe_items = []
+            for item in report.get("recommendations") or []:
+                if not isinstance(item, dict):
+                    continue
+                entity_name = str(item.get("entity_name") or "").strip()
+                internal_name = (
+                    not entity_name or entity_name.lower() == "unavailable"
+                    or entity_name.lower().startswith("pending-")
+                    or re.fullmatch(r"(?:HOSP|DOC|TREAT)-[A-Z0-9_-]+", entity_name, re.IGNORECASE)
+                )
+                if internal_name:
+                    continue
+                item_type = type_names.get(item.get("item_type"), item.get("item_type") or report_type)
+                if item_type not in {"HOSPITAL", "DOCTOR", "TREATMENT"}:
+                    continue
+                reasons = []
+                for reason in item.get("reasons") or []:
+                    if not isinstance(reason, dict):
+                        continue
+                    title = str(reason.get("title") or "推荐理由").strip()
+                    explanation = str(reason.get("explanation") or "").strip()
+                    if title or explanation:
+                        reasons.append({"title": title, "explanation": explanation})
+                if not reasons:
+                    for score in item.get("scores") or []:
+                        if not isinstance(score, dict) or not score.get("reason"):
+                            continue
+                        reasons.append({
+                            "title": str(score.get("dimension_name") or "推荐理由"),
+                            "explanation": str(score["reason"]),
+                        })
+                sources = []
+                for evidence in item.get("evidence") or []:
+                    if not isinstance(evidence, dict):
+                        continue
+                    name = str(evidence.get("source_name") or "").strip()
+                    summary = str(evidence.get("evidence_summary") or evidence.get("reason") or "").strip()
+                    url = str(evidence.get("source_url") or "").strip()
+                    if url and not url.lower().startswith(("https://", "http://")):
+                        url = ""
+                    if name or summary:
+                        sources.append({"name": name or None, "url": url or None, "summary": summary})
+                limitations = [
+                    str(value) for value in (item.get("limitations") or [])
+                    if value is not None and str(value).strip()
+                ]
+                safe_item = {
+                    "item_type": item_type,
+                    "entity_name": entity_name,
+                    "city": item.get("city"),
+                    "department": item.get("department"),
+                    "reasons": reasons,
+                    "limitations": limitations,
+                    "sources": sources,
+                }
+                safe_items.append(safe_item)
+            if safe_items:
+                safe_reports.append({"recommendations": safe_items})
+        return safe_reports
+
+    @staticmethod
     def _customer_delivery_payload(delivery):
         content = delivery.get("content") or {}
+        recommendations = CaseStorage._customer_recommendation_payload(content.get("recommendation"))
         return {
             "delivery_id": delivery.get("delivery_id"),
             "created_at": delivery.get("created_at"),
             "status": delivery.get("status"),
-            "recommendation_included": bool(delivery.get("recommendation_included")),
+            "recommendation_included": bool(recommendations),
             "content": {
-                "care_guide": content.get("care_guide"),
-                "recommendation": content.get("recommendation") or [],
+                "care_guide": CaseStorage._customer_care_payload(content.get("care_guide")),
+                "recommendation": recommendations,
                 "recommendation_unavailable_reason": content.get("recommendation_unavailable_reason"),
             },
         }
