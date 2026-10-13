@@ -29,7 +29,16 @@
     conflict: "存在冲突", not_present_in_document: "未见记录", not_applicable: "不适用",
     OBSERVED: "已有观察", DATA_UNAVAILABLE: "数据缺失", AVAILABLE: "可查看", UNAVAILABLE: "未保留"
     ,CONFIRMED: "人工已确认", CORRECTED: "人工已修正", UNRESOLVED: "暂无法确认",
-    SHOW: "向客户展示", EDIT: "修订后展示", HIDE: "不向客户展示",
+    SHOW: "纳入关怀", EDIT: "编辑后纳入", HIDE: "忽略",
+    MEDICATION_DIAGNOSIS_REVIEW: "用药与诊断复核",
+    DUPLICATE_MEDICATION_REVIEW: "重复用药复核",
+    ABNORMAL_EXAMINATION_FOLLOWUP: "异常检查随访",
+    HIGH_OUTSIDE_POLICY_RATIO: "政策范围外费用占比较高",
+    HIGH_PERSONAL_BURDEN_RATIO: "个人负担比例较高",
+    COST_RECONCILIATION_ANOMALY: "费用对账异常",
+    DIAGNOSIS_TERM_HARD_TO_UNDERSTAND: "诊断术语理解困难",
+    MEDICATION_INSTRUCTION_INCOMPLETE: "用药说明不完整",
+    CARE_GUIDANCE_INCOMPLETE: "后续关怀指导不完整",
     READY_FOR_FINAL_REVIEW: "可进行最终审核", NOT_READY: "尚未满足发布条件"
   };
   function esc(value) { return String(value == null ? "—" : value).replace(/[&<>'"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[c]); }
@@ -92,6 +101,9 @@
     renderTab(data);
   }
   const moduleNames={pain:"痛点分析",care:"温度指引",treatment_quality:"本次就医品质评价",recommendation:"就医推荐"};
+  function moduleReviewControls(module,approveLabel="通过"){
+    return `<div class="module-review" data-review-module="${module}"><textarea class="input textarea module-review-note" data-module="${module}" maxlength="4000" placeholder="退回修改时请填写具体原因"></textarea><div class="profile-actions"><button class="btn primary module-review-action" data-module="${module}" data-decision="APPROVED">${approveLabel}</button><button class="btn secondary module-review-action" data-module="${module}" data-decision="RETURNED">退回修改</button></div></div>`;
+  }
   function modulePanel(module,data){
     const state=(data.module_states||{})[module]||{};const stale=state.generation_status==="STALE";
     const resultAvailable=Boolean(state.result_available||(module==="recommendation"&&data.recommendation));
@@ -100,7 +112,7 @@
     return `<section class="module-status-panel"><div class="section-title"><div><strong>${esc(moduleNames[module])}</strong><p class="muted">生成状态 ${tag(state.generation_status||"NOT_GENERATED")} · 复核状态 ${tag(state.review_status||"NOT_REVIEWED")}</p></div><button class="btn secondary module-generate" data-module="${module}" ${state.generation_status==="INPUT_INSUFFICIENT"&&module!=="recommendation"?"disabled":""}>${resultAvailable?"重新生成":"生成"}</button></div>
       ${stale?'<div class="notice warning">该结果基于旧病例版本生成，需要重新生成。</div>':resultAvailable&&(((data.field_review_summary||{}).pending||0)+((data.field_review_summary||{}).unresolved||0))?'<div class="notice warning">当前仍有结构化字段待确认，请结合对应字段核对本模块。</div>':resultAvailable&&state.review_status==="REVIEW_REQUIRED"?'<div class="notice warning">该模块待医疗复核。</div>':""}
       ${notes.length?`<p class="muted">${notes.map(esc).join("；")}</p>`:""}
-      ${resultAvailable&&!stale?`<div class="module-review" data-review-module="${module}"><textarea class="input textarea module-review-note" data-module="${module}" maxlength="4000" placeholder="退回修改时请填写具体原因"></textarea><div class="profile-actions"><button class="btn primary module-review-action" data-module="${module}" data-decision="APPROVED">${approveLabel}</button><button class="btn secondary module-review-action" data-module="${module}" data-decision="RETURNED">退回修改</button></div></div>`:""}</section>`;
+      ${resultAvailable&&!stale&&module!=="pain"?moduleReviewControls(module,approveLabel):""}</section>`;
   }
   async function prepareModules(data,modules){
     const button=document.getElementById("prepareAnalysis");if(button){button.disabled=true;button.textContent="正在准备…";}
@@ -120,7 +132,7 @@
   function openPainReview(data,button){
     const point=(data.pain_result&&data.pain_result.pain_points||[]).find(item=>item.pain_point_id===button.dataset.id);if(!point)return;
     const decision=button.dataset.decision;painReviewContext={caseId:data.case_id,painPointId:point.pain_point_id,decision};
-    document.getElementById("painReviewTitle").textContent=decision==="SHOW"?"确认向客户展示":decision==="EDIT"?"修订后向客户展示":"确认不向客户展示";
+    document.getElementById("painReviewTitle").textContent=decision==="SHOW"?"纳入关怀":decision==="EDIT"?"编辑后纳入关怀":"忽略此项";
     document.getElementById("painReviewModel").textContent=point.title+"："+point.description;
     document.getElementById("painEditFields").classList.toggle("hidden",decision!=="EDIT");
     document.getElementById("painReviewItemTitle").value=point.title||"";document.getElementById("painReviewSummary").value=point.description||"";document.getElementById("painReviewSuggestion").value=point.recommended_action||"";document.getElementById("painReviewNote").value="";document.getElementById("painReviewError").textContent="";document.getElementById("painReviewDialog").classList.remove("hidden");
@@ -162,10 +174,13 @@
   }
   function renderPain(data){
     const p=data.pain_result;if(!p)return '<div class="empty">痛点分析尚未生成</div>';
-    const byId=Object.fromEntries((data.pain_item_reviews||[]).map(item=>[item.pain_point_id,item]));const summary=data.pain_review_summary||{};
-    return `${modulePanel("pain",data)}<div class="notice ${summary.pending?"warning":""}">逐条决策：${summary.total||0} 条，待处理 ${summary.pending||0} 条。只有 SHOW 和 EDIT 条目可进入客户“需要关注”。</div><div class="summary-grid"><div class="summary-box"><h3>临床痛点</h3><strong>${p.summary.clinical}</strong></div><div class="summary-box"><h3>费用痛点</h3><strong>${p.summary.cost}</strong></div><div class="summary-box"><h3>就医体验痛点</h3><strong>${p.summary.experience}</strong></div></div>
-      ${entityList("分析结果",p.pain_points,i=>{const review=byId[i.pain_point_id];return `<article class="medical-item"><div class="section-title"><strong>${esc(i.title)}</strong><span>${tag(i.dimension)} ${tag(i.severity)} ${review?tag(review.decision):tag("PENDING")}</span></div><p>${esc(i.description)}</p><p><strong>建议：</strong>${esc(i.recommended_action)}</p>${review&&review.decision==="EDIT"?`<div class="notice"><strong>修订后客户内容</strong><p>${esc(review.title||i.title)}：${esc(review.summary||i.description)}</p><p>${esc(review.suggestion||i.recommended_action)}</p></div>`:""}<small class="muted">可信度：${Math.round((i.confidence||0)*100)}%</small>
-      ${i.evidence&&i.evidence.length?`<details class="evidence-details"><summary>查看证据</summary>${i.evidence.map(e=>`<p>${esc(e.text)} <small>${esc(e.document_id)} · 第 ${esc(e.page||"—")} 页</small></p>`).join("")}</details>`:""}<div class="field-actions"><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="SHOW">展示</button><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="EDIT">修订后展示</button><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="HIDE">隐藏</button></div></article>`;})}`;
+    const byId=Object.fromEntries((data.pain_item_reviews||[]).map(item=>[item.pain_point_id,item]));
+    const suggested=Object.fromEntries((data.pain_suggested_dispositions||[]).map(item=>[item.pain_point_id,item]));
+    const state=(data.module_states||{}).pain||{};const canReview=state.result_available&&state.generation_status!=="STALE";
+    return `${modulePanel("pain",data)}<div class="notice">系统已根据证据完整性给出建议状态。医疗人员只需调整例外条目，再统一确认本页审核结果；系统建议本身不代表已通过医疗审核。</div><div class="summary-grid"><div class="summary-box"><h3>临床痛点</h3><strong>${p.summary.clinical}</strong></div><div class="summary-box"><h3>费用痛点</h3><strong>${p.summary.cost}</strong></div><div class="summary-box"><h3>就医体验痛点</h3><strong>${p.summary.experience}</strong></div></div>
+      ${entityList("分析结果",p.pain_points,i=>{const review=byId[i.pain_point_id],suggestion=suggested[i.pain_point_id]||{};return `<article class="medical-item"><div class="section-title"><strong>${esc(i.title)}</strong><span>${tag(i.dimension)} ${tag(i.severity)}</span></div><p><strong>具体类型：</strong>${esc(label(i.type))}</p><p><strong>问题说明：</strong>${esc(i.description)}</p><p><strong>归类原因：</strong>该问题符合“${esc(label(i.type))}”类型：${esc(i.description)}</p><p><strong>建议：</strong>${esc(i.recommended_action)}</p><p><strong>${review?"当前审核选择":"系统建议"}：</strong>${esc(label(review?review.decision:suggestion.decision||"HIDE"))}${!review&&suggestion.reason?` <span class="muted">${esc(suggestion.reason)}</span>`:""}</p>${review&&review.decision==="EDIT"?`<div class="notice"><strong>编辑后纳入内容</strong><p>${esc(review.title||i.title)}：${esc(review.summary||i.description)}</p><p>${esc(review.suggestion||i.recommended_action)}</p></div>`:""}<small class="muted">可信度：${Math.round((i.confidence||0)*100)}%</small>
+      ${i.evidence&&i.evidence.length?`<details class="evidence-details"><summary>查看病例证据</summary>${i.evidence.map(e=>`<p>${esc(e.text)} <small>${esc(e.document_id)} · 第 ${esc(e.page||"—")} 页</small></p>`).join("")}</details>`:""}<div class="field-actions"><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="EDIT">编辑</button><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="SHOW">改为纳入关怀</button><button class="btn secondary pain-item-action" data-id="${esc(i.pain_point_id)}" data-decision="HIDE">改为忽略</button></div></article>`;})}
+      ${canReview?`<section class="medical-section"><h3>完成痛点审核</h3><p class="muted">点击确认即表示您已查看本页，并接受系统建议及您对例外条目的调整。</p>${moduleReviewControls("pain","确认本页审核结果")}</section>`:""}`;
   }
   function evidenceGroup(path){
     if(/^diagnoses(?:\[|\.)/.test(path))return "诊断";

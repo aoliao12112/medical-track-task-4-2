@@ -47,7 +47,7 @@ const context = {
 };
 vm.createContext(context);
 const source = fs.readFileSync("web/dist/medical.js", "utf8");
-const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems,modulePanel};})();");
+const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain};})();");
 vm.runInContext(testableSource, context);
 for (const required of [
   "/field-reviews", "确认无误", "修改并确认", "无法确认", "preview_available",
@@ -58,6 +58,7 @@ for (const required of [
   "已引用依据摘要", "查看详细依据", "修改依据", "care-evidence-search",
   "手术/治疗", "住院信息", "推荐理由与证据", "查看来源", "aggregateRecommendationItems",
   "data-review-module=\"${module}\"", "复核通过", "退回修改",
+  "归类原因", "系统建议", "纳入关怀", "编辑后纳入", "确认本页审核结果",
 ]) {
   assert.ok(source.includes(required), `medical field review UI missing: ${required}`);
 }
@@ -70,6 +71,26 @@ assert.ok(!source.includes('<select class="input care-evidence" multiple'),
 const customerSource = fs.readFileSync("web/dist/customer.js", "utf8");
 assert.ok(!customerSource.includes("evidence_fields"),
   "CUSTOMER portal must not expose care evidence_fields");
+assert.ok(!customerSource.includes("pain_result"),
+  "CUSTOMER portal must not consume raw pain_result");
+
+const painHtml = context.__medicalDisplayTest.renderPain({
+  pain_result: {summary:{clinical:1,cost:0,experience:0},pain_points:[{
+    pain_point_id:"pain-1",dimension:"clinical",type:"ABNORMAL_EXAMINATION_FOLLOWUP",
+    title:"复查安排需要关注",description:"检查异常但材料中未见后续复查安排。",
+    recommended_action:"复诊时向医生确认复查时间。",severity:"medium",confidence:.9,
+    evidence:[{document_id:"record.jpg",page:1,text:"检查异常，建议复查"}],
+  }]},
+  pain_item_reviews:[],
+  pain_suggested_dispositions:[{pain_point_id:"pain-1",decision:"SHOW",reason:"证据与行动建议完整。"}],
+  module_states:{pain:{generation_status:"GENERATED",review_status:"REVIEW_REQUIRED",result_available:true,blockers:[],warnings:[]}},
+  field_review_summary:{pending:0,unresolved:0},
+});
+assert.match(painHtml,/具体类型：/);
+assert.match(painHtml,/归类原因：/);
+assert.match(painHtml,/系统建议：<\/strong>纳入关怀/);
+assert.match(painHtml,/确认本页审核结果/);
+assert.ok(!painHtml.includes("向客户展示"),"pain review uses internal care semantics");
 
 const pickerHtml = context.__medicalDisplayTest.evidenceSelect({care_evidence_options:[
   {path:"diagnoses[0].name",label:"主诊断",value:"肺部阴影"},

@@ -89,6 +89,11 @@ class PainRulesTest(unittest.TestCase):
             {PainDimension.CLINICAL, PainDimension.COST, PainDimension.EXPERIENCE},
         )
         self.assertTrue(all(point.evidence for point in report.pain_points))
+        self.assertTrue(all(point.type for point in report.pain_points))
+        # KR2 classification_reason reuses the existing description field.
+        self.assertTrue(all(point.description.strip() for point in report.pain_points))
+        self.assertTrue(all(point.recommended_action.strip() for point in report.pain_points))
+        self.assertGreaterEqual(len(PainPointType), 5)
 
     def test_payment_channel_does_not_create_personal_burden_pain(self) -> None:
         case = ClaimCase(case_id="pain-002")
@@ -360,6 +365,26 @@ class PainRulesTest(unittest.TestCase):
         report = analyze_pain_points(case, [hallucinated])
         self.assertFalse(report.pain_points)
         self.assertTrue(any("缺少可溯源证据" in warning for warning in report.analysis_warnings))
+
+    def test_candidate_without_classification_reason_is_not_a_formal_pain_point(self) -> None:
+        case = ClaimCase(
+            case_id="pain-missing-reason",
+            diagnoses=[Diagnosis(
+                diagnosis_id="dx-1", name=extracted("肺炎", "诊断：肺炎"),
+            )],
+        )
+        candidate = PainPoint(
+            pain_point_id="PP-NO-REASON", dimension=PainDimension.EXPERIENCE,
+            type=PainPointType.DIAGNOSIS_TERM_HARD_TO_UNDERSTAND,
+            title="诊断术语需要解释", severity=PainSeverity.LOW,
+            severity_score=30, confidence=0.8, description="",
+            evidence=[Evidence(document_id="doc-1", page=1, text="诊断：肺炎")],
+            related_fields=["diagnoses[0].name"], recommended_action="请医生解释诊断含义。",
+            detector=DetectorInfo(method=DetectorMethod.LLM, version="test"),
+        )
+        report = analyze_pain_points(case, [candidate])
+        self.assertFalse(report.pain_points)
+        self.assertTrue(any("缺少归类原因" in item for item in report.analysis_warnings))
 
     def test_broad_medication_diagnosis_candidate_without_indexes_is_rejected(self) -> None:
         case = ClaimCase(

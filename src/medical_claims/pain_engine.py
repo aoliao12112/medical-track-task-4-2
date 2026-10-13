@@ -228,6 +228,22 @@ def _limit_points(points: list[PainPoint]) -> tuple[list[PainPoint], list[str]]:
     return kept, warnings
 
 
+def _formal_points(points: list[PainPoint]) -> tuple[list[PainPoint], list[str]]:
+    """Keep only actionable, evidence-grounded KR2 pain points."""
+    accepted: list[PainPoint] = []
+    warnings: list[str] = []
+    for point in points:
+        complete = all((
+            point.title.strip(), point.description.strip(),
+            point.recommended_action.strip(), point.evidence,
+        ))
+        if not complete:
+            warnings.append(f"已忽略缺少归类原因、行动建议或病例证据的候选：{point.type.value}")
+            continue
+        accepted.append(point)
+    return accepted, warnings
+
+
 def build_report(
     case_id: str,
     points: list[PainPoint],
@@ -261,9 +277,10 @@ def analyze_pain_points(
     rule_points = detect_rule_pain_points(case)
     accepted, evidence_warnings = _sanitize_semantic_points(case, semantic_points or [])
     merged = merge_pain_points(rule_points, accepted)
-    points, limit_warnings = _limit_points(merged)
+    formal, formal_warnings = _formal_points(merged)
+    points, limit_warnings = _limit_points(formal)
     return build_report(
         case.case_id,
         points,
-        [*(warnings or []), *evidence_warnings, *limit_warnings],
+        [*(warnings or []), *evidence_warnings, *formal_warnings, *limit_warnings],
     )

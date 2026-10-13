@@ -765,10 +765,93 @@ class CaseStorage:
         return {
             "total": len(point_ids),
             "pending": sum(point_id not in decisions for point_id in point_ids),
-            "show": sum(value == "SHOW" for value in decisions.values()),
+            "show": sum(value in {"SHOW", "CONFIRM"} for value in decisions.values()),
             "edit": sum(value == "EDIT" for value in decisions.values()),
             "hide": sum(value == "HIDE" for value in decisions.values()),
         }
+
+    @staticmethod
+    def _pain_system_suggestions(pain):
+        """Return review defaults without treating them as medical approval."""
+        suggestions = []
+        for point in (pain or {}).get("pain_points", []):
+            evidence = [
+                item for item in point.get("evidence", [])
+                if item.get("document_id") and str(item.get("text") or "").strip()
+            ]
+            required = all([
+                point.get("pain_point_id"),
+                point.get("dimension") in {"clinical", "cost", "experience"},
+                point.get("type"), str(point.get("title") or "").strip(),
+                str(point.get("description") or "").strip(),
+                str(point.get("recommended_action") or "").strip(), evidence,
+            ])
+            confidence = float(point.get("confidence") or 0)
+            if not required:
+                decision = "HIDE"
+                reason = "关键信息或可溯源病例证据不完整，需人工处理后才能纳入关怀。"
+                blocker = "痛点缺少正式输出所需字段或可溯源证据"
+            elif confidence < 0.65:
+                decision = "HIDE"
+                reason = "当前可信度较低，系统建议先作为补充观察。"
+                blocker = None
+            else:
+                decision = "SHOW"
+                reason = "维度、类型、归类原因、行动建议和病例证据完整。"
+                blocker = None
+            suggestions.append({
+                "pain_point_id": point.get("pain_point_id"),
+                "decision": decision, "reason": reason,
+                "approval_blocker": blocker,
+            })
+        return suggestions
+
+    @classmethod
+    def _pain_approval_decisions(cls, pain, item_reviews, inline_decisions):
+        """Resolve system defaults plus explicit reviewer overrides for approval."""
+        points = {
+            item.get("pain_point_id"): item
+            for item in (pain or {}).get("pain_points", [])
+        }
+        suggestions = {
+            item["pain_point_id"]: item for item in cls._pain_system_suggestions(pain)
+        }
+        resolved = {
+            point_id: {
+                "pain_point_id": point_id,
+                "decision": "CONFIRM" if suggestion["decision"] == "SHOW" else "HIDE",
+            }
+            for point_id, suggestion in suggestions.items()
+        }
+        for raw in item_reviews:
+            point_id = raw.get("pain_point_id")
+            if point_id not in points:
+                continue
+            decision = raw.get("decision")
+            item = {
+                "pain_point_id": point_id,
+                "decision": "CONFIRM" if decision == "SHOW" else decision,
+            }
+            if decision == "EDIT":
+                item.update({
+                    "title": raw.get("title") or points[point_id].get("title"),
+                    "description": raw.get("summary") or points[point_id].get("description"),
+                    "recommended_action": raw.get("suggestion")
+                    or points[point_id].get("recommended_action"),
+                })
+            resolved[point_id] = item
+        for raw in inline_decisions:
+            point_id = raw.get("pain_point_id")
+            if point_id in points:
+                item = deepcopy(raw)
+                if item.get("decision") == "SHOW":
+                    item["decision"] = "CONFIRM"
+                resolved[point_id] = item
+        blockers = [
+            suggestion["approval_blocker"] for suggestion in suggestions.values()
+            if suggestion.get("approval_blocker")
+        ]
+        return [resolved[point_id] for point_id in points if point_id in resolved], blockers
 
     def get_effective_case_state(self, case_id):
         """Return the raw extraction plus the field-review overlay used downstream."""
@@ -896,7 +979,7 @@ class CaseStorage:
             raise WorkflowConflict("未知复核模块")
 
     def save_pain_item_review(self, user_id, case_id, pain_point_id, request):
-        """Save a customer-visibility decision bound to the current pain report."""
+        """Save an internal care-disposition override bound to the current pain report."""
         from .contracts import PainItemReviewRecordV1
         if not self.user_can_access_case(user_id, case_id, "MEDICAL_CASE_VIEW"):
             raise CaseNotFound(case_id)
@@ -1033,21 +1116,16 @@ class CaseStorage:
             if decision.value == "APPROVED" and module == "pain":
                 pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
                 item_reviews = self._latest_pain_item_reviews(db, case_id, pain)
-                # The current UI saves item decisions individually, while older callers
-                # submit the complete overlay together with the module review.  Treat
-                # both representations as the same review contract when deciding
-                # whether approval is safe.  Partial overlays still fail this check.
                 inline_decisions = (payload or {}).get("item_decisions") or []
-                inline_ids = {
-                    item.get("pain_point_id") for item in inline_decisions
-                    if item.get("pain_point_id")
-                }
-                item_reviews = [
-                    item for item in item_reviews
-                    if item.get("pain_point_id") not in inline_ids
-                ] + inline_decisions
-                if self._pain_review_summary(pain, item_reviews)["pending"]:
-                    raise WorkflowConflict("请先完成所有痛点条目的 SHOW / EDIT / HIDE 决策")
+                final_decisions, blockers = self._pain_approval_decisions(
+                    pain, item_reviews, inline_decisions,
+                )
+                if blockers:
+                    raise WorkflowConflict("；".join(dict.fromkeys(blockers)))
+                if self._pain_review_summary(pain, final_decisions)["pending"]:
+                    raise WorkflowConflict("仍有痛点缺少明确的纳入、编辑后纳入或忽略结论")
+                payload = dict(payload or {})
+                payload["item_decisions"] = final_decisions
             if decision.value == "APPROVED" and module == "care":
                 care = json.loads(row["care_result_json"]) if row["care_result_json"] else None
                 blocked = [item for item in (care or {}).get("safety_checks", [])
@@ -1086,9 +1164,10 @@ class CaseStorage:
         if not pain:
             return pain
         effective = deepcopy(pain)
+        if (review or {}).get("decision") != "APPROVED":
+            return effective
         payload = (review or {}).get("payload") or {}
         decisions = {item.get("pain_point_id"): item for item in payload.get("item_decisions", [])}
-        approved = (review or {}).get("decision") == "APPROVED"
         visible = []
         for point in effective.get("pain_points", []):
             item = decisions.get(point.get("pain_point_id")) or {}
@@ -1099,7 +1178,7 @@ class CaseStorage:
                 for key in ("title", "description", "recommended_action"):
                     if item.get(key):
                         point[key] = item[key]
-            if action in {"CONFIRM", "EDIT"} or approved:
+            if action in {"CONFIRM", "EDIT"}:
                 point["review_required"] = False
             visible.append(point)
         effective["pain_points"] = visible
@@ -1352,7 +1431,6 @@ class CaseStorage:
                 db, case_id, effective_structured, raw_pain, raw_care, observations, recommendation,
             )
             pain_item_reviews = self._latest_pain_item_reviews(db, case_id, raw_pain)
-            pain_review_summary = self._pain_review_summary(raw_pain, pain_item_reviews)
             care_revisions = [json.loads(item[0]) for item in db.execute(
                 "SELECT record_json FROM reviews WHERE case_id=? AND target_type='care_revision' "
                 "ORDER BY rowid DESC", (case_id,),
@@ -1367,6 +1445,11 @@ class CaseStorage:
             ).fetchone())
             pain_review = self._latest_module_review(db, case_id, "pain", raw_pain)
             care_review = self._latest_module_review(db, case_id, "care", raw_care)
+            pain_suggestions = self._pain_system_suggestions(raw_pain)
+            summary_reviews = pain_item_reviews
+            if (pain_review or {}).get("decision") == "APPROVED":
+                summary_reviews = ((pain_review.get("payload") or {}).get("item_decisions") or [])
+            pain_review_summary = self._pain_review_summary(raw_pain, summary_reviews)
             effective_pain = self._without_bbox(self._effective_pain_result(raw_pain, pain_review))
             effective_care = self._without_bbox(self._effective_care_result(raw_care, care_review))
             if effective_care and care_review and care_review.get("decision") == "APPROVED":
@@ -1415,6 +1498,7 @@ class CaseStorage:
                     "unresolved": sum(item.get("decision") == "UNRESOLVED" for item in field_reviews),
                 },
                 "pain_item_reviews": self._without_bbox(pain_item_reviews),
+                "pain_suggested_dispositions": pain_suggestions,
                 "pain_review_summary": pain_review_summary,
                 "care_revisions": self._without_bbox(care_revisions),
                 "pain_effective_result": effective_pain,
@@ -2285,19 +2369,17 @@ class CaseStorage:
         with self._connect() as db:
             row = self._row(db, case_id)
             pain = json.loads(row["pain_result_json"]) if row["pain_result_json"] else None
-            reviews = self._latest_pain_item_reviews(db, case_id, pain)
-            review_by_id = {item["pain_point_id"]: item for item in reviews}
+            review = self._latest_module_review(db, case_id, "pain", pain)
+            if (review or {}).get("decision") != "APPROVED":
+                return []
+            effective = self._effective_pain_result(pain, review)
             output = []
-            for point in (pain or {}).get("pain_points", []):
-                decision = review_by_id.get(point.get("pain_point_id"))
-                if not decision or decision.get("decision") == "HIDE":
-                    continue
+            for point in (effective or {}).get("pain_points", []):
                 output.append({
                     "pain_point_id": point["pain_point_id"],
-                    "title": decision.get("title") or point.get("title") or "需要关注",
-                    "summary": decision.get("summary") or point.get("description") or "请结合本次就诊材料与医生确认。",
-                    "suggestion": decision.get("suggestion") or point.get("recommended_action")
-                    or "请在下次就诊时向医生确认。",
+                    "title": point.get("title") or "需要关注",
+                    "summary": point.get("description") or "请结合本次就诊材料与医生确认。",
+                    "suggestion": point.get("recommended_action") or "请在下次就诊时向医生确认。",
                     "severity": point.get("severity") or "low",
                 })
             return output

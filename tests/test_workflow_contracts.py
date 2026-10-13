@@ -80,7 +80,7 @@ def test_contracts_are_versioned_strict_and_split_cost_routing():
         })
 
 
-def test_medical_v1_requires_fields_item_decisions_and_current_module_approvals(tmp_path):
+def test_medical_v1_accepts_system_pain_defaults_after_explicit_module_approval(tmp_path):
     storage, medical_id, raw = storage_fixture(tmp_path)
     state = storage.get_effective_case_state(raw.case_id)
     effective = ClaimCase.model_validate(state["effective"])
@@ -99,22 +99,21 @@ def test_medical_v1_requires_fields_item_decisions_and_current_module_approvals(
     detail = storage.get_medical_case_detail(medical_id, raw.case_id)
     assert detail["medical_contract_enforced"] is True
     assert storage.medical_final_gate(detail).decision == "NOT_READY"
-    with pytest.raises(ValueError, match="SHOW / EDIT / HIDE"):
-        storage.save_module_review(
-            medical_id, raw.case_id, "pain_report", ReviewDecision.APPROVED, "",
-            storage.module_review_content(raw.case_id, "pain"),
-        )
-
-    storage.save_field_review(medical_id, raw.case_id, FieldReviewRequest(
-        field_path="costs.total_amount", decision=FieldReviewDecision.CONFIRMED,
-    ))
-    storage.save_pain_item_review(
-        medical_id, raw.case_id, "pain-1", PainItemReviewRequestV1(decision="SHOW"),
-    )
     storage.save_module_review(
         medical_id, raw.case_id, "pain_report", ReviewDecision.APPROVED, "",
         storage.module_review_content(raw.case_id, "pain"),
     )
+    reviewed = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert reviewed["pain_review_summary"]["pending"] == 0
+    assert reviewed["pain_suggested_dispositions"][0]["decision"] == "SHOW"
+    assert reviewed["pain_effective_result"]["pain_points"][0]["review_required"] is False
+    low_confidence = pain.model_dump(mode="json")
+    low_confidence["pain_points"][0]["confidence"] = 0.4
+    assert storage._pain_system_suggestions(low_confidence)[0]["decision"] == "HIDE"
+
+    storage.save_field_review(medical_id, raw.case_id, FieldReviewRequest(
+        field_path="costs.total_amount", decision=FieldReviewDecision.CONFIRMED,
+    ))
     storage.save_module_review(
         medical_id, raw.case_id, "care_guide", ReviewDecision.APPROVED, "",
         storage.module_review_content(raw.case_id, "care"),
@@ -185,10 +184,6 @@ def test_medical_v1_http_endpoints_recalculate_revision_and_unlock_final_gate(
     assert client.post("/api/auth/login", json={
         "username": "medical-v1-api", "password": "safe-password-123",
     }).status_code == 200
-    assert client.post(
-        f"/api/medical/cases/{metadata.case_id}/pain-points/pain-1/review",
-        json={"decision": "SHOW", "note": "已核对原始材料"},
-    ).status_code == 201
     assert client.post(
         f"/api/medical/cases/{metadata.case_id}/field-reviews",
         json={"field_path": "costs.total_amount", "decision": "CONFIRMED"},
