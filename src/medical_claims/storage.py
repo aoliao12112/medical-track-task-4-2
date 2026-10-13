@@ -160,6 +160,8 @@ class CaseStorage:
         with self._connect() as db:
             row = self._row(db, case_id)
             result = {name: row[name] for name in WorkflowCase.model_fields}
+            result["care_status"] = row["care_status"]
+            result["claim_status"] = row["claim_status"]
             for kind in ("ocr", "structured", "pain", "care"):
                 result[f"has_{kind}_result"] = row[f"{kind}_result_json"] is not None
             return result
@@ -398,6 +400,21 @@ class CaseStorage:
         return f"****{digits[-4:]}" if len(digits) >= 4 else None
 
     @staticmethod
+    def _mask_contact_phone(value):
+        digits = re.sub(r"\D", "", str(value or ""))
+        return f"{digits[:3]}****{digits[-4:]}" if len(digits) >= 7 else None
+
+    @staticmethod
+    def _mask_contact_email(value):
+        value = str(value or "").strip()
+        if "@" not in value:
+            return None
+        local, domain = value.rsplit("@", 1)
+        if not local or not domain:
+            return None
+        return f"{local[:2] if len(local) > 1 else local[:1]}***@{domain}"
+
+    @staticmethod
     def _claim_material_status(workflow_status, ocr_payload, structured_payload):
         if workflow_status == "PROCESSING":
             return "processing"
@@ -464,6 +481,10 @@ class CaseStorage:
                 "source_type": task["source_type"],
                 "category": task["category"],
                 "priority": task["priority"],
+                "status": task["status"],
+                "claimed_at": task["claimed_at"],
+                "resolved_at": task["resolved_at"],
+                "resolution": task["resolution"],
             })
         return tasks
 
@@ -494,6 +515,67 @@ class CaseStorage:
         for item in items:
             item["schema_version"] = "case-task-v1"
         return items
+
+    def _case_task_for_assignee(self, db, user_id, task_id, target_role):
+        row = db.execute(
+            "SELECT t.*, c.claim_event_id, c.customer_user_id FROM case_tasks t "
+            "JOIN cases c ON c.case_id=t.case_id "
+            "JOIN case_participants cp ON cp.case_id=t.case_id AND cp.user_id=t.assignee_user_id "
+            "AND cp.status='ACTIVE' WHERE t.task_id=? AND t.assignee_user_id=? AND t.target_role=?",
+            (task_id, user_id, target_role),
+        ).fetchone()
+        if row is None:
+            raise WorkflowItemNotFound("任务不存在或当前账号不是任务负责人")
+        return row
+
+    def get_case_task(self, user_id, task_id, target_role):
+        with self._connect() as db:
+            item = dict(self._case_task_for_assignee(db, user_id, task_id, target_role))
+        item.pop("customer_user_id", None)
+        item["schema_version"] = "case-task-v1"
+        return item
+
+    def claim_case_task(self, user_id, task_id, target_role):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._case_task_for_assignee(db, user_id, task_id, target_role)
+            if row["status"] == "RESOLVED":
+                raise WorkflowConflict("已解决的任务不能重新开始处理")
+            if row["status"] == "OPEN":
+                db.execute("UPDATE case_tasks SET status='PROCESSING', claimed_at=? WHERE task_id=?",
+                           (now, task_id))
+        return self.get_case_task(user_id, task_id, target_role)
+
+    def case_task_contact_preview(self, user_id, task_id, target_role):
+        with self._connect() as db:
+            row = self._case_task_for_assignee(db, user_id, task_id, target_role)
+            if row["status"] != "PROCESSING":
+                raise WorkflowConflict("请先点击开始处理，再查看客户联系信息")
+            customer = db.execute("SELECT phone, email FROM users WHERE user_id=? AND status='ACTIVE'",
+                                  (row["customer_user_id"],)).fetchone()
+        return {
+            "task_id": task_id,
+            "phone_masked": self._mask_contact_phone(customer["phone"] if customer else None),
+            "email_masked": self._mask_contact_email(customer["email"] if customer else None),
+        }
+
+    def resolve_case_task(self, user_id, task_id, resolution, target_role):
+        resolution = str(resolution or "").strip()
+        if not resolution:
+            raise WorkflowConflict("请填写解决反馈")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._case_task_for_assignee(db, user_id, task_id, target_role)
+            if row["status"] == "RESOLVED" and row["resolution"] != resolution:
+                raise WorkflowConflict("该任务已经解决，不能重复修改反馈")
+            if row["status"] == "OPEN":
+                raise WorkflowConflict("请先开始处理该任务")
+            if row["status"] == "PROCESSING":
+                db.execute("UPDATE case_tasks SET status='RESOLVED', resolved_at=?, resolution=? WHERE task_id=?",
+                           (now, resolution, task_id))
+        return self.get_case_task(user_id, task_id, target_role)
 
     def trigger_care(self, user_id, case_id):
         if not self.user_can_access_case(user_id, case_id, "CARE_TRIGGER"):
@@ -3378,8 +3460,8 @@ class CaseStorage:
                     return item
                 raise WorkflowConflict("该咨询已经完成分流，不能重复改派")
 
-            assignee_user_id = None
-            review_status = "SERVICE_HANDLING"
+            assignee_user_id = user_id if target_role == "SERVICE" else None
+            review_status = "SERVICE_HANDLING" if target_role == "SERVICE" else "ROUTED"
             if target_role in {"CLAIM", "MEDICAL"}:
                 participant_role = "CLAIM_OWNER" if target_role == "CLAIM" else "MEDICAL_REVIEWER"
                 assignee = db.execute(
@@ -3395,32 +3477,31 @@ class CaseStorage:
                     role_name = "理赔负责人" if target_role == "CLAIM" else "医疗复核人员"
                     raise WorkflowConflict(f"案件尚未分配有效的{role_name}，请先完成角色分配")
                 assignee_user_id = assignee["user_id"]
-                task = CaseTaskV1(
-                    task_id=str(uuid4()),
-                    case_id=item["case_id"],
-                    source_type="SERVICE_CONSULTATION",
-                    source_id=analysis_id,
-                    target_role=target_role,
-                    assignee_user_id=assignee_user_id,
-                    category=category,
-                    priority=priority,
-                    status="OPEN",
-                    note=note,
-                    created_by=user_id,
-                    created_at=now,
-                ).model_dump(mode="json")
-                db.execute(
-                    "INSERT INTO case_tasks(task_id, case_id, source_type, source_id, target_role, "
-                    "assignee_user_id, category, priority, status, note, created_by, created_at, "
-                    "claimed_at, resolved_at, resolution) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    tuple(task[key] for key in (
-                        "task_id", "case_id", "source_type", "source_id", "target_role",
-                        "assignee_user_id", "category", "priority", "status", "note",
-                        "created_by", "created_at", "claimed_at", "resolved_at", "resolution",
-                    )),
-                )
-                review_status = "ROUTED"
+            task = CaseTaskV1(
+                task_id=str(uuid4()),
+                case_id=item["case_id"],
+                source_type="SERVICE_CONSULTATION",
+                source_id=analysis_id,
+                target_role=target_role,
+                assignee_user_id=assignee_user_id,
+                category=category,
+                priority=priority,
+                status="OPEN",
+                note=note,
+                created_by=user_id,
+                created_at=now,
+            ).model_dump(mode="json")
+            db.execute(
+                "INSERT INTO case_tasks(task_id, case_id, source_type, source_id, target_role, "
+                "assignee_user_id, category, priority, status, note, created_by, created_at, "
+                "claimed_at, resolved_at, resolution) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(task[key] for key in (
+                    "task_id", "case_id", "source_type", "source_id", "target_role",
+                    "assignee_user_id", "category", "priority", "status", "note",
+                    "created_by", "created_at", "claimed_at", "resolved_at", "resolution",
+                )),
+            )
             db.execute(
                 "UPDATE service_analysis_results SET review_status=?, reviewer_user_id=?, "
                 "route_target_role=?, route_note=?, routed_at=? WHERE analysis_id=?",
@@ -3473,10 +3554,76 @@ class CaseStorage:
                     if request_contact else None,
                 })
                 results.append(item)
+            if status != "CLOSED":
+                task_clauses = [
+                    "t.target_role='SERVICE'", "t.assignee_user_id=?",
+                    "cp.user_id=?", "cp.case_role='SERVICE_AGENT'", "cp.status='ACTIVE'",
+                ]
+                task_params = [user_id, user_id]
+                if status:
+                    task_clauses.append("t.status=?")
+                    task_params.append(status)
+                task_sql = f"""
+                    SELECT t.*, c.claim_event_id, assignee.display_name AS assignee_name,
+                           s.deidentified_text AS source_summary
+                    FROM case_tasks t
+                    JOIN cases c ON c.case_id=t.case_id
+                    JOIN case_participants cp ON cp.case_id=t.case_id
+                    LEFT JOIN users assignee ON assignee.user_id=t.assignee_user_id
+                    LEFT JOIN service_analysis_results a
+                      ON t.source_type='SERVICE_CONSULTATION' AND a.analysis_id=t.source_id
+                    LEFT JOIN service_sessions s ON s.session_id_hash=a.session_id_hash
+                    WHERE {' AND '.join(task_clauses)}
+                """
+                for row in db.execute(task_sql, task_params):
+                    results.append({
+                        "task_id": row["task_id"], "case_id": row["case_id"],
+                        "service_analysis_id": row["source_id"],
+                        "source_type": "service_session", "category": row["category"],
+                        "priority": str(row["priority"]).lower(), "status": row["status"],
+                        "assignee": row["assignee_name"], "note": row["note"],
+                        "resolution": row["resolution"], "created_at": row["created_at"],
+                        "resolved_at": row["resolved_at"],
+                        "claim_event_id": row["claim_event_id"],
+                        "feedback_comment": row["source_summary"], "feedback_rating": None,
+                        "feedback_helpful": None, "request_contact": False,
+                        "customer_phone_masked": None,
+                    })
+            results.sort(key=lambda item: item["created_at"], reverse=True)
             return results
+
+    def list_service_routed_case_tasks(self, user_id, status=None):
+        clauses = [
+            "t.created_by=?", "cp.user_id=?", "cp.case_role='SERVICE_AGENT'",
+            "cp.status='ACTIVE'", "t.target_role IN ('CLAIM','MEDICAL')",
+        ]
+        params = [user_id, user_id]
+        if status:
+            clauses.append("t.status=?")
+            params.append(status)
+        sql = f"""
+            SELECT t.*, c.claim_event_id, assignee.display_name AS assignee_name,
+                   s.deidentified_text AS source_summary
+            FROM case_tasks t JOIN cases c ON c.case_id=t.case_id
+            JOIN case_participants cp ON cp.case_id=t.case_id
+            LEFT JOIN users assignee ON assignee.user_id=t.assignee_user_id
+            LEFT JOIN service_analysis_results a
+              ON t.source_type='SERVICE_CONSULTATION' AND a.analysis_id=t.source_id
+            LEFT JOIN service_sessions s ON s.session_id_hash=a.session_id_hash
+            WHERE {' AND '.join(clauses)} ORDER BY t.created_at DESC
+        """
+        with self._connect() as db:
+            return [dict(row) for row in db.execute(sql, params)]
 
     def claim_service_follow_up(self, user_id, task_id):
         from .feedback_models import FollowUpTask, FollowUpStatus
+        with self._connect() as db:
+            service_task = db.execute(
+                "SELECT 1 FROM case_tasks WHERE task_id=? AND target_role='SERVICE'",
+                (task_id,),
+            ).fetchone()
+        if service_task is not None:
+            return self.claim_case_task(user_id, task_id, "SERVICE")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -3505,6 +3652,13 @@ class CaseStorage:
         )
 
     def resolve_service_follow_up(self, user_id, task_id, resolution):
+        with self._connect() as db:
+            service_task = db.execute(
+                "SELECT 1 FROM case_tasks WHERE task_id=? AND target_role='SERVICE'",
+                (task_id,),
+            ).fetchone()
+        if service_task is not None:
+            return self.resolve_case_task(user_id, task_id, resolution, "SERVICE")
         with self._connect() as db:
             row = db.execute(
                 "SELECT t.case_id, t.assignee_user_id FROM follow_up_tasks t "

@@ -293,6 +293,22 @@ def test_service_routes_medical_to_assignee_and_keeps_service_work_local(tmp_pat
     assert [(item["case_id"], item["category"]) for item in tasks.json()] == [
         (case_a.case_id, "medication_question"),
     ]
+    task_id = tasks.json()[0]["task_id"]
+    assert medical.get(f"/api/medical/tasks/{task_id}/contact-preview").status_code == 409
+    started = medical.post(f"/api/medical/tasks/{task_id}/claim")
+    assert started.status_code == 200
+    assert started.json()["status"] == "PROCESSING"
+    contact = medical.get(f"/api/medical/tasks/{task_id}/contact-preview")
+    assert contact.json()["phone_masked"] == "138****3456"
+    assert "13800123456" not in contact.text
+    resolved = medical.post(
+        f"/api/medical/tasks/{task_id}/resolve",
+        json={"resolution": "已结合出院材料答复用药问题"},
+    )
+    assert resolved.status_code == 200
+    tracked = service.get("/api/service/routed-tasks").json()
+    assert tracked[0]["status"] == "RESOLVED"
+    assert tracked[0]["resolution"] == "已结合出院材料答复用药问题"
 
     local_consult = service.post("/api/service/consultations", json={
         **base, "deidentified_text": "客户希望客服说明增值服务预约方式。",
@@ -311,7 +327,21 @@ def test_service_routes_medical_to_assignee_and_keeps_service_work_local(tmp_pat
     with storage._connect() as db:
         assert db.execute(
             "SELECT COUNT(*) FROM case_tasks WHERE source_id=?", (local_consult["analysis_id"],),
-        ).fetchone()[0] == 0
+        ).fetchone()[0] == 1
+    local_tasks = [
+        item for item in service.get("/api/service/follow-ups").json()
+        if item.get("service_analysis_id") == local_consult["analysis_id"]
+    ]
+    assert len(local_tasks) == 1
+    assert local_tasks[0]["status"] == "OPEN"
+    local_task_id = local_tasks[0]["task_id"]
+    assert service.post(f"/api/service/follow-ups/{local_task_id}/claim").json()["status"] == "PROCESSING"
+    completed = service.post(
+        f"/api/service/follow-ups/{local_task_id}/resolve",
+        json={"resolution": "已向客户说明增值服务预约方式"},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "RESOLVED"
 
 
 def test_medical_route_without_assignee_stays_pending(tmp_path, monkeypatch):

@@ -31,8 +31,8 @@ def test_fresh_database_has_versioned_complete_schema(tmp_path):
     path = tmp_path / "competition.db"
     storage = CaseStorage(path)
     info = storage.schema_info()
-    assert info["current_version"] == CURRENT_SCHEMA_VERSION == 6
-    assert [item["version"] for item in info["applied_migrations"]] == [1, 2, 3, 4, 5, 6]
+    assert info["current_version"] == CURRENT_SCHEMA_VERSION == 7
+    assert [item["version"] for item in info["applied_migrations"]] == [1, 2, 3, 4, 5, 6, 7]
     expected = {
         "schema_migrations", "users", "roles", "permissions", "role_permissions",
         "case_participants", "cases", "case_results", "case_profile_contexts",

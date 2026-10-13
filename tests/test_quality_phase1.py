@@ -628,11 +628,20 @@ def test_quality_overall_renormalizes_only_scored_dimensions_and_requires_60_per
 def test_quality_context_is_filtered_and_deidentified():
     case = ClaimCase(
         case_id="PRIVATE-CASE-ID",
-        diagnoses=[Diagnosis(diagnosis_id="D1", name=extracted("肺炎"))],
+        diagnoses=[Diagnosis(diagnosis_id="D1", name=extracted("肺炎"), code=extracted("J18.9"))],
+        procedures=[Procedure(procedure_id="P1", name=extracted("雾化吸入"), is_historical=False)],
+        medications=[Medication(
+            medication_id="M1", name=extracted("阿莫西林"),
+            usage_condition=extracted("饭后"), max_daily_dose=extracted("1.5g"),
+            additional_instructions=extracted("完成疗程"),
+        )],
     )
-    context = json.dumps(build_quality_case_context(case), ensure_ascii=False)
+    raw = build_quality_case_context(case)
+    context = json.dumps(raw, ensure_ascii=False)
     assert "PRIVATE-CASE-ID" not in context
-    assert "肺炎" in context
+    assert raw["diagnoses"][0]["code"]["value"] == "J18.9"
+    assert raw["medications"][0]["usage_condition"]["value"] == "饭后"
+    assert raw["procedures"][0]["is_historical"] is False
     assert "bbox" not in context
 
 

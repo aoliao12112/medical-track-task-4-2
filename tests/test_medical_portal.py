@@ -353,11 +353,30 @@ def test_only_care_workflow_cases_enter_medical_queue(tmp_path, monkeypatch):
         consent_status="authorized", deidentification_status="confirmed",
     ), owner_user_id=claim_id, claim_status="ACCEPTED")
     storage.assign_case_participant(waiting.case_id, medical_id, "MEDICAL_REVIEWER")
+    evidence = Evidence(document_id="waiting.jpg", page=1, text="肺炎")
+    storage.save_structured(waiting.case_id, ClaimCase(
+        case_id=waiting.case_id,
+        diagnoses=[Diagnosis(
+            diagnosis_id="waiting-dx", diagnosis_type=DiagnosisType.PRIMARY,
+            certainty=Certainty.CONFIRMED,
+            name=FieldValue(
+                value="肺炎", status=FieldStatus.EXTRACTED, confidence=.95,
+                evidence=[evidence],
+            ),
+        )],
+    ))
     ready_id = ready_case(storage, claim_id)
     storage.assign_case_participant(ready_id, medical_id, "MEDICAL_REVIEWER")
     client = TestClient(app)
     login(client, "medical-flow")
     assert [item["case_id"] for item in client.get("/api/medical/cases").json()] == [ready_id]
+    blocked = client.post(
+        f"/api/medical/cases/{waiting.case_id}/analysis/prepare",
+        json={"modules": ["pain"], "use_llm": False},
+    )
+    assert blocked.status_code == 409
+    assert "理赔人员触发医疗分析" in blocked.json()["detail"]
+    assert storage.get_results(waiting.case_id)["pain_result"] is None
 
 
 def test_claim_handoff_auto_assigns_available_medical_reviewer(tmp_path, monkeypatch):

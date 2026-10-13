@@ -10,6 +10,7 @@
   let fieldReviewContext = null;
   let painReviewContext = null;
   let evidencePickerSequence = 0;
+  let resolvingTaskId = null;
 
   const labels = {
     ACTIVE: "启用", CARE_TRIGGERED: "新进入医护关怀", PROCESSING: "处理中",
@@ -40,7 +41,7 @@
     MEDICATION_INSTRUCTION_INCOMPLETE: "用药说明不完整",
     CARE_GUIDANCE_INCOMPLETE: "后续关怀指导不完整",
     READY_FOR_FINAL_REVIEW: "可进行最终审核", NOT_READY: "尚未满足发布条件",
-    OPEN: "待处理", LOW: "低", MEDIUM: "中", HIGH: "高", URGENT: "紧急",
+    OPEN: "待处理", RESOLVED: "已解决", LOW: "低", MEDIUM: "中", HIGH: "高", URGENT: "紧急",
     medical_cost: "医疗费用", recovery_question: "康复疑问",
     medication_question: "用药疑问", recommendation_question: "推荐疑问"
   };
@@ -90,7 +91,11 @@
 
   async function tasks(){
     topTitle.textContent="咨询待办";const items=await api("/api/medical/tasks");
-    content.innerHTML=`<div class="page-head"><div><h1>客服转交的医疗咨询</h1><p class="muted">这里只显示明确分配给您的医疗问题；进入案件后结合材料处理</p></div></div><div class="queue-list">${items.length?items.map(item=>`<article class="card card-pad queue-card"><div class="section-title"><div><strong>${esc(item.claim_event_id)}</strong><p class="muted">${formatTime(item.created_at)} · ${esc(label(item.category))}</p></div><div>${tag(item.priority)} ${tag(item.status)}</div></div><p>${esc(item.note||item.source_summary||"客服转交医疗问题")}</p><button class="btn primary open-case" data-id="${esc(item.case_id)}">打开案件</button></article>`).join(""):'<section class="card"><div class="empty">当前没有客服转交的医疗咨询</div></section>'}</div>`;bindCaseLinks();
+    content.innerHTML=`<div class="page-head"><div><h1>客服转交的医疗咨询</h1><p class="muted">进入案件只查看材料；请明确点击开始处理和解决任务</p></div></div><div class="queue-list">${items.length?items.map(item=>`<article class="card card-pad queue-card"><div class="section-title"><div><strong>${esc(item.claim_event_id)}</strong><p class="muted">${formatTime(item.created_at)} · ${esc(label(item.category))}</p></div><div>${tag(item.priority)} ${tag(item.status)}</div></div><p>${esc(item.note||item.source_summary||"客服转交医疗问题")}</p>${item.resolution?`<p class="task-resolution">解决反馈：${esc(item.resolution)}</p>`:""}<div class="task-actions">${item.status==="OPEN"?`<button class="btn primary start-routed-task" data-id="${esc(item.task_id)}">开始处理</button>`:""}<button class="btn secondary open-case" data-id="${esc(item.case_id)}">${item.status==="OPEN"?"进入案件":"继续查看案件"}</button>${item.status==="PROCESSING"?`<button class="btn primary resolve-routed-task" data-id="${esc(item.task_id)}">解决任务</button>`:""}${item.status==="RESOLVED"?'<span class="tag success">已解决</span>':""}</div></article>`).join(""):'<section class="card"><div class="empty">当前没有客服转交的医疗咨询</div></section>'}</div>`;bindCaseLinks();bindRoutedTaskActions();
+  }
+  function bindRoutedTaskActions(){
+    document.querySelectorAll(".start-routed-task").forEach(button=>button.onclick=async()=>{button.disabled=true;try{await api(`/api/medical/tasks/${encodeURIComponent(button.dataset.id)}/claim`,{method:"POST"});const c=await api(`/api/medical/tasks/${encodeURIComponent(button.dataset.id)}/contact-preview`);document.getElementById("taskContactPhone").textContent=c.phone_masked||"未登记";document.getElementById("taskContactEmail").textContent=c.email_masked||"未登记";document.getElementById("taskContactDialog").classList.remove("hidden");await tasks();}catch(e){toast(e.message);button.disabled=false;}});
+    document.querySelectorAll(".resolve-routed-task").forEach(button=>button.onclick=()=>{resolvingTaskId=button.dataset.id;document.getElementById("taskResolution").value="";document.getElementById("taskResolveError").textContent="";document.getElementById("taskResolveDialog").classList.remove("hidden");});
   }
 
   async function openCase(id,tab="overview"){activeCaseId=id;activeTab=tab;document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));loading();try{currentCaseData=await api("/api/medical/cases/"+encodeURIComponent(id));renderCase(currentCaseData);}catch(e){errorState(e);}}
@@ -345,6 +350,9 @@
   document.getElementById("cancelFieldReview").onclick=()=>document.getElementById("fieldReviewDialog").classList.add("hidden");
   document.getElementById("cancelPainReview").onclick=()=>document.getElementById("painReviewDialog").classList.add("hidden");
   document.getElementById("closeSourceDialog").onclick=()=>document.getElementById("sourceDialog").classList.add("hidden");
+  document.getElementById("closeTaskContact").onclick=()=>document.getElementById("taskContactDialog").classList.add("hidden");
+  document.getElementById("cancelTaskResolve").onclick=()=>document.getElementById("taskResolveDialog").classList.add("hidden");
+  document.getElementById("saveTaskResolve").onclick=async()=>{const resolution=document.getElementById("taskResolution").value.trim(),error=document.getElementById("taskResolveError");if(!resolution){error.textContent="请填写解决反馈";return;}try{await api(`/api/medical/tasks/${encodeURIComponent(resolvingTaskId)}/resolve`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({resolution})});document.getElementById("taskResolveDialog").classList.add("hidden");toast("任务已解决");await tasks();}catch(e){error.textContent=e.message;}};
   document.getElementById("saveFieldReview").onclick=async()=>{if(!fieldReviewContext)return;const button=document.getElementById("saveFieldReview"),error=document.getElementById("fieldReviewError");button.disabled=true;button.textContent="保存中…";error.textContent="";try{await api(`/api/medical/cases/${encodeURIComponent(fieldReviewContext.caseId)}/field-reviews`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({field_path:fieldReviewContext.path,decision:fieldReviewContext.action,reviewed_value:fieldReviewContext.action==="CORRECTED"?document.getElementById("fieldReviewValue").value:null,reason:document.getElementById("fieldReviewReason").value})});document.getElementById("fieldReviewDialog").classList.add("hidden");toast("字段复核结果已保存");await openCase(fieldReviewContext.caseId,"structured");}catch(e){error.textContent=e.message;}finally{button.disabled=false;button.textContent="保存";}};
   document.getElementById("savePainReview").onclick=async()=>{if(!painReviewContext)return;const button=document.getElementById("savePainReview"),error=document.getElementById("painReviewError");button.disabled=true;button.textContent="保存中…";error.textContent="";try{const editing=painReviewContext.decision==="EDIT";await api(`/api/medical/cases/${encodeURIComponent(painReviewContext.caseId)}/pain-points/${encodeURIComponent(painReviewContext.painPointId)}/review`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:painReviewContext.decision,title:editing?document.getElementById("painReviewItemTitle").value:null,summary:editing?document.getElementById("painReviewSummary").value:null,suggestion:editing?document.getElementById("painReviewSuggestion").value:null,note:document.getElementById("painReviewNote").value})});document.getElementById("painReviewDialog").classList.add("hidden");toast("痛点条目决策已保存");await openCase(painReviewContext.caseId,"pain");}catch(e){error.textContent=e.message;}finally{button.disabled=false;button.textContent="保存决策";}};
   async function render(){loading();try{if(activeView==="home")await home();if(activeView==="tasks")await tasks();if(activeView==="pending")await listCases(true);if(activeView==="cases")await listCases(false);if(activeView==="profile")await profile();}catch(e){errorState(e);}}

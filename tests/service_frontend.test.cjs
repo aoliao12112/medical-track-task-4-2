@@ -24,6 +24,7 @@ let followUpTasks = [{
   feedback_comment: "希望客服说明下一步安排", feedback_rating: 2,
   request_contact: true, customer_phone_masked: "****3456", assignee: null,
 }];
+const routedTasks=[{task_id:"ROUTED-1",claim_event_id:"EVENT-1",category:"medication_question",priority:"HIGH",status:"RESOLVED",target_role:"MEDICAL",created_at:"2026-10-12T08:00:00Z",claimed_at:"2026-10-12T08:10:00Z",resolved_at:"2026-10-12T08:20:00Z",assignee_name:"医疗复核员",note:"请核对用药问题",resolution:"已完成医学答复"}];
 function response(body, status = 200) {
   return { status, ok: status >= 200 && status < 300, json: async () => body };
 }
@@ -35,6 +36,7 @@ async function fetchMock(path, options = {}) {
     recent_cases: [],
   });
   if (path === "/api/service/follow-ups") return response(followUpTasks);
+  if (path === "/api/service/routed-tasks") return response(routedTasks);
   if (path === "/api/auth/logout") return response({ logged_out: true });
   throw new Error("Unexpected fetch: " + path);
 }
@@ -79,6 +81,8 @@ async function flush() {
   assert.match(html, /联系手机号：\*\*\*\*3456/);
   assert.match(html, /负责人：未领取/);
   assert.doesNotMatch(html, /13800123456/);
+  assert.match(html, /已分流任务跟踪/);
+  assert.match(html, /已完成医学答复/);
   assert.ok(requests.some((item) => item.path === "/api/service/follow-ups"));
 
   followUpTasks = [{ ...followUpTasks[0], request_contact: false, customer_phone_masked: null }];

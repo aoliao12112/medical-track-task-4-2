@@ -747,6 +747,25 @@ def claim_tasks(identity: dict[str, Any] = Depends(current_claim_user)):
     return get_case_storage().claim_tasks(identity["user_id"])
 
 
+@app.post("/api/claim/tasks/{task_id}/claim")
+def claim_routed_case_task(task_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().claim_case_task(identity["user_id"], task_id, "CLAIM")
+
+
+@app.get("/api/claim/tasks/{task_id}/contact-preview")
+def claim_routed_task_contact(task_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().case_task_contact_preview(identity["user_id"], task_id, "CLAIM")
+
+
+@app.post("/api/claim/tasks/{task_id}/resolve")
+def resolve_claim_routed_task(task_id: str, request: ResolveFollowUpRequest,
+                              identity: dict[str, Any] = Depends(current_claim_user)):
+    require_permission(identity, "CASE_VIEW")
+    return get_case_storage().resolve_case_task(identity["user_id"], task_id, request.resolution, "CLAIM")
+
+
 @app.post("/api/claim/cases/{case_id}/care/trigger")
 def claim_trigger_care(case_id: str, identity: dict[str, Any] = Depends(current_claim_user)):
     require_case_permission(identity, case_id, "CARE_TRIGGER")
@@ -818,6 +837,25 @@ def medical_dashboard(identity: dict[str, Any] = Depends(current_medical_user)):
 def medical_tasks(identity: dict[str, Any] = Depends(current_medical_user)):
     require_permission(identity, "MEDICAL_CASE_VIEW")
     return get_case_storage().list_case_tasks(identity["user_id"], "MEDICAL")
+
+
+@app.post("/api/medical/tasks/{task_id}/claim")
+def claim_medical_routed_task(task_id: str, identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().claim_case_task(identity["user_id"], task_id, "MEDICAL")
+
+
+@app.get("/api/medical/tasks/{task_id}/contact-preview")
+def medical_routed_task_contact(task_id: str, identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().case_task_contact_preview(identity["user_id"], task_id, "MEDICAL")
+
+
+@app.post("/api/medical/tasks/{task_id}/resolve")
+def resolve_medical_routed_task(task_id: str, request: ResolveFollowUpRequest,
+                                identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().resolve_case_task(identity["user_id"], task_id, request.resolution, "MEDICAL")
 
 
 @app.get("/api/medical/cases")
@@ -909,6 +947,9 @@ def prepare_medical_analysis(
     """
     require_case_permission(identity, case_id, "MEDICAL_CASE_VIEW")
     storage = get_case_storage()
+    workflow_case = storage.get_case(case_id)
+    if workflow_case.get("care_status") in {"RECEIVED", "STRUCTURED"}:
+        raise WorkflowConflict("请先由理赔人员触发医疗分析，再生成医疗模块")
     state = storage.get_effective_case_state(case_id)
     if not state["effective"] or not state["raw"]:
         raise HTTPException(status_code=409, detail="结构化病例尚未生成")
@@ -1545,6 +1586,15 @@ def service_follow_ups(
     return get_case_storage().list_service_follow_ups(identity["user_id"], status=status)
 
 
+@app.get("/api/service/routed-tasks")
+def service_routed_tasks(
+    status: Literal["OPEN", "PROCESSING", "RESOLVED"] | None = Query(default=None),
+    identity: dict[str, Any] = Depends(current_service_user),
+):
+    require_permission(identity, "FOLLOWUP_VIEW")
+    return get_case_storage().list_service_routed_case_tasks(identity["user_id"], status=status)
+
+
 @app.post("/api/service/follow-ups/{task_id}/claim")
 def claim_service_follow_up(
     task_id: str,
@@ -1718,11 +1768,14 @@ def post_deepseek(body: dict[str, Any]) -> dict[str, Any]:
                 continue
             response.raise_for_status()
             return response.json()
-        except httpx.TimeoutException:
+        except httpx.TransportError as exc:
             if attempt >= retries:
                 raise
             delay = min(8, 2 ** (attempt + 1))
-            logger.warning("DeepSeek timeout; retrying in %ss", delay)
+            logger.warning(
+                "DeepSeek transport error %s; retrying in %ss",
+                type(exc).__name__, delay,
+            )
             time.sleep(delay)
     raise RuntimeError("DeepSeek重试次数耗尽")
 

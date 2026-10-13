@@ -297,7 +297,7 @@ erDiagram
 
 ## 16. MEDICAL 正式编排如何使用现有表
 
-医疗复核编排继续复用既有结果与审核表；Schema Version 6 仅为跨角色分流新增 `case_tasks` 及咨询去向字段：
+医疗复核编排继续复用既有结果与审核表；Schema Version 6 为跨角色分流新增 `case_tasks` 及咨询去向字段，Schema Version 7 将“客服本人”分流补齐为可领取、可解决的任务：
 
 - `structured_effective_result` 是读取时将原结构化结果与最新字段复核决定叠加得到的有效视图，不是新增数据库列，也不会覆盖模型原始提取值。
 - 字段级复核与模块级复核继续写入 `reviews`，通过 `target_type` 区分结构化字段、痛点、温度指引、本次就医品质评价、推荐和组合触达。

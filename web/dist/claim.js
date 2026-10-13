@@ -7,6 +7,7 @@
   let activeCaseId = null;
   let activeTab = "overview";
   let profileMode = "view";
+  let resolvingTaskId = null;
 
   const labels = {
     ACTIVE: "启用", authorized: "已授权", pending: "待确认", unknown: "待确认",
@@ -82,6 +83,17 @@
   function bindCaseLinks() {
     document.querySelectorAll(".open-case").forEach((button) => { button.onclick = () => openCase(button.dataset.id); });
   }
+  function routedTaskActions(item) {
+    if (!item.task_id) return `<button class="btn secondary open-case" data-id="${esc(item.case_id)}">进入案件</button>`;
+    const view=`<button class="btn secondary open-case" data-id="${esc(item.case_id)}">${item.status==="OPEN"?"进入案件":"继续查看案件"}</button>`;
+    if(item.status==="OPEN")return `<button class="btn primary start-routed-task" data-id="${esc(item.task_id)}">开始处理</button>${view}`;
+    if(item.status==="PROCESSING")return `${view}<button class="btn primary resolve-routed-task" data-id="${esc(item.task_id)}">解决任务</button>`;
+    return `<span class="tag success">已解决</span>${view}`;
+  }
+  function bindRoutedTaskActions(){
+    document.querySelectorAll(".start-routed-task").forEach(button=>button.onclick=async()=>{button.disabled=true;try{await api(`/api/claim/tasks/${encodeURIComponent(button.dataset.id)}/claim`,{method:"POST"});const c=await api(`/api/claim/tasks/${encodeURIComponent(button.dataset.id)}/contact-preview`);document.getElementById("taskContactPhone").textContent=c.phone_masked||"未登记";document.getElementById("taskContactEmail").textContent=c.email_masked||"未登记";document.getElementById("taskContactDialog").classList.remove("hidden");await tasks();}catch(e){toast(e.message);button.disabled=false;}});
+    document.querySelectorAll(".resolve-routed-task").forEach(button=>button.onclick=()=>{resolvingTaskId=button.dataset.id;document.getElementById("taskResolution").value="";document.getElementById("taskResolveError").textContent="";document.getElementById("taskResolveDialog").classList.remove("hidden");});
+  }
 
   async function home() {
     topTitle.textContent = "理赔工作台";
@@ -125,9 +137,9 @@
   async function tasks() {
     topTitle.textContent = "我的待办";
     const items = await api("/api/claim/tasks");
-    content.innerHTML = `<div class="page-head"><div><h1>我的待办</h1><p class="muted">仅包含材料、授权、脱敏和关怀移交等理赔职责事项</p></div></div>
-      <section class="card card-pad"><div class="task-list">${items.length ? items.map((item) => `<article class="task"><div><strong>${esc(item.claim_event_id)}</strong><p class="muted">${item.reasons.map(esc).join(" · ")}</p></div><button class="btn secondary open-case" data-id="${esc(item.case_id)}">处理案件</button></article>`).join("") : '<div class="empty">当前没有理赔待处理事项</div>'}</div></section>`;
-    bindCaseLinks();
+    content.innerHTML = `<div class="page-head"><div><h1>我的待办</h1><p class="muted">案件职责事项与客服分流任务统一展示；进入案件不会自动改变任务状态</p></div></div>
+      <section class="card card-pad"><div class="task-list">${items.length ? items.map((item) => `<article class="task"><div><strong>${esc(item.claim_event_id)}</strong><p class="muted">${(item.reasons||[]).map(esc).join(" · ")}</p>${item.resolution?`<p class="task-resolution">解决反馈：${esc(item.resolution)}</p>`:""}</div><div class="task-actions">${routedTaskActions(item)}</div></article>`).join("") : '<div class="empty">当前没有理赔待处理事项</div>'}</div></section>`;
+    bindCaseLinks();bindRoutedTaskActions();
   }
 
   async function profile() {
@@ -338,6 +350,9 @@
 
   document.querySelectorAll(".nav-item").forEach((item) => { item.onclick = () => navigate(item.dataset.view); });
   document.getElementById("cancelCase").onclick = () => document.getElementById("caseDialog").classList.add("hidden");
+  document.getElementById("closeTaskContact").onclick=()=>document.getElementById("taskContactDialog").classList.add("hidden");
+  document.getElementById("cancelTaskResolve").onclick=()=>document.getElementById("taskResolveDialog").classList.add("hidden");
+  document.getElementById("saveTaskResolve").onclick=async()=>{const resolution=document.getElementById("taskResolution").value.trim(),error=document.getElementById("taskResolveError");if(!resolution){error.textContent="请填写解决反馈";return;}try{await api(`/api/claim/tasks/${encodeURIComponent(resolvingTaskId)}/resolve`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({resolution})});document.getElementById("taskResolveDialog").classList.add("hidden");toast("任务已解决");await tasks();}catch(e){error.textContent=e.message;}};
   document.getElementById("searchCustomer").onclick = async () => {
     const query = document.getElementById("customerSearch").value.trim();
     const select = document.getElementById("customerUsername");

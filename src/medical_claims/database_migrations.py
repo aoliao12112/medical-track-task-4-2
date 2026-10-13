@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import sqlite3
 from typing import Callable
+from uuid import uuid4
 
 
 MigrationApply = Callable[[sqlite3.Connection], None]
@@ -484,6 +485,36 @@ def _migration_006_case_task_routing(db: sqlite3.Connection) -> None:
     )
 
 
+def _migration_007_service_local_task_backfill(db: sqlite3.Connection) -> None:
+    """Turn previously routed-to-self consultations into actionable service tasks."""
+    rows = db.execute(
+        "SELECT a.analysis_id, l.case_id, a.primary_intent, a.severity, a.route_note, "
+        "a.reviewer_user_id, a.routed_at, a.created_at "
+        "FROM service_analysis_results a "
+        "JOIN service_sessions s ON s.session_id_hash=a.session_id_hash "
+        "JOIN case_service_links l ON l.session_id_hash=s.session_id_hash "
+        "WHERE a.route_target_role='SERVICE' AND a.review_status='SERVICE_HANDLING' "
+        "AND a.reviewer_user_id IS NOT NULL AND NOT EXISTS ("
+        "SELECT 1 FROM case_tasks t WHERE t.source_type='SERVICE_CONSULTATION' "
+        "AND t.source_id=a.analysis_id AND t.target_role='SERVICE')"
+    ).fetchall()
+    allowed_categories = {"value_added_service", "human_service_request", "other"}
+    for row in rows:
+        category = row["primary_intent"] if row["primary_intent"] in allowed_categories else "other"
+        priority = str(row["severity"] or "medium").upper()
+        if priority not in {"LOW", "MEDIUM", "HIGH", "URGENT"}:
+            priority = "MEDIUM"
+        created_at = row["routed_at"] or row["created_at"]
+        db.execute(
+            "INSERT INTO case_tasks(task_id, case_id, source_type, source_id, target_role, "
+            "assignee_user_id, category, priority, status, note, created_by, created_at) "
+            "VALUES (?, ?, 'SERVICE_CONSULTATION', ?, 'SERVICE', ?, ?, ?, 'OPEN', ?, ?, ?)",
+            (str(uuid4()), row["case_id"], row["analysis_id"], row["reviewer_user_id"],
+             category, priority, row["route_note"] or "由当前客服继续处理",
+             row["reviewer_user_id"], created_at),
+        )
+
+
 MIGRATIONS = (
     Migration(1, "legacy_competition_core", "legacy-core-v1", _migration_001_legacy_core),
     Migration(2, "identity_permissions_and_case_scope", "identity-scope-v1", _migration_002_identity_and_case_scope),
@@ -491,6 +522,7 @@ MIGRATIONS = (
     Migration(4, "service_sessions_followup_and_audit", "service-audit-v1", _migration_004_service_and_audit),
     Migration(5, "batch_job_persistence", "batch-persistence-v1", _migration_005_batch_persistence),
     Migration(6, "case_task_routing", "case-task-routing-v1", _migration_006_case_task_routing),
+    Migration(7, "service_local_task_backfill", "service-local-task-v1", _migration_007_service_local_task_backfill),
 )
 
 CURRENT_SCHEMA_VERSION = MIGRATIONS[-1].version

@@ -51,8 +51,8 @@ class ServiceStorageSchemaTest(unittest.TestCase):
             versions = [row[0] for row in db.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )]
-            self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
-            self.assertEqual(CURRENT_SCHEMA_VERSION, 6)
+            self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7])
+            self.assertEqual(CURRENT_SCHEMA_VERSION, 7)
 
     def test_fixed_roles_and_password_hash_column_match_runtime_auth(self):
         CaseStorage(self.db_path)
