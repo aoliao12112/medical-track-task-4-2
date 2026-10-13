@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Iterable, TypeVar
 
@@ -17,6 +18,8 @@ from .models import (
     Costs,
     Diagnosis,
     EncounterType,
+    EventType,
+    Evidence,
     Examination,
     ExaminationResult,
     FieldStatus,
@@ -503,6 +506,191 @@ def _rebuild_event_links(case: ClaimCase) -> None:
             for entity_id, name in entities
             if name and _normalized_text(name) in description
         ]
+
+
+def _event_date(field: FieldValue) -> date | datetime | None:
+    value = field.normalized_value if field.normalized_value is not None else field.value
+    return value if isinstance(value, (date, datetime)) else None
+
+
+def _event_confidence(document: dict[str, Any]) -> float:
+    values = [
+        float(block["confidence"])
+        for block in document.get("blocks") or []
+        if isinstance(block.get("confidence"), (int, float))
+    ]
+    if values:
+        return round(sum(values) / len(values), 4)
+    return 0.95 if document.get("human_corrected") else 0.85
+
+
+def _longest_common_substring(left: str, right: str) -> int:
+    previous = [0] * (len(right) + 1)
+    longest = 0
+    for left_char in left:
+        current = [0]
+        for index, right_char in enumerate(right, start=1):
+            value = previous[index - 1] + 1 if left_char == right_char else 0
+            current.append(value)
+            longest = max(longest, value)
+        previous = current
+    return longest
+
+
+def _safe_event_links(case: ClaimCase, text: str) -> list[str]:
+    """Link only entities directly named, plus one unambiguous surgical name variant."""
+
+    normalized = _normalized_text(text)
+    links = []
+    entities = [
+        *((item.diagnosis_id, item.name.value) for item in case.diagnoses),
+        *((item.procedure_id, item.name.value) for item in case.procedures),
+        *((item.medication_id, item.name.value) for item in case.medications),
+        *((item.examination_id, item.name.value) for item in case.examinations),
+    ]
+    for entity_id, name in entities:
+        candidate = _normalized_text(name or "")
+        if candidate and candidate in normalized:
+            links.append(entity_id)
+
+    if any(word in normalized for word in ("手术", "术后", "切除术", "vats", "胸腔镜")):
+        scored = []
+        for item in case.procedures:
+            name = _normalized_text(item.name.value or "")
+            if not name:
+                continue
+            scored.append((_longest_common_substring(name, normalized), item.procedure_id))
+        scored.sort(reverse=True)
+        if scored and scored[0][0] >= 6 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            links.append(scored[0][1])
+    return list(dict.fromkeys(links))
+
+
+def _discharge_document(document: dict[str, Any]) -> bool:
+    name = str(document.get("document_id") or "")
+    text = str(document.get("full_text") or "")
+    return "出院小结" in name or "出院记录" in name or "出院小结" in text[:200]
+
+
+def _matched_snippet(text: str, pattern: str) -> str | None:
+    match = re.search(pattern, re.sub(r"\s+", " ", text), flags=re.IGNORECASE)
+    return match.group(0).strip(" 。；;") if match else None
+
+
+def enrich_discharge_summary_events(
+    case: ClaimCase, documents: list[dict[str, Any]],
+) -> ClaimCase:
+    """Recover explicit discharge-summary facts without inferring missing medicine details."""
+
+    existing = [_normalized_text(item.description) for item in case.events]
+    admission_date = _event_date(case.hospitalization.admission_date)
+    discharge_date = _event_date(case.hospitalization.discharge_date)
+
+    def add_event(
+        event_type: EventType,
+        description: str,
+        snippet: str,
+        document: dict[str, Any],
+        event_time: date | datetime | None = None,
+    ) -> None:
+        normalized = _normalized_text(description)
+        duplicate = any(
+            normalized == item
+            or (
+                min(len(normalized), len(item)) >= 8
+                and (normalized in item or item in normalized)
+            )
+            for item in existing
+        )
+        if not normalized or duplicate:
+            return
+        evidence = Evidence(
+            document_id=str(document["document_id"]),
+            page=int(document["page"]),
+            text=snippet,
+        )
+        case.events.append(MedicalEvent(
+            event_id=f"event_{len(case.events) + 1}",
+            event_type=event_type,
+            event_time=event_time,
+            description=description,
+            confidence=_event_confidence(document),
+            evidence=[evidence],
+            related_entity_ids=_safe_event_links(case, f"{description} {snippet}"),
+        ))
+        existing.append(normalized)
+
+    rules = [
+        (EventType.ADMISSION, r"入院时主要症状及体征\s*(.{2,100}?)(?=主要化验结果|特殊检查及重要会诊|病程与治疗结果|$)", admission_date),
+        (EventType.TEST, r"(?:CT|ct)示[^\u3002；;]{2,120}", None),
+        (EventType.DIAGNOSIS, r"术中冰冻[^\u3002；;]{2,160}?(?:待石蜡[^\u3002；;]*)?", None),
+        (EventType.PROCEDURE, r"无明显手术禁忌(?:症)?[^\u3002；;]{0,120}?(?:手术|切除术)", None),
+        (EventType.PROCEDURE, r"(?:于[^\u3002；;]{0,120}?(?:手术|切除术)[，,])?术后给予.{2,100}?(?=术后恢复|嘱出院|[。；;])", None),
+        (EventType.OTHER, r"术后恢复(?:良好|佳|尚可|平稳)", None),
+        (EventType.DISCHARGE, r"治疗结果\s*(?:好转|治愈|稳定|未愈|转院|死亡)", discharge_date),
+        (EventType.DISCHARGE, r"术后约?[^。；;]{0,60}?门诊复诊", discharge_date),
+        (EventType.DISCHARGE, r"复查时[^。；;]{0,160}?正式病理报告[^。；;]{0,160}?(?:随访计划|治疗方案|用药治疗)", discharge_date),
+        (EventType.DISCHARGE, r"出院后每[^。；;]{0,120}?伤口换药[^。；;]{0,120}?伤口拆线[^。；;]*", discharge_date),
+        (EventType.DISCHARGE, r"止咳化痰等出院带药", discharge_date),
+        (EventType.DISCHARGE, r"饮食无禁忌[^。；;]{0,40}", discharge_date),
+        (EventType.DISCHARGE, r"加强营养[^。；;]{0,100}?(?:避免感冒|[。；;])", discharge_date),
+        (EventType.DISCHARGE, r"如有[^。；;]{0,100}?(?:及时)?急诊就诊", discharge_date),
+        (EventType.DISCHARGE, r"出院去向[:：]\s*[^\s。；;]+", discharge_date),
+    ]
+    for document in documents:
+        if not _discharge_document(document):
+            continue
+        text = str(document.get("full_text") or "")
+        for event_type, pattern, event_time in rules:
+            snippet = _matched_snippet(text, pattern)
+            if snippet:
+                description = re.sub(r"\s+", "", snippet)
+                add_event(event_type, description, snippet, document, event_time)
+
+        pending_pathology = _matched_snippet(
+            text, r"出院诊断\s*.{1,100}?具体见石蜡报告",
+        )
+        if pending_pathology:
+            add_event(
+                EventType.DIAGNOSIS,
+                "出院诊断需结合正式石蜡病理报告确认",
+                pending_pathology,
+                document,
+                discharge_date,
+            )
+
+    for document in documents:
+        text = str(document.get("full_text") or "")
+        if "病理" not in str(document.get("document_id") or "") and "病理检查报告" not in text[:200]:
+            continue
+        histology = _matched_snippet(text, r"组织学类型[:：]\s*[^\n。]{2,160}[。]?")
+        if not histology:
+            continue
+        report_date = _matched_snippet(text, r"报告日期[:：]\s*\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?")
+        parsed_date = None
+        if report_date:
+            digits = [int(value) for value in re.findall(r"\d+", report_date)]
+            if len(digits) >= 3:
+                try:
+                    parsed_date = date(digits[0], digits[1], digits[2])
+                except ValueError:
+                    parsed_date = None
+        add_event(
+            EventType.DIAGNOSIS,
+            "正式病理报告：" + re.sub(r"^组织学类型[:：]\s*", "", histology).rstrip("。"),
+            histology,
+            document,
+            parsed_date,
+        )
+
+    case.events.sort(key=lambda item: (
+        item.event_time is None,
+        item.event_time.isoformat() if item.event_time else "",
+        item.event_id,
+    ))
+    for index, event in enumerate(case.events, start=1):
+        event.event_id = f"event_{index}"
+    return case
 
 
 def _dedupe_flags(flags: Iterable[QualityFlag]) -> list[QualityFlag]:

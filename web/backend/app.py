@@ -31,7 +31,12 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import Field, field_validator
 
 from medical_claims.json_utils import normalize_json_output
-from medical_claims.long_case import chunk_documents, document_text_size, merge_claim_cases
+from medical_claims.long_case import (
+    chunk_documents,
+    document_text_size,
+    enrich_discharge_summary_events,
+    merge_claim_cases,
+)
 from medical_claims.models import ClaimCase, Costs, Medication, StrictModel
 from medical_claims.normalization import normalize_case
 from medical_claims.care_engine import (
@@ -140,9 +145,8 @@ from urllib.parse import urlencode
 
 app = FastAPI(title="Medical Claims Structure API", version="0.6.0")
 BACKEND_REVISION = "2026-10-11-medical-review-mobile-preview"
-# 本次升级只增加OCR回显与人工修正通道；未修改页面的结构化提示词与Schema兼容旧缓存。
-# 人工修正会改变OCR文本哈希，因此对应分块仍会自动失效并重新处理。
-LONG_CASE_CACHE_REVISION = "2026-10-02-care-guide-v1"
+# 结构化提示词变化必须使旧分块缓存失效；人工修正仍通过OCR文本哈希单独失效。
+LONG_CASE_CACHE_REVISION = "2026-10-14-discharge-events-v1"
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -1860,6 +1864,14 @@ def structure_with_deepseek(
         "字段置信度应综合OCR置信度、文本明确程度和跨文档一致性，低于0.90时使用 review_required。"
         "若页面标记 human_corrected=true，说明OCR文本已经人工对照原图修正，应优先采用修正文本；"
         "但仍不得补写修正文本中没有出现的事实。"
+        "遇到出院小结或出院记录时，必须逐段检查‘入院时主要症状及体征’、‘病程与治疗结果’、"
+        "‘出院时情况’、‘出院后用药及建议’和‘出院指导’，把原文明示的入院原因、术前评估、"
+        "手术禁忌判断、术后治疗、术后恢复、出院状态、伤口护理、饮食活动建议、复诊时间、复查项目、"
+        "随访计划、危险信号和急诊提示拆成medical_events，并为每个事件保留最短直接证据。"
+        "medical_events只表达时间线和临床关系；已有procedure或examination不得重复创建实体。"
+        "只有原文明确支持时才填写related_entity_ids。诊断、CT、冰冻病理、出院诊断和正式病理处于"
+        "不同时间点时，应按原文建立诊断演变事件，不得把阶段性结果自动写成同一时间点冲突。"
+        "费用清单的数量和收费次数不是医嘱剂量、频次、途径或疗程，禁止据此补写任何用药属性。"
         "为控制输出长度，每个字段的evidence最多保留1条最直接、最短且足以证明该字段的证据；"
         "不要在多个字段中复制整段病历，只截取包含目标值的最小原文片段。"
     )
@@ -2000,7 +2012,9 @@ def structure_case_with_long_document_support(
     character_threshold = int(os.getenv("LONG_CASE_CHARACTER_THRESHOLD", "24000"))
     total_characters = sum(document_text_size(document) for document in documents)
     if len(documents) <= page_threshold and total_characters <= character_threshold:
-        return apply_evidence_grounding(structure_with_deepseek(case_id, documents), documents)
+        result = structure_with_deepseek(case_id, documents)
+        result = enrich_discharge_summary_events(result, documents)
+        return apply_evidence_grounding(result, documents)
 
     max_pages = int(os.getenv("LONG_CASE_CHUNK_MAX_PAGES", "6"))
     max_characters = int(os.getenv("LONG_CASE_CHUNK_MAX_CHARACTERS", "18000"))
@@ -2034,6 +2048,7 @@ def structure_case_with_long_document_support(
         chunk_count=len(partials),
     )
     result = normalize_case(result)
+    result = enrich_discharge_summary_events(result, documents)
     existing_flags = {
         (flag.code, flag.field_path, flag.document_id, flag.message)
         for flag in result.quality_flags
