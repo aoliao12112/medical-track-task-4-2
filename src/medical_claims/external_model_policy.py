@@ -9,6 +9,7 @@ import os
 class ExternalModelPurpose(str, Enum):
     CARE_GUIDE = "care_guide"
     RECOMMENDATION_INTENT = "recommendation_intent"
+    QUALITY_EVALUATION = "quality_evaluation"
 
 
 class ExternalModelAuthorizationError(PermissionError):
@@ -19,8 +20,12 @@ def require_external_model_authorization(
     case_metadata: dict,
     purpose: ExternalModelPurpose,
 ) -> None:
-    """两个用途使用同一案件授权；不创建用途级重复确认。"""
-    if purpose not in {ExternalModelPurpose.CARE_GUIDE, ExternalModelPurpose.RECOMMENDATION_INTENT}:
+    """医疗文本模型用途共用同一案件授权；不创建用途级重复确认。"""
+    if purpose not in {
+        ExternalModelPurpose.CARE_GUIDE,
+        ExternalModelPurpose.RECOMMENDATION_INTENT,
+        ExternalModelPurpose.QUALITY_EVALUATION,
+    }:
         raise ExternalModelAuthorizationError("当前外部模型用途未纳入授权范围")
     if os.getenv("EXTERNAL_MODEL_PROCESSING_ENABLED", "true").lower() in {"0", "false", "no"}:
         raise ExternalModelAuthorizationError("当前部署已关闭外部大模型处理")

@@ -21,6 +21,53 @@ class AssessmentStatus(str, Enum):
     NEEDS_REVIEW = "needs_review"
 
 
+class QualityDimensionStatus(str, Enum):
+    SCORED = "SCORED"
+    NOT_SCORED = "NOT_SCORED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class QualityDimensionKey(str, Enum):
+    DIAGNOSIS_TREATMENT_CONSISTENCY = "diagnosis_treatment_consistency"
+    MEDICATION_RATIONALITY = "medication_rationality"
+    PROCEDURE_RATIONALITY = "procedure_rationality"
+    RISK_MANAGEMENT = "risk_management"
+    DISCHARGE_FOLLOWUP = "discharge_followup"
+    RECORD_COMPLETENESS = "record_completeness"
+
+
+class QualityDimensionResult(StrictModel):
+    dimension: QualityDimensionKey
+    score: float | None = Field(ge=0, le=100)
+    status: QualityDimensionStatus
+    level: str | None
+    reason: str = Field(min_length=1)
+    evidence: list[str]
+    limitations: list[str]
+
+    @model_validator(mode="after")
+    def validate_score_status(self) -> "QualityDimensionResult":
+        if self.status == QualityDimensionStatus.SCORED and self.score is None:
+            raise ValueError("SCORED 维度必须提供 score")
+        if self.status != QualityDimensionStatus.SCORED and self.score is not None:
+            raise ValueError("未评分或待复核维度不得提供 score")
+        return self
+
+
+class LLMQualityEvaluation(StrictModel):
+    dimensions: list[QualityDimensionResult]
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> "LLMQualityEvaluation":
+        expected = set(QualityDimensionKey)
+        actual = [item.dimension for item in self.dimensions]
+        if len(actual) != len(set(actual)):
+            raise ValueError("品质评价维度不得重复")
+        if set(actual) != expected:
+            raise ValueError("品质评价必须完整包含六个固定维度")
+        return self
+
+
 class ComplexityLevel(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
@@ -140,6 +187,7 @@ class DimensionAssessment(StrictModel):
     level: str | None = None
     confidence: float = Field(default=0, ge=0, le=1)
     reasoning: str
+    evidence: list[str] = Field(default_factory=list)
     evidence_fields: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
@@ -384,7 +432,12 @@ class CurrentTreatmentEvaluation(StrictModel):
     key_findings: list[str] = Field(default_factory=list)
     review_reasons: list[str] = Field(default_factory=list)
     historical_reference: HistoricalTreatmentReference
-    evaluation_version: str = "current-treatment-evaluation-v1"
+    overall_score: float | None = Field(default=None, ge=0, le=100)
+    overall_level: str | None = None
+    scored_weight_coverage: float = Field(default=0, ge=0, le=1)
+    evaluation_method: str = "RULES_FALLBACK"
+    warnings: list[str] = Field(default_factory=list)
+    evaluation_version: str = "current-treatment-evaluation-v2"
 
 
 class DiseaseCatalogEntry(StrictModel):

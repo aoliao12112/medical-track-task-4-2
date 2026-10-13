@@ -18,7 +18,7 @@
     PAIN_READY: "医疗处理中", CARE_READY: "等待医疗复核",
     DELIVERY_READY: "等待发送", REVIEW_REQUIRED: "等待医疗复核",
     APPROVED: "医疗复核已通过", REJECTED: "医疗复核未通过",
-    BLOCKED: "已阻止", DELIVERED_MOCK: "已完成模拟触达",
+    BLOCKED: "已阻止", PUBLISHED: "已正式发布", DELIVERED_MOCK: "已完成模拟触达",
     FEEDBACK_RECEIVED: "已收到客户反馈", FOLLOWUP_PENDING: "后续服务处理中",
     RESOLVED: "已完成", COMPLETED: "理赔已完成",
     not_submitted: "未提交", submitted: "已提交", processing: "处理中",

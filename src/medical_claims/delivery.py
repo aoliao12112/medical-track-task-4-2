@@ -1,4 +1,4 @@
-"""Mock inbox preparation over saved content, with no real messaging channels."""
+"""Prepare reviewed customer content for portal publication or legacy demo delivery."""
 from enum import Enum
 import hashlib
 from typing import Literal
@@ -26,14 +26,14 @@ class SendDeliveryRequest(StrictModel):
 class DeliveryRecord(StrictModel):
     delivery_id: str
     case_id: str
-    channel: Literal["mock_web_inbox"] = "mock_web_inbox"
+    channel: Literal["mock_web_inbox", "customer_portal"] = "mock_web_inbox"
     delivery_mode: DeliveryMode
     care_included: bool = True
     recommendation_included: bool
     risk_gate_result: DeliveryGateResult
     content_fingerprint: str
     created_at: str
-    status: Literal["DELIVERED_MOCK"] = "DELIVERED_MOCK"
+    status: Literal["DELIVERED_MOCK", "PUBLISHED"] = "DELIVERED_MOCK"
     content: dict
 
 
@@ -78,7 +78,7 @@ def prepare_delivery_content(storage: CaseStorage, case_id: str):
                "recommendation": available,
                "recommendation_unavailable_reason": UNAVAILABLE_RECOMMENDATION_NOTICE if unavailable else None,
                "unavailable_recommendation_reports": unavailable,
-               "data_source": snapshot["data_source"], "mock_notice": "模拟用户触达 · mock_web_inbox"}
+               "data_source": snapshot["data_source"]}
     fingerprint = hashlib.sha256(encode({"snapshot": snapshot, "recommendation": recommendation}).encode()).hexdigest()
     return {"case_id": case_id, "gate": gate, "content_fingerprint": fingerprint,
             "content": content, "snapshot": snapshot}

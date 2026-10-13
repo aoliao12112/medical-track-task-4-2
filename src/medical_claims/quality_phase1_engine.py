@@ -32,6 +32,9 @@ from .quality_phase1_models import (
     RecommendationDimensionScore,
     RecommendationIntent,
     RecommendationReasonV2,
+    LLMQualityEvaluation,
+    QualityDimensionKey,
+    QualityDimensionStatus,
     TreatmentPattern,
 )
 
@@ -43,6 +46,80 @@ HOSPITAL_RECOMMENDATION_WEIGHTS = {
     "clinician_resources": 0.15,
     "treatment_technology_capability": 0.10,
 }
+
+QUALITY_DIMENSION_WEIGHTS = {
+    QualityDimensionKey.DIAGNOSIS_TREATMENT_CONSISTENCY: 0.25,
+    QualityDimensionKey.MEDICATION_RATIONALITY: 0.20,
+    QualityDimensionKey.PROCEDURE_RATIONALITY: 0.15,
+    QualityDimensionKey.RISK_MANAGEMENT: 0.15,
+    QualityDimensionKey.DISCHARGE_FOLLOWUP: 0.15,
+    QualityDimensionKey.RECORD_COMPLETENESS: 0.10,
+}
+
+QUALITY_DIMENSION_ATTRIBUTES = {
+    QualityDimensionKey.DIAGNOSIS_TREATMENT_CONSISTENCY: "treatment_diagnosis_match",
+    QualityDimensionKey.MEDICATION_RATIONALITY: "medication_rationality",
+    QualityDimensionKey.PROCEDURE_RATIONALITY: "procedure_rationality",
+    QualityDimensionKey.RISK_MANAGEMENT: "risk_management",
+    QualityDimensionKey.DISCHARGE_FOLLOWUP: "discharge_continuity",
+    QualityDimensionKey.RECORD_COMPLETENESS: "treatment_completeness",
+}
+
+
+def quality_score_level(score: float | None) -> str | None:
+    if score is None:
+        return None
+    if score >= 90:
+        return "优秀"
+    if score >= 80:
+        return "良好"
+    if score >= 70:
+        return "一般"
+    if score >= 60:
+        return "需关注"
+    return "重点关注"
+
+
+def apply_quality_summary(evaluation: CurrentTreatmentEvaluation) -> CurrentTreatmentEvaluation:
+    weighted = 0.0
+    coverage = 0.0
+    for dimension, weight in QUALITY_DIMENSION_WEIGHTS.items():
+        assessment = getattr(evaluation, QUALITY_DIMENSION_ATTRIBUTES[dimension])
+        if assessment.status == AssessmentStatus.EVALUATED and assessment.score is not None:
+            coverage += weight
+            weighted += assessment.score * weight
+    overall = round(weighted / coverage, 2) if coverage >= 0.60 else None
+    return evaluation.model_copy(update={
+        "scored_weight_coverage": round(coverage, 4),
+        "overall_score": overall,
+        "overall_level": quality_score_level(overall),
+    })
+
+
+def merge_llm_quality_evaluation(
+    fallback: CurrentTreatmentEvaluation,
+    model_result: LLMQualityEvaluation,
+) -> CurrentTreatmentEvaluation:
+    updates = {"evaluation_method": "LLM_ASSISTED", "warnings": []}
+    for item in model_result.dimensions:
+        if item.status == QualityDimensionStatus.SCORED:
+            status = AssessmentStatus.EVALUATED
+        elif item.status == QualityDimensionStatus.NEEDS_REVIEW:
+            status = AssessmentStatus.NEEDS_REVIEW
+        else:
+            status = AssessmentStatus.INSUFFICIENT_EVIDENCE
+        updates[QUALITY_DIMENSION_ATTRIBUTES[item.dimension]] = DimensionAssessment(
+            status=status,
+            score=item.score,
+            level=quality_score_level(item.score),
+            confidence=0.75 if status == AssessmentStatus.EVALUATED else 0.5,
+            reasoning=item.reason,
+            evidence=item.evidence,
+            evidence_fields=[],
+            limitations=item.limitations,
+        )
+    merged = fallback.model_copy(update=updates)
+    return apply_quality_summary(merged)
 
 CLINICIAN_RECOMMENDATION_WEIGHTS = {
     "disease_match": 0.35,
@@ -832,7 +909,7 @@ def evaluate_current_treatment(
     history = historical_reference or HistoricalTreatmentReference(
         limitations=["暂无足够相似历史案例，当前评价主要基于本次病例材料"]
     )
-    return CurrentTreatmentEvaluation(
+    return apply_quality_summary(CurrentTreatmentEvaluation(
         case_id=case.case_id,
         pattern=pattern,
         treatment_diagnosis_match=diagnosis_match,
@@ -846,4 +923,5 @@ def evaluate_current_treatment(
         key_findings=[f"治疗记录完整度：{completeness.score:.1f}分", *(f"需要复核：{reason}" for reason in review_reasons[:3])],
         review_reasons=review_reasons,
         historical_reference=history,
-    )
+        evaluation_method="RULES_FALLBACK",
+    ))

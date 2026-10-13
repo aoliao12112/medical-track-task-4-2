@@ -52,12 +52,12 @@ const context = {
 };
 vm.createContext(context);
 const source = fs.readFileSync("web/dist/medical.js", "utf8");
-const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain};})();");
+const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain,renderQuality,renderReview};})();");
 vm.runInContext(testableSource, context);
 for (const required of [
   "/field-reviews", "确认无误", "修改并确认", "无法确认", "preview_available",
   "/analysis/prepare", "/module-reviews", "准备医疗分析结果", "生成状态", "复核状态",
-  "该结果基于旧病例版本生成", "本次病例观察", "发送到客户站内收件箱（比赛演示）",
+  "该结果基于旧病例版本生成", "本次病例观察", "客户结果预览",
   "/pain-points/", "SHOW", "EDIT", "HIDE", "/care/revision", "最终医疗门禁",
   "修订文字和病例依据", "发布前模块状态", "返回该模块",
   "已引用依据摘要", "查看详细依据", "修改依据", "care-evidence-search",
@@ -104,6 +104,14 @@ const pickerHtml = context.__medicalDisplayTest.evidenceSelect({care_evidence_op
 ]},["diagnoses[0].name","costs.total_amount"]);
 assert.match(pickerHtml,/已引用 2 项/);
 assert.match(pickerHtml,/主诊断：肺部阴影/);
+const currentEvidence = pickerHtml.match(/<details class="care-evidence-current">([\s\S]*?)<\/details>/)[1];
+assert.equal((currentEvidence.match(/主诊断：肺部阴影/g)||[]).length,1,
+  "selected evidence must render once in the detail list");
+assert.match(pickerHtml,/<details class="care-evidence-current"><summary>查看详细依据<\/summary>/);
+assert.ok(!pickerHtml.includes('<details class="care-evidence-current" open'),
+  "evidence details must be collapsed by default and use native toggle behavior");
+assert.ok(!pickerHtml.includes("care-evidence-summary-list"),
+  "summary must not duplicate the complete evidence list");
 assert.match(pickerHtml,/诊断/);
 assert.match(pickerHtml,/费用/);
 assert.ok(!pickerHtml.includes("<select"),"care evidence editor must use grouped, collapsed checkboxes");
@@ -122,6 +130,46 @@ assert.equal(aggregated[0].evidence.length,3,"raw evidence must remain available
 assert.equal(aggregated[0]._displaySources.length,2,"same source_url must display once");
 assert.equal(aggregated[0]._displayEvidence.length,1,"similar capability reasons must be grouped");
 assert.ok(aggregated[0]._displayEvidence.length<=4,"default recommendation reasons must be limited to four");
+
+const qualityHtml = context.__medicalDisplayTest.renderQuality({
+  quality:{single_case_notice:"单病例观察",historical_profiles:[],summary:{overall_score:82,overall_level:"良好",scored_weight_coverage:.85},case_observations:[
+    {metric_code:"treatment_diagnosis_match",raw_value:null,status:"REVIEW_REQUIRED",disease_group:"pneumonia",evidence:{reasoning:"需要结合完整病情复核",evidence_fields:["diagnoses","procedures"],limitations:["缺少完整适应证信息"]}},
+    {metric_code:"medication_rationality",raw_value:null,status:"DATA_UNAVAILABLE",disease_group:"pneumonia",evidence:{reasoning:"当前材料未记录可评价的用药",evidence_fields:["medications"],limitations:[]}},
+    {metric_code:"procedure_rationality",raw_value:null,status:"DATA_UNAVAILABLE",disease_group:"pneumonia",evidence:{reasoning:"当前材料未记录手术或操作",evidence_fields:["procedures"],limitations:[]}},
+    {metric_code:"risk_management",raw_value:null,status:"REVIEW_REQUIRED",disease_group:"pneumonia",evidence:{reasoning:"需要核对风险处置",evidence_fields:["pain_report","events"],limitations:[]}},
+    {metric_code:"discharge_continuity",raw_value:null,status:"DATA_UNAVAILABLE",disease_group:"pneumonia",evidence:{reasoning:"缺少出院计划",evidence_fields:["medications","events"],limitations:[]}},
+    {metric_code:"treatment_completeness",raw_value:80,status:"OBSERVED",disease_group:"pneumonia",evidence:{reasoning:"结构化材料覆盖较完整",evidence_fields:["diagnoses","hospitalization"],limitations:["仅评价记录完整性"]}},
+  ]},
+  module_states:{treatment_quality:{generation_status:"GENERATED",review_status:"REVIEW_REQUIRED",result_available:true,blockers:[],warnings:[]}},
+  field_review_summary:{pending:0,unresolved:0},
+});
+for(const label of ["诊疗一致性","用药合理性","手术/操作合理性","风险管理","出院与随访完整性","病历与诊疗完整性"]){
+  assert.match(qualityHtml,new RegExp(label));
+}
+assert.match(qualityHtml,/证据不足 \/ 暂不评分/);
+assert.match(qualityHtml,/80\.0 \/ 100/);
+assert.match(qualityHtml,/82\.0 \/ 100/);
+assert.match(qualityHtml,/评价信息覆盖/);
+assert.match(qualityHtml,/85%/);
+assert.doesNotMatch(qualityHtml,/未获得 score/);
+
+const insufficientQualityHtml = context.__medicalDisplayTest.renderQuality({
+  quality:{single_case_notice:"单病例观察",historical_profiles:[],summary:{overall_score:null,scored_weight_coverage:.45},case_observations:[]},
+  module_states:{treatment_quality:{generation_status:"GENERATED",review_status:"REVIEW_REQUIRED",result_available:true,blockers:[],warnings:[]}},
+  field_review_summary:{pending:0,unresolved:0},
+});
+assert.match(insufficientQualityHtml,/综合评分：暂不生成/);
+assert.match(insufficientQualityHtml,/45%/);
+
+const reviewHtml = context.__medicalDisplayTest.renderReview({
+  review_gate:{decision:"REVIEW_REQUIRED",reasons:["safety_checks.EVIDENCE_PATHS=review","pending-hospital-x","confidence=0.049 < .5"]},
+  final_gate:{decision:"NOT_READY",reasons:["客户可见模块尚未全部通过"]},
+  final_review_matrix:{modules:[],blockers:[],can_final_approve:false},
+  pending_confirmation_count:0,field_review_summary:{pending:0,unresolved:0},reviews:[],
+});
+assert.doesNotMatch(reviewHtml,/内容安全门禁|safety_checks|pending-hospital|confidence=0\.049/);
+assert.match(reviewHtml,/最终医疗门禁/);
+assert.doesNotMatch(source,/发送到客户站内收件箱（比赛演示）|比赛演示将结果写入客户站内收件箱/);
 
 const recommendationReview = context.__medicalDisplayTest.modulePanel("recommendation", {
   recommendation: {items: []},

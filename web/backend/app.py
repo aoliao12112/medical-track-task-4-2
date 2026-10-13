@@ -95,6 +95,7 @@ from medical_claims.quality_phase1_models import (
     RecommendationIntent,
     PatientRecommendationContext,
     TreatmentEvaluationRequestV2,
+    LLMQualityEvaluation,
 )
 from medical_claims.quality_phase1_service import (
     DEFAULT_CATALOG_PATH,
@@ -109,6 +110,7 @@ from medical_claims.recommendation_intent import (
     validate_recommendation_intent,
 )
 from medical_claims.recommendation_prompt import build_recommendation_planner_body
+from medical_claims.quality_prompt import build_quality_evaluation_body
 from medical_claims.external_model_policy import (
     ExternalModelAuthorizationError,
     ExternalModelPurpose,
@@ -956,9 +958,35 @@ def prepare_medical_analysis(
                 if disease_group == "unavailable":
                     label = primary_disease(effective_case) or "未确认病种"
                     disease_group = "diagnosis:" + re.sub(r"[^\w\u3400-\u9fff-]", "", label).lower()
-                evaluation = run_treatment_evaluation(TreatmentEvaluationRequestV2(
-                    case=effective_case, disease_group=disease_group, pain_report=pain,
-                ))
+                quality_pain = None
+                medical_detail = storage.get_medical_case_detail(identity["user_id"], case_id)
+                saved_effective_pain = medical_detail.get("pain_effective_result")
+                pain_state = (medical_detail.get("module_states") or {}).get("pain") or {}
+                if saved_effective_pain and pain_state.get("review_status") == "APPROVED":
+                    quality_pain = PainPointReport.model_validate(saved_effective_pain)
+                quality_model_result = None
+                quality_warnings = []
+                if request.use_llm:
+                    try:
+                        require_external_model_authorization(
+                            storage.get_case(case_id), ExternalModelPurpose.QUALITY_EVALUATION,
+                        )
+                        quality_model_result = quality_evaluation_with_deepseek(effective_case, quality_pain)
+                    except Exception as exc:
+                        if isinstance(exc, httpx.TimeoutException):
+                            quality_warnings.append("LLM_TIMEOUT")
+                        elif isinstance(exc, (ValueError, json.JSONDecodeError)):
+                            quality_warnings.append("LLM_SCHEMA_INVALID")
+                        else:
+                            quality_warnings.append("LLM_UNAVAILABLE")
+                        logger.warning("Quality LLM fallback for case %s: %s", case_id, type(exc).__name__)
+                evaluation = run_treatment_evaluation(
+                    TreatmentEvaluationRequestV2(
+                        case=effective_case, disease_group=disease_group, pain_report=quality_pain,
+                    ),
+                    llm_evaluation=quality_model_result,
+                    warnings=quality_warnings,
+                )
                 storage.save_treatment_evaluation(
                     case_id, evaluation, disease_group, effective_fingerprint, identity["user_id"],
                 )
@@ -1249,7 +1277,9 @@ def submit_medical_review(
         reviewer_user_id=identity["user_id"],
         allow_low_risk_combined=True,
     )
+    publication = storage.publish_delivery(prepared) if request.decision == "APPROVED" else None
     return {"review": record.model_dump(mode="json"),
+            "publication": publication.model_dump(mode="json") if publication else None,
             "review_status": storage.get_medical_case_detail(identity["user_id"], case_id)["review_status"]}
 
 
@@ -2037,6 +2067,25 @@ def recommendation_intent_with_deepseek(
     output_text = extract_output_text(post_deepseek(body))
     intent = RecommendationIntent.model_validate_json(normalize_json_output(output_text))
     return validate_recommendation_intent(intent, case, context, upstream_primary_disease)
+
+
+def quality_evaluation_with_deepseek(
+    case: ClaimCase,
+    pain_report: PainPointReport | None,
+) -> LLMQualityEvaluation:
+    """Use the existing DeepSeek transport and structured-output parser."""
+    body = build_quality_evaluation_body(
+        case,
+        pain_report,
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+        max_output_tokens=int(os.getenv("DEEPSEEK_MAX_OUTPUT_TOKENS", "30000")),
+    )
+    output_text = extract_output_text(post_deepseek(body))
+    payload = json.loads(normalize_json_output(output_text))
+    # The model is explicitly told not to return this value. If it still does,
+    # discard it so the backend remains the sole owner of aggregate scoring.
+    payload.pop("overall_score", None)
+    return LLMQualityEvaluation.model_validate(payload)
 
 
 @app.get("/api/health")

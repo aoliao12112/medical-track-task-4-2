@@ -1,6 +1,7 @@
 """Frozen V1 contract and MEDICAL publication-gate tests."""
 from __future__ import annotations
 
+import json
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -145,6 +146,77 @@ def test_medical_v1_accepts_system_pain_defaults_after_explicit_module_approval(
     assert after_revision["module_states"]["care"]["review_status"] == "REVIEW_REQUIRED"
     assert storage.medical_final_gate(after_revision).decision == "NOT_READY"
     assert after_revision["care_revisions"][0]["note"] == "修订心理支持表达"
+
+
+def test_legacy_empty_pain_module_overlay_reuses_current_item_decisions(tmp_path):
+    storage, medical_id, raw = storage_fixture(tmp_path)
+    state = storage.get_effective_case_state(raw.case_id)
+    effective = ClaimCase.model_validate(state["effective"])
+    pain = pain_report(effective)
+    storage.save_medical_pain(
+        raw.case_id, pain, raw, state["effective_fingerprint"], medical_id,
+    )
+    storage.save_pain_item_review(
+        medical_id, raw.case_id, "pain-1",
+        PainItemReviewRequestV1(decision="SHOW"),
+    )
+    storage.save_module_review(
+        medical_id, raw.case_id, "pain_report", ReviewDecision.APPROVED, "",
+        storage.module_review_content(raw.case_id, "pain"),
+    )
+
+    # Reproduce the persisted shape created by the old endpoint: the module is
+    # approved, item decisions exist, but the module overlay snapshot is empty.
+    with storage._connect() as db:
+        row = db.execute(
+            "SELECT review_id, record_json FROM reviews WHERE case_id=? "
+            "AND target_type='pain_report' ORDER BY rowid DESC LIMIT 1",
+            (raw.case_id,),
+        ).fetchone()
+        record = json.loads(row["record_json"])
+        record["payload"] = {"item_decisions": []}
+        db.execute(
+            "UPDATE reviews SET record_json=? WHERE review_id=?",
+            (json.dumps(record, ensure_ascii=False, sort_keys=True), row["review_id"]),
+        )
+
+    detail = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert detail["module_states"]["pain"]["review_status"] == "APPROVED"
+    assert detail["pain_review_summary"]["pending"] == 0
+    assert detail["pain_effective_result"]["pain_points"][0]["review_required"] is False
+    assert storage.customer_attention_items(raw.case_id)[0]["pain_point_id"] == "pain-1"
+
+
+def test_recommendation_review_survives_report_lifecycle_status_update(tmp_path):
+    storage, medical_id, raw = storage_fixture(tmp_path)
+    state = storage.get_effective_case_state(raw.case_id)
+    storage.save_recommendation_report(
+        raw.case_id,
+        {
+            "context": {
+                "case_id": raw.case_id, "disease_group": "肺炎", "city": "上海市",
+            },
+            "recommendations": [],
+        },
+        effective_fingerprint=state["effective_fingerprint"], user_id=medical_id,
+    )
+    storage.save_module_review(
+        medical_id, raw.case_id, "recommendation", ReviewDecision.APPROVED, "已核对",
+        storage.module_review_content(raw.case_id, "recommendation"),
+    )
+    before = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert before["module_states"]["recommendation"]["review_status"] == "APPROVED"
+
+    with storage._connect() as db:
+        db.execute(
+            "UPDATE recommendation_reports SET status='REVIEWED', updated_at=? "
+            "WHERE case_id=?",
+            ("2026-10-12T18:00:00+00:00", raw.case_id),
+        )
+
+    after = storage.get_medical_case_detail(medical_id, raw.case_id)
+    assert after["module_states"]["recommendation"]["review_status"] == "APPROVED"
+    assert after["module_states"]["recommendation"]["generation_status"] == "GENERATED"
 
 
 def test_medical_v1_http_endpoints_recalculate_revision_and_unlock_final_gate(

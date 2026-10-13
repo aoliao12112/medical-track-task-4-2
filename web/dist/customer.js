@@ -8,7 +8,7 @@
   const labels = {
     PENDING_ACCEPTANCE: "待理赔受理", ACCEPTED: "理赔已受理", COMPLETED: "理赔已完成",
     RECEIVED: "处理中", STRUCTURED: "分析已完成",
-    CARE_TRIGGERED: "关怀准备中", CARE_READY: "关怀已就绪", DELIVERED_MOCK: "已送达",
+    CARE_TRIGGERED: "关怀准备中", CARE_READY: "关怀已就绪", PUBLISHED: "已发布", DELIVERED_MOCK: "已送达",
     care_guide: "关怀指引", recommendation: "服务推荐", overall_service: "整体服务",
     clear: "内容清楚", not_clear: "内容不清楚", not_personalized: "不够个性化",
     cost_question: "费用疑问", recovery_question: "康复疑问", medication_question: "用药疑问",

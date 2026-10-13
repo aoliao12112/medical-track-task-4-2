@@ -552,7 +552,7 @@ class CaseStorage:
 
     @staticmethod
     def _medical_review_status(decision, care_status=None):
-        if care_status == "APPROVED":
+        if care_status in {"APPROVED", "PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
             return "APPROVED"
         if care_status == "REJECTED":
             return "RETURNED"
@@ -770,6 +770,7 @@ class CaseStorage:
     def _module_content_fingerprint(cls, db, case_id, module, content):
         if content is None:
             return None
+        content = cls._stable_module_review_content(module, content)
         generation_id = cls._latest_module_generation_id(db, case_id, module)
         if generation_id is None:
             # Legacy results predate module generation logs. Keep them
@@ -778,6 +779,38 @@ class CaseStorage:
         return cls._content_fingerprint({
             "module": module, "generation_id": generation_id, "content": content,
         })
+
+    @staticmethod
+    def _stable_module_review_content(module, content):
+        """Remove lifecycle metadata that must not invalidate a content review."""
+        stable = deepcopy(content)
+        if module == "recommendation" and isinstance(stable, dict):
+            # DRAFT -> REVIEWED/PUBLISHED is a workflow transition on the same
+            # immutable report version.  Those fields cannot be part of the
+            # medical-review fingerprint or approval invalidates itself.
+            stable.pop("status", None)
+            stable.pop("updated_at", None)
+        return stable
+
+    @classmethod
+    def _module_review_fingerprints(cls, db, case_id, module, content):
+        """Current fingerprint plus the pre-fix recommendation fingerprint."""
+        current = cls._module_content_fingerprint(db, case_id, module, content)
+        candidates = [current] if current else []
+        if module == "recommendation" and isinstance(content, dict):
+            generation_id = cls._latest_module_generation_id(db, case_id, module)
+            if generation_id:
+                legacy = deepcopy(content)
+                legacy["status"] = "DRAFT"
+                if legacy.get("created_at"):
+                    legacy["updated_at"] = legacy["created_at"]
+                legacy_fingerprint = cls._content_fingerprint({
+                    "module": module, "generation_id": generation_id,
+                    "content": legacy,
+                })
+                if legacy_fingerprint not in candidates:
+                    candidates.append(legacy_fingerprint)
+        return candidates
 
     @classmethod
     def _latest_pain_item_reviews(cls, db, case_id, pain):
@@ -808,6 +841,48 @@ class CaseStorage:
             "edit": sum(value == "EDIT" for value in decisions.values()),
             "hide": sum(value == "HIDE" for value in decisions.values()),
         }
+
+    @staticmethod
+    def _pain_item_decisions(item_reviews, pain):
+        """Convert current item reviews to the module overlay representation."""
+        points = {
+            item.get("pain_point_id"): item
+            for item in (pain or {}).get("pain_points", [])
+        }
+        decisions = []
+        for raw in item_reviews:
+            point_id = raw.get("pain_point_id")
+            if point_id not in points:
+                continue
+            decision = raw.get("decision")
+            item = {
+                "pain_point_id": point_id,
+                "decision": "CONFIRM" if decision == "SHOW" else decision,
+            }
+            if decision == "EDIT":
+                item.update({
+                    "title": raw.get("title") or points[point_id].get("title"),
+                    "description": raw.get("summary") or points[point_id].get("description"),
+                    "recommended_action": raw.get("suggestion")
+                    or points[point_id].get("recommended_action"),
+                })
+            decisions.append(item)
+        return decisions
+
+    @classmethod
+    def _pain_review_with_current_items(cls, pain, review, item_reviews):
+        """Repair the effective overlay for reviews saved before item snapshots."""
+        if (review or {}).get("decision") != "APPROVED":
+            return review
+        payload = (review.get("payload") or {})
+        if payload.get("item_decisions"):
+            return review
+        fallback = cls._pain_item_decisions(item_reviews, pain)
+        if not fallback:
+            return review
+        resolved = deepcopy(review)
+        resolved["payload"] = {**payload, "item_decisions": fallback}
+        return resolved
 
     @staticmethod
     def _pain_system_suggestions(pain):
@@ -862,23 +937,8 @@ class CaseStorage:
             }
             for point_id, suggestion in suggestions.items()
         }
-        for raw in item_reviews:
-            point_id = raw.get("pain_point_id")
-            if point_id not in points:
-                continue
-            decision = raw.get("decision")
-            item = {
-                "pain_point_id": point_id,
-                "decision": "CONFIRM" if decision == "SHOW" else decision,
-            }
-            if decision == "EDIT":
-                item.update({
-                    "title": raw.get("title") or points[point_id].get("title"),
-                    "description": raw.get("summary") or points[point_id].get("description"),
-                    "recommended_action": raw.get("suggestion")
-                    or points[point_id].get("recommended_action"),
-                })
-            resolved[point_id] = item
+        for item in cls._pain_item_decisions(item_reviews, pain):
+            resolved[item["pain_point_id"]] = item
         for raw in inline_decisions:
             point_id = raw.get("pain_point_id")
             if point_id in points:
@@ -952,6 +1012,13 @@ class CaseStorage:
             "evaluated": "OBSERVED", "needs_review": "REVIEW_REQUIRED",
             "insufficient_evidence": "DATA_UNAVAILABLE", "not_applicable": "DATA_UNAVAILABLE",
         }
+        quality_summary = {
+            "overall_score": payload.get("overall_score"),
+            "overall_level": payload.get("overall_level"),
+            "scored_weight_coverage": payload.get("scored_weight_coverage", 0),
+            "evaluation_method": payload.get("evaluation_method", "RULES_FALLBACK"),
+            "warnings": payload.get("warnings") or [],
+        }
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -974,10 +1041,14 @@ class CaseStorage:
                      dimension.get("score"), status_map[dimension["status"]],
                      encode({
                          "reasoning": dimension.get("reasoning"),
+                         "assessment_status": dimension.get("status"),
+                         "level": dimension.get("level"),
+                         "evidence": dimension.get("evidence") or [],
                          "evidence_fields": dimension.get("evidence_fields") or [],
                          "limitations": dimension.get("limitations") or [],
                          "confidence": dimension.get("confidence", 0),
                          "effective_fingerprint": effective_fingerprint,
+                         "quality_summary": quality_summary,
                      }), now, now),
                 )
             self._record_module_state(
@@ -1012,6 +1083,7 @@ class CaseStorage:
                         if content is not None and generation_id else content)
             if module == "recommendation":
                 content = self.load_recommendation_report(case_id)
+                content = self._stable_module_review_content(module, content)
                 generation_id = self._latest_module_generation_id(db, case_id, module)
                 return ({"module": module, "generation_id": generation_id, "content": content}
                         if content is not None and generation_id else content)
@@ -1188,13 +1260,14 @@ class CaseStorage:
 
     @classmethod
     def _latest_module_review(cls, db, case_id, module, content):
-        fingerprint = cls._module_content_fingerprint(db, case_id, module, content)
-        if not fingerprint:
+        fingerprints = cls._module_review_fingerprints(db, case_id, module, content)
+        if not fingerprints:
             return None
+        placeholders = ",".join("?" for _ in fingerprints)
         row = db.execute(
             "SELECT record_json FROM reviews WHERE case_id=? AND target_type=? "
-            "AND content_fingerprint=? ORDER BY rowid DESC LIMIT 1",
-            (case_id, cls._module_target(module), fingerprint),
+            f"AND content_fingerprint IN ({placeholders}) ORDER BY rowid DESC LIMIT 1",
+            (case_id, cls._module_target(module), *fingerprints),
         ).fetchone()
         return json.loads(row[0]) if row else None
 
@@ -1302,18 +1375,13 @@ class CaseStorage:
                 generation = GenerationStatus.READY
             else:
                 generation = GenerationStatus.INPUT_INSUFFICIENT
-            target = self._module_target(module.value)
             content_fingerprint = self._module_content_fingerprint(
                 db, case_id, module.value, content[module.value],
             )
-            latest = None
-            if content_fingerprint:
-                row = db.execute(
-                    "SELECT decision FROM reviews WHERE case_id=? AND target_type=? "
-                    "AND content_fingerprint=? ORDER BY rowid DESC LIMIT 1",
-                    (case_id, target, content_fingerprint),
-                ).fetchone()
-                latest = row[0] if row else None
+            latest_review = self._latest_module_review(
+                db, case_id, module.value, content[module.value],
+            )
+            latest = latest_review.get("decision") if latest_review else None
             review = {
                 None: ModuleReviewStatus.NOT_REVIEWED,
                 "APPROVED": ModuleReviewStatus.APPROVED,
@@ -1436,12 +1504,15 @@ class CaseStorage:
             structured_fingerprint, pending_fields, field_reviews, effective_structured = \
                 self._field_review_state(db, case_id, raw_structured)
             observations = []
+            quality_summary = None
             for item in db.execute(
                 "SELECT * FROM provider_quality_observations WHERE case_id=? ORDER BY provider_type, metric_code",
                 (case_id,),
             ):
                 value = dict(item)
                 value["evidence"] = json.loads(value.pop("evidence_json"))
+                if value["provider_type"] == "TREATMENT" and quality_summary is None:
+                    quality_summary = value["evidence"].get("quality_summary")
                 observations.append(value)
             historical_profiles = []
             profile_keys = {(item["provider_type"], item["provider_id"], item["disease_group"])
@@ -1487,6 +1558,9 @@ class CaseStorage:
             pain_suggestions = self._pain_system_suggestions(raw_pain)
             summary_reviews = pain_item_reviews
             if (pain_review or {}).get("decision") == "APPROVED":
+                pain_review = self._pain_review_with_current_items(
+                    raw_pain, pain_review, pain_item_reviews,
+                )
                 summary_reviews = ((pain_review.get("payload") or {}).get("item_decisions") or [])
             pain_review_summary = self._pain_review_summary(raw_pain, summary_reviews)
             effective_pain = self._without_bbox(self._effective_pain_result(raw_pain, pain_review))
@@ -1549,6 +1623,7 @@ class CaseStorage:
                     "case_observations": observations,
                     "historical_profiles": historical_profiles,
                     "single_case_notice": "单病例观察，不代表该医院整体医疗质量。",
+                    "summary": quality_summary,
                 },
                 "recommendation": recommendation, "reviews": reviews,
                 "module_states": module_states,
@@ -2204,6 +2279,9 @@ class CaseStorage:
         care = json.loads(row["care_result_json"]) if row["care_result_json"] else None
         pain_review = self._latest_module_review(db, case_id, "pain", pain)
         care_review = self._latest_module_review(db, case_id, "care", care)
+        pain_review = self._pain_review_with_current_items(
+            pain, pain_review, self._latest_pain_item_reviews(db, case_id, pain),
+        )
         effective_pain = self._effective_pain_result(
             pain, pain_review if (pain_review or {}).get("decision") == "APPROVED" else None,
         )
@@ -2277,6 +2355,12 @@ class CaseStorage:
             return WorkflowStatus.RESOLVED
         if db.execute("SELECT 1 FROM feedback WHERE case_id=?", (case_id,)).fetchone():
             return WorkflowStatus.FEEDBACK_RECEIVED
+        latest = db.execute(
+            "SELECT status FROM deliveries WHERE case_id=? "
+            "ORDER BY COALESCE(sent_at, created_at) DESC LIMIT 1", (case_id,),
+        ).fetchone()
+        if latest and latest["status"] == "PUBLISHED":
+            return WorkflowStatus.PUBLISHED
         return WorkflowStatus.DELIVERED_MOCK
 
     def prepare_delivery(self, prepared):
@@ -2288,7 +2372,7 @@ class CaseStorage:
             row = self._row(db, prepared["case_id"])
             delivered = db.execute("SELECT 1 FROM deliveries WHERE case_id=? AND content_fingerprint=?",
                                    (prepared["case_id"], prepared["content_fingerprint"])).fetchone()
-            post_states = {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}
+            post_states = {"PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}
             if delivered and row["status"] not in post_states and row["status"] != "PROCESSING" and authorization["can_send"]:
                 self._status(db, prepared["case_id"], self._delivered_case_status(db, prepared["case_id"]))
                 row = self._row(db, prepared["case_id"])
@@ -2358,7 +2442,7 @@ class CaseStorage:
             self._row(db, case_id)
             return [json.loads(row[0]) for row in db.execute("SELECT record_json FROM reviews WHERE case_id=? ORDER BY rowid DESC", (case_id,))]
 
-    def send_delivery(self, prepared):
+    def send_delivery(self, prepared, *, publish=False):
         from .delivery import DeliveryRecord, DeliveryMode
         from .delivery_gate import GateDecision
         with self._connect() as db:
@@ -2380,11 +2464,13 @@ class CaseStorage:
             existing = db.execute("SELECT record_json FROM deliveries WHERE case_id=? AND content_fingerprint=?",
                                   (prepared["case_id"], prepared["content_fingerprint"])).fetchone()
             if existing:
-                if row["status"] not in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+                if row["status"] not in {"PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                     self._status(db, prepared["case_id"], self._delivered_case_status(db, prepared["case_id"]))
                 return DeliveryRecord.model_validate_json(existing[0])
             mode = DeliveryMode.AUTO if prepared["gate"].decision == GateDecision.AUTO_DELIVER else DeliveryMode.HUMAN_APPROVED
-            record = DeliveryRecord(delivery_id=str(uuid4()), case_id=prepared["case_id"], delivery_mode=mode,
+            record = DeliveryRecord(delivery_id=str(uuid4()), case_id=prepared["case_id"],
+                channel="customer_portal" if publish else "mock_web_inbox",
+                status="PUBLISHED" if publish else "DELIVERED_MOCK", delivery_mode=mode,
                 recommendation_included=bool(prepared["content"]["recommendation"]), risk_gate_result=prepared["gate"],
                 content_fingerprint=prepared["content_fingerprint"], created_at=datetime.now(timezone.utc).isoformat(),
                 content=prepared["content"])
@@ -2392,11 +2478,16 @@ class CaseStorage:
                 "INSERT INTO deliveries(delivery_id, case_id, content_fingerprint, record_json, created_at, "
                 "channel, status, sent_at, customer_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (record.delivery_id, record.case_id, record.content_fingerprint, encode(record), record.created_at,
-                 "MOCK", record.status, record.created_at, row["customer_user_id"]),
+                  "PORTAL" if publish else "MOCK", record.status, record.created_at, row["customer_user_id"]),
             )
             has_open_tasks = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (record.case_id,)).fetchone()
-            self._status(db, record.case_id, WorkflowStatus.FOLLOWUP_PENDING if has_open_tasks else WorkflowStatus.DELIVERED_MOCK)
+            delivered_status = WorkflowStatus.PUBLISHED if publish else WorkflowStatus.DELIVERED_MOCK
+            self._status(db, record.case_id, WorkflowStatus.FOLLOWUP_PENDING if has_open_tasks else delivered_status)
             return record
+
+    def publish_delivery(self, prepared):
+        """Persist the final-approved customer portal result without a separate send step."""
+        return self.send_delivery(prepared, publish=True)
 
     def list_deliveries(self, case_id):
         with self._connect() as db:
@@ -2411,6 +2502,9 @@ class CaseStorage:
             review = self._latest_module_review(db, case_id, "pain", pain)
             if (review or {}).get("decision") != "APPROVED":
                 return []
+            review = self._pain_review_with_current_items(
+                pain, review, self._latest_pain_item_reviews(db, case_id, pain),
+            )
             effective = self._effective_pain_result(pain, review)
             output = []
             for point in (effective or {}).get("pain_points", []):
@@ -2497,7 +2591,7 @@ class CaseStorage:
                     service_route = {
                         "user_id": service["user_id"], "display_name": service["display_name"],
                     }
-            if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+            if self._row(db, feedback.case_id)["status"] in {"PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
                 if db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (feedback.case_id,)).fetchone():
                     self._status(db, feedback.case_id, WorkflowStatus.FOLLOWUP_PENDING)
@@ -2541,7 +2635,7 @@ class CaseStorage:
                 "WHERE task_id=?",
                 (encode(task), task.resolved_at, task.resolution, task_id),
             )
-            if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+            if self._row(db, task.case_id)["status"] in {"PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 open_task = db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (task.case_id,)).fetchone()
                 self._status(db, task.case_id, WorkflowStatus.FOLLOWUP_PENDING if open_task else WorkflowStatus.RESOLVED)
             return task
@@ -2891,7 +2985,7 @@ class CaseStorage:
                     service_route = {
                         "user_id": service["user_id"], "display_name": service["display_name"],
                     }
-            if self._row(db, feedback.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+            if self._row(db, feedback.case_id)["status"] in {"PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 self._status(db, feedback.case_id, WorkflowStatus.FEEDBACK_RECEIVED)
                 if db.execute("SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status='OPEN'", (feedback.case_id,)).fetchone():
                     self._status(db, feedback.case_id, WorkflowStatus.FOLLOWUP_PENDING)
@@ -2921,7 +3015,7 @@ class CaseStorage:
                 "WHERE task_id=?",
                 (encode(task), task.resolved_at, task.resolution, task_id),
             )
-            if self._row(db, task.case_id)["status"] in {"DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+            if self._row(db, task.case_id)["status"] in {"PUBLISHED", "DELIVERED_MOCK", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
                 open_task = db.execute(
                     "SELECT 1 FROM follow_up_tasks WHERE case_id=? AND status IN ('OPEN','PROCESSING')",
                     (task.case_id,),

@@ -396,6 +396,13 @@ def test_medical_review_is_validated_and_bound_to_logged_in_reviewer(tmp_path, m
     })
     assert approved.status_code == 201, approved.text
     assert approved.json()["review_status"] == "APPROVED"
+    assert approved.json()["publication"]["status"] == "PUBLISHED"
+    assert approved.json()["publication"]["channel"] == "customer_portal"
+    customer_portal = TestClient(app)
+    login(customer_portal, "customer-review")
+    published = customer_portal.get(f"/api/customer/cases/{case_id}")
+    assert published.status_code == 200, published.text
+    assert published.json()["delivery"]["status"] == "PUBLISHED"
     with storage._connect() as db:
         row = db.execute(
             "SELECT reviewer_user_id, comment FROM reviews "

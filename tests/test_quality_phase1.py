@@ -25,6 +25,10 @@ from medical_claims.quality_phase1_models import (
     ClinicianTreatmentExpertise,
     CurrentCaseMatch,
     DimensionAssessment,
+    LLMQualityEvaluation,
+    QualityDimensionKey,
+    QualityDimensionResult,
+    QualityDimensionStatus,
     EvidenceVerificationStatus,
     HistoricalEvidenceLevel,
     GeographicRecommendationStrategy,
@@ -54,6 +58,8 @@ from medical_claims.quality_phase1_adapters import patient_feedback_from_records
 from medical_claims.quality_models import ProfileCaseRecord
 from medical_claims.recommendation_intent import validate_recommendation_intent
 from medical_claims.recommendation_prompt import RECOMMENDATION_PLANNER_INSTRUCTIONS
+from medical_claims.quality_phase1_engine import merge_llm_quality_evaluation
+from medical_claims.quality_prompt import build_quality_case_context
 from web.backend.app import app
 
 backend_app = importlib.import_module("web.backend.app")
@@ -562,6 +568,98 @@ def test_treatment_service_uses_current_case_input():
     )
     assert result.case_id == case.case_id
     assert result.pattern.disease_group == "hypertension"
+
+
+def quality_dimensions(scores=None):
+    scores = scores or {}
+    return [QualityDimensionResult(
+        dimension=dimension,
+        score=scores.get(dimension),
+        status=(QualityDimensionStatus.SCORED if dimension in scores
+                else QualityDimensionStatus.NOT_SCORED),
+        level="良好" if dimension in scores else None,
+        reason="基于当前病例材料判断" if dimension in scores else "现有材料不足",
+        evidence=["病例中可追溯的结构化事实"] if dimension in scores else [],
+        limitations=[] if dimension in scores else ["缺少必要信息"],
+    ) for dimension in QualityDimensionKey]
+
+
+def test_quality_llm_contract_requires_exact_six_dimensions_and_valid_scores():
+    valid = LLMQualityEvaluation(dimensions=quality_dimensions())
+    assert {item.dimension for item in valid.dimensions} == set(QualityDimensionKey)
+    with pytest.raises(ValueError):
+        LLMQualityEvaluation(dimensions=quality_dimensions()[:-1])
+    duplicate = quality_dimensions()
+    duplicate[-1] = duplicate[0]
+    with pytest.raises(ValueError):
+        LLMQualityEvaluation(dimensions=duplicate)
+    base = quality_dimensions()[0].model_dump(mode="json")
+    with pytest.raises(ValueError):
+        QualityDimensionResult.model_validate({**base, "score": 101, "status": "SCORED"})
+    with pytest.raises(ValueError):
+        QualityDimensionResult.model_validate({**base, "score": -1, "status": "SCORED"})
+    with pytest.raises(ValueError):
+        QualityDimensionResult.model_validate({**base, "dimension": "unknown_dimension"})
+
+
+def test_quality_overall_renormalizes_only_scored_dimensions_and_requires_60_percent():
+    case = ClaimCase(case_id="QUALITY-SCORE-1")
+    fallback = evaluate_current_treatment(case, "test")
+    enough = {
+        QualityDimensionKey.DIAGNOSIS_TREATMENT_CONSISTENCY: 80,
+        QualityDimensionKey.MEDICATION_RATIONALITY: 90,
+        QualityDimensionKey.RISK_MANAGEMENT: 70,
+    }
+    evaluated = merge_llm_quality_evaluation(
+        fallback, LLMQualityEvaluation(dimensions=quality_dimensions(enough)),
+    )
+    assert evaluated.scored_weight_coverage == 0.60
+    assert evaluated.overall_score == round((80 * .25 + 90 * .20 + 70 * .15) / .60, 2)
+    sparse = merge_llm_quality_evaluation(
+        fallback,
+        LLMQualityEvaluation(dimensions=quality_dimensions({
+            QualityDimensionKey.DIAGNOSIS_TREATMENT_CONSISTENCY: 100,
+        })),
+    )
+    assert sparse.scored_weight_coverage == 0.25
+    assert sparse.overall_score is None
+
+
+def test_quality_context_is_filtered_and_deidentified():
+    case = ClaimCase(
+        case_id="PRIVATE-CASE-ID",
+        diagnoses=[Diagnosis(diagnosis_id="D1", name=extracted("肺炎"))],
+    )
+    context = json.dumps(build_quality_case_context(case), ensure_ascii=False)
+    assert "PRIVATE-CASE-ID" not in context
+    assert "肺炎" in context
+    assert "bbox" not in context
+
+
+def test_quality_deepseek_output_ignores_model_overall_score(monkeypatch):
+    payload = {
+        "dimensions": [item.model_dump(mode="json") for item in quality_dimensions()],
+        "overall_score": 100,
+    }
+    monkeypatch.setattr(backend_app, "post_deepseek", lambda body: {
+        "output_text": json.dumps(payload, ensure_ascii=False),
+    })
+    result = backend_app.quality_evaluation_with_deepseek(
+        ClaimCase(case_id="QUALITY-LLM-1"), None,
+    )
+    assert isinstance(result, LLMQualityEvaluation)
+    assert not hasattr(result, "overall_score")
+
+
+def test_quality_service_fallback_never_invents_medical_scores():
+    result = run_treatment_evaluation(
+        TreatmentEvaluationRequestV2(case=ClaimCase(case_id="QUALITY-FALLBACK"), disease_group="test"),
+        warnings=["LLM_TIMEOUT"],
+    )
+    assert result.evaluation_method == "RULES_FALLBACK"
+    assert result.warnings == ["LLM_TIMEOUT"]
+    assert result.medication_rationality.score is None
+    assert result.overall_score is None
 
 
 def test_phase1_v2_routes_are_registered_separately_from_legacy_routes():

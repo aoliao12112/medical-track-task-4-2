@@ -20,8 +20,10 @@ from .provider_discovery import (
 from .quality_phase1_adapters import attach_record_history
 from .online_provider_discovery import OnlineAuthoritativeProviderDiscovery
 from .quality_phase1_engine import (
+    apply_quality_summary,
     build_historical_support,
     evaluate_current_treatment,
+    merge_llm_quality_evaluation,
     recommend_clinicians,
     recommend_hospitals,
 )
@@ -36,6 +38,7 @@ from .quality_phase1_models import (
     CurrentCaseMatch,
     CurrentTreatmentEvaluation,
     DimensionAssessment,
+    LLMQualityEvaluation,
     DiseaseSpecialtyCapability,
     HospitalCapabilityProfile,
     HospitalRecommendationReportV2,
@@ -339,10 +342,18 @@ def run_clinician_recommendation(
 
 def run_treatment_evaluation(
     request: TreatmentEvaluationRequestV2,
+    *,
+    llm_evaluation: LLMQualityEvaluation | None = None,
+    warnings: list[str] | None = None,
 ) -> CurrentTreatmentEvaluation:
-    return evaluate_current_treatment(
+    fallback = evaluate_current_treatment(
         request.case,
         request.disease_group,
         pain_report=request.pain_report,
         historical_reference=request.historical_reference,
     )
+    if llm_evaluation is not None:
+        return merge_llm_quality_evaluation(fallback, llm_evaluation)
+    if warnings:
+        fallback = fallback.model_copy(update={"warnings": warnings})
+    return apply_quality_summary(fallback)

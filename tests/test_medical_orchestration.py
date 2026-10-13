@@ -1,4 +1,5 @@
 """Module-level MEDICAL generation, review and invalidation regression tests."""
+import json
 from pathlib import Path
 
 from medical_claims.auth import hash_password
@@ -157,16 +158,32 @@ def test_quality_persists_six_independent_observations(tmp_path):
     evaluation = run_treatment_evaluation(TreatmentEvaluationRequestV2(
         case=effective, disease_group="pneumonia", pain_report=pain,
     ))
+    assert "overall_score" in evaluation.model_dump()
+    assert evaluation.overall_score is None
     storage.save_treatment_evaluation(
         raw.case_id, evaluation, "pneumonia", state["effective_fingerprint"], medical_id,
     )
     with storage._connect() as db:
         rows = db.execute(
-            "SELECT metric_code, status FROM provider_quality_observations "
+            "SELECT metric_code, raw_value, status, evidence_json FROM provider_quality_observations "
             "WHERE case_id=? AND provider_type='TREATMENT'", (raw.case_id,),
         ).fetchall()
     assert len(rows) == 6
+    assert {row["metric_code"] for row in rows} == {
+        "treatment_diagnosis_match", "medication_rationality",
+        "procedure_rationality", "treatment_completeness",
+        "discharge_continuity", "risk_management",
+    }
     assert {row["status"] for row in rows} <= {"OBSERVED", "REVIEW_REQUIRED", "DATA_UNAVAILABLE"}
+    for row in rows:
+        evidence = json.loads(row["evidence_json"])
+        if row["raw_value"] is None:
+            assert evidence["assessment_status"] != "evaluated"
+        else:
+            assert 0 <= row["raw_value"] <= 100
+            assert evidence["assessment_status"] == "evaluated"
+        assert evidence["quality_summary"]["overall_score"] is None
+        assert 0 <= evidence["quality_summary"]["scored_weight_coverage"] <= 1
 
 
 def test_module_review_is_bound_to_current_result(tmp_path):
