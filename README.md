@@ -259,11 +259,27 @@ OCR 缓存只留在其 `private/` 子目录。完整边界、输出说明和人�
 
 ## 正式字段级 F1 评测
 
-预测结果和专家金标准必须分别标注，禁止把预测结果复制为金标准。Phase D 网页通过 `/api/evaluation/structured` 调用唯一 Python 评测：先按 case_id 对齐，再确定性匹配实体，在实体内比较字段；不能跨病例或跨药品池化。
+KR1 正式金标准来源是仓库根目录的官方补充包
+`关于基于理赔医护记录的“医护洞察与温度指引”引擎 KR1补充材料.zip`。该包包含
+70 个病例、728 个分页提取 JSON；不能继续用模型预测或此前自行整理的结果冒充正式 gold。
+官方包是分页格式，先通过确定性转换器生成病例级 `ClaimCase`：
+
+```powershell
+python scripts/convert_official_kr1_gold.py --official-source-confirmed
+```
+
+转换结果默认保存在被 Git 忽略的 `outputs/official_kr1_gold_v2/`，其中
+`official-kr1.gold.final.json` 是 70 个病例的聚合金标准，每个病例也有独立
+`<case_id>/gold/gold.final.json` 和不含字段原值的 `provenance.json`。转换器不会读取预测结果，
+不会从自由文本臆造官方包未提供的手术字段，也不会猜测处方中未单独给出的剂量、频次和途径。
+
+Phase D 网页通过 `/api/evaluation/structured` 调用唯一 Python 评测：先按 case_id 对齐，再确定性匹配实体，在实体内比较字段；不能跨病例或跨药品池化。
 输出 micro/macro、per-case/per-field 指标。关键字段缺失率只计应有而缺失的字段，不等于 1-recall；完整口径见 `COMPETITION_HARDENING_REPORT.md`。命令行可运行：
 
 ```powershell
-python -m medical_claims.evaluation outputs/prediction.json outputs/gold.json
+python -m medical_claims.evaluation `
+  outputs/prediction.json `
+  outputs/official_kr1_gold_v2/official-kr1.gold.final.json
 ```
 
 评测前会统一空白、常见中文标点及 `qd/bid/tid` 等频次表达，但不会使用模糊语义匹配。
@@ -279,7 +295,8 @@ outputs/<case_id>/
 └─ evaluation/   # F1评测报告
 ```
 
-只有已独立复核、状态为 `reviewed` 的 `gold.final.json` 才用于对外报告正式 F1。
+KR1 对外报告只使用带有 `official-kr1.manifest.json`、官方 ZIP SHA-256 和转换器版本的
+`gold.final.json`。人工自建 gold 仍必须独立复核并标记为 `reviewed`，不得覆盖官方转换结果。
 
 ## 当前限制
 

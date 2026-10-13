@@ -1,14 +1,18 @@
 # Project Completion Map
 
-核对日期：2026-10-06。项目：基于理赔医护记录的“医护洞察与温度指引”引擎。
+核对日期：2026-10-13。项目：基于理赔医护记录的“医护洞察与温度指引”引擎。
 
-本文件回答“已有系统如何成为功能完整的比赛原型”，不展开 bug、评分算法修复、提示词优化或重构。本次只新增本文件。功能存在、主流程接通、数据可用、指标达标是四个不同状态，不能互相替代。
+本文件回答“已有系统如何成为功能完整的比赛原型”，不展开 bug、评分算法修复、提示词优化或重构。功能存在、主流程接通、数据可用、指标达标是四个不同状态，不能互相替代。
 
 结论：前三项已有真实调用链，第四项已有独立计算引擎；主要缺少案件级连接、画像数据组装与展示、可保存的审核决定、触达、反馈及反馈消费。按第 4 节的功能覆盖权重估计整体约 52%，不是比赛得分或准确率。OCR 不需要重新寻找；画像和推荐不需要从零开发。
 
 检查范围：README、全部业务源码、web/backend、web/dist（包括默认搜索会忽略的 dist）、docs、tests、evaluation、knowledge、examples、scripts、配置及 API 路由。额外检查本地 outputs 文件的结构和数量；不把 .venv 第三方依赖当项目业务代码，不读取密钥内容。没有独立 frontend/backend/configs 目录，其对应实现位于 web 与 pyproject.toml。未启动额外服务或运行外部模型；用户日志已经证明本地后端和静态网页启动成功，但不证明全部业务步骤成功。
 
-当前本地 outputs 有七份同一 case_id 的长病例分块 JSON 缓存，包含非空结构化字段。不能仅根据案件号或缓存断言来源、官方标注质量或最终全案成功。没有找到正式 gold、痛点专家标注、指引盲评结果或画像覆盖报告实物。文档中的 70 案件/728 图片、42 页运行记录作为历史记载，不能代替本次可核验数据。
+2026-10-13 已确认仓库根目录的 KR1 补充 ZIP 为官方金标准来源：70 个病例、728 个分页
+提取 JSON 均可解析。`scripts/convert_official_kr1_gold.py` 将其确定性转换为病例级 ClaimCase，
+本地正式聚合文件为 `outputs/official_kr1_gold_v2/official-kr1.gold.final.json`；转换未使用预测
+补值，并保留官方 ZIP 哈希、逐病例来源清单和未映射字段清单。KR2 痛点专家标注、KR3 指引
+盲评和正式 KR1 预测成绩仍需另行完成，不能用 gold 自一致性结果冒充算法成绩。
 
 ## 1. Competition Target System
 
@@ -335,14 +339,15 @@ ProfileCaseRecord.patient_feedback_score 是外部输入槽位；CareRating 是�
 
 | KR | 已有代码 | 可评什么 | 本次找到的实际数据 |
 |---|---|---|---|
-| KR1 Structured F1 | evaluation.evaluate；前端runEvaluation | 字段Precision/Recall/F1及missing_rate | 七份结构化分块缓存，不是gold/正式成绩；没有最终专家gold |
+| KR1 Structured F1 | evaluation.evaluate；前端runEvaluation；官方 gold 转换器 | 字段Precision/Recall/F1及missing_rate | 官方 70 病例 gold 已完成格式转换；尚未生成同批独立预测并计算正式成绩 |
 | KR2 Pain Point Agreement | pain_evaluation.evaluate_pain_points | 标签P/R/F1、Jaccard式expert_agreement、severity一致率 | 空gold模板与测试构造数据；未见独立专家标注 |
 | KR3 Warmth | care_evaluation.evaluate_care_ratings | 温度、行动性、个性化、清晰度、事实/安全错误汇总 | 评分模板与人工清单；未见真实盲评分数 |
 | KR4 Recommendation | 机构审计report requirement_check、quality单测 | 候选病种×机构覆盖、推荐至少两理由/不足拒绝的局部测试 | 没有画像记录/组合/真实推荐报告；没有端到端KR4验收runner |
 
 12个测试文件、52个test方法主要覆盖Schema、规则、归并和局部编排。Fake Provider是测试替身，不是线上OCR。test_quality_engine使用构造记录验证推荐机制，不是官方数据品质证明。未找到LLM-as-judge；命题需要人工盲评，不必为此新增judge模型。
 
-结论：评测程序基础已存在，正式评测数据和可复现验收包未齐备。当前不能证明KR1–KR4达标。这一轮不讨论算法口径修复，只记录交付物缺失。
+结论：KR1 官方 gold 与可复现转换入口已经齐备，但正式预测及成绩尚未生成；KR2/KR3
+人工评测和 KR4 正式覆盖证据仍不齐备，因此仍不能宣称 KR1–KR4 已达标。
 
 依据：[evaluation.py](</D:/yiliao/medical-track-task-4-2/src/medical_claims/evaluation.py>)、[pain_evaluation.py](</D:/yiliao/medical-track-task-4-2/src/medical_claims/pain_evaluation.py>)、[care_evaluation.py](</D:/yiliao/medical-track-task-4-2/src/medical_claims/care_evaluation.py>)、[test_quality_engine.py](</D:/yiliao/medical-track-task-4-2/tests/test_quality_engine.py>)、[examples](</D:/yiliao/medical-track-task-4-2/examples>)、[evaluation/templates](</D:/yiliao/medical-track-task-4-2/evaluation/templates>)。
 
@@ -514,7 +519,7 @@ flowchart TD
 - [ ] 至少一条反馈进入服务复核项并有人工处理结果，证明回流有消费者。
 - [ ] 案件、报告、审核、触达、反馈均可追溯；有持久数据留存和清理约定。
 - [ ] 有理赔审核、客服工单、医疗资源推荐三系统对接方案，以及明确授权、脱敏、LLM外发边界和成本估算计划。
-- [ ] KR1/KR2 gold、KR3盲评和KR4覆盖/画像/理由的资料结构及生成入口齐备；实际效果验证进入下一阶段，不用单测或缓存替代成绩。
+- [ ] KR1 官方 gold 已齐备；继续补齐 KR1 正式预测/报告、KR2 专家 gold、KR3 盲评和 KR4 覆盖/画像/理由资料，不用单测或 gold 自一致性替代成绩。
 
 最终提交另有第二道门槛：官方脱敏测试集与独立标注/盲评证明KR1–KR3阈值，真实数据证明KR4维度与覆盖，现场演示证明KR5完整链路。未达到这道门槛时应称“功能完整、正在验收”，不能称“比赛已达标”。
 
@@ -864,7 +869,7 @@ Date：2026-10-06。**本轮只加固，不新增产品功能**。前述初始�
 
 | Area | Current Status | Actual code / boundary |
 |---|---|---|
-| Evaluation / KR1 | ✅ Entity-aligned evaluator + backend source of truth | [evaluation.py](D:/yiliao/medical-track-task-4-2/src/medical_claims/evaluation.py) evaluate：case_id、实体、字段匹配；micro/macro/per-case/per-field；missing独立计数，空分母null；内部hallucination含FP。正式gold/F1达标仍未验证。 |
+| Evaluation / KR1 | ✅ Entity-aligned evaluator + official gold converter | `evaluation.py` 负责 case_id、实体、字段匹配；`convert_official_kr1_gold.py` 负责官方 728 个分页 JSON 到 70 个 ClaimCase 的可复现转换。正式预测/F1 达标仍未验证。 |
 | Safety | ✅ Required medication protection/unsafe regressions passed | [care_engine.py](D:/yiliao/medical-track-task-4-2/src/medical_claims/care_engine.py) unsafe_medication_instruction / validate_care_guide：禁止语境不误BLOCK，危险指令含action.timing仍BLOCK；fallback明确需复核。规则不等于完整医学安全模型。 |
 | Demo / Metrics | ✅ Fake batch disabled; misleading metrics removed | [app.js](D:/yiliao/medical-track-task-4-2/web/dist/app.js) runBatch禁用，固定样例明确标记；真实处理需后端，count/18删除；置信度原始来源标识；前端只读PythonKR1，空gold不展示成绩。 |
 | Evidence | ✅ Common OCR registry wired into short/long | [evidence_grounding.py](D:/yiliao/medical-track-task-4-2/src/medical_claims/evidence_grounding.py) 文档/page/text/bbox/实体绑定；串药/整页串剂量标review并保留值。长病例重复elif删除。不是semantic entailment。 |
