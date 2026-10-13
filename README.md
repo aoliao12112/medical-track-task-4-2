@@ -18,7 +18,7 @@
 | 服务闭环 | SQLite 持久化、人工审核、模拟触达、手机预览、反馈与待办 | 比赛原型不发送真实短信或企微消息 |
 | 角色视图 | 用户、理赔客服、医学审核、运营、系统管理五类页面 | 本地登录、Session 与接口鉴权已接入；生产仍需企业统一身份系统 |
 
-当前数据库基线为 Schema Version 5、共 28 张表，结构与关系见
+当前数据库基线为 Schema Version 6、共 29 张表，结构与关系见
 [`DATABASE_OVERVIEW.md`](DATABASE_OVERVIEW.md)。角色入口为
 [`http://127.0.0.1:8765/roles.html`](http://127.0.0.1:8765/roles.html)。
 本次交付内容、演示顺序和剩余人工任务见
@@ -166,7 +166,7 @@ tests/test_pipeline.py            # 使用假 Provider 的接口测试
 examples/synthetic_001.json       # 空白案件输出示例
 web/dist/                         # 四问综合工作台、角色页面、用户端和评测界面
 web/backend/app.py                # RapidOCR + DeepSeek 本地接口
-src/medical_claims/database_migrations.py # Schema 5、28张表及迁移唯一权威来源
+src/medical_claims/database_migrations.py # Schema 6、29张表及迁移唯一权威来源
 src/medical_claims/storage.py     # 运行时数据访问、范围过滤和状态流转
 src/medical_claims/auth.py        # 本地登录、密码哈希与Session
 ```

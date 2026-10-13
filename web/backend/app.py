@@ -125,6 +125,8 @@ from medical_claims.review_models import (
 )
 from medical_claims.contracts import (
     CareRevisionRequestV1,
+    CaseTaskCategoryV1,
+    CaseTaskRoleV1,
     PainItemReviewRequestV1,
 )
 from medical_claims.medical_orchestration import MedicalModule, eligibility, primary_disease
@@ -335,6 +337,21 @@ class ServiceConsultationCreateRequest(StrictModel):
         value = value.strip()
         if not value:
             raise ValueError("脱敏咨询摘要不能为空")
+        return value
+
+
+class ServiceConsultationRouteRequest(StrictModel):
+    target_role: CaseTaskRoleV1
+    category: CaseTaskCategoryV1
+    priority: Literal["LOW", "MEDIUM", "HIGH", "URGENT"] = "MEDIUM"
+    note: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("note")
+    @classmethod
+    def trim_route_note(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("分流说明不能为空")
         return value
 
 
@@ -793,6 +810,12 @@ async def claim_process_documents(
 def medical_dashboard(identity: dict[str, Any] = Depends(current_medical_user)):
     require_permission(identity, "MEDICAL_CASE_VIEW")
     return get_case_storage().medical_dashboard(identity["user_id"])
+
+
+@app.get("/api/medical/tasks")
+def medical_tasks(identity: dict[str, Any] = Depends(current_medical_user)):
+    require_permission(identity, "MEDICAL_CASE_VIEW")
+    return get_case_storage().list_case_tasks(identity["user_id"], "MEDICAL")
 
 
 @app.get("/api/medical/cases")
@@ -1470,10 +1493,17 @@ def create_service_consultation(
 @app.post("/api/service/consultations/{analysis_id}/route")
 def route_service_consultation(
     analysis_id: str,
+    request: ServiceConsultationRouteRequest,
     identity: dict[str, Any] = Depends(current_service_user),
 ):
     require_permission(identity, "FOLLOWUP_ASSIGN")
-    return get_case_storage().route_service_consultation(identity["user_id"], analysis_id)
+    return get_case_storage().route_service_consultation(
+        identity["user_id"], analysis_id,
+        target_role=request.target_role.value,
+        category=request.category.value,
+        priority=request.priority,
+        note=request.note,
+    )
 
 
 @app.get("/api/service/follow-ups")

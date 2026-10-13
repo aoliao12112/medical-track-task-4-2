@@ -5,11 +5,17 @@
   let currentUser = null;
   let activeView = "home";
   const labels = {
-    PENDING: "待分流", ROUTED: "已分流", OPEN: "待领取", PROCESSING: "跟进中", RESOLVED: "已解决", CLOSED: "已关闭",
+    PENDING: "待分流", ROUTED: "已分流", SERVICE_HANDLING: "客服处理中", OPEN: "待领取", PROCESSING: "跟进中", RESOLVED: "已解决", CLOSED: "已关闭",
+    CLAIM: "理赔人员", MEDICAL: "医疗人员", SERVICE: "客服本人",
     low: "低", medium: "中", high: "高", urgent: "紧急", WECHAT: "微信", INBOUND_CALL: "呼入电话", ONLINE: "在线咨询", APP_CHAT: "App 会话",
     clear: "内容清楚", not_clear: "内容不清楚", not_personalized: "不够个性化", cost_question: "费用疑问", recovery_question: "康复疑问",
     medication_question: "用药疑问", recommendation_question: "推荐疑问", claim_progress: "理赔进度", claim_material: "理赔材料",
-    coverage_rule: "保障规则", value_added_service: "增值服务", human_service_request: "人工服务请求", other: "其他"
+    coverage_rule: "保障规则", medical_cost: "医疗费用", claim_cost: "理赔费用", value_added_service: "增值服务", human_service_request: "人工服务请求", other: "其他"
+  };
+  const routeCategories = {
+    CLAIM: ["claim_progress", "claim_material", "coverage_rule", "claim_cost"],
+    MEDICAL: ["medical_cost", "recovery_question", "medication_question", "recommendation_question"],
+    SERVICE: ["value_added_service", "human_service_request", "other"],
   };
   function esc(value) { const node = document.createElement("div"); node.textContent = value == null ? "" : String(value); return node.innerHTML; }
   function label(value) { return labels[value] || value || "—"; }
@@ -48,9 +54,10 @@
   async function routing() {
     topTitle.textContent = "分流队列";
     const items = await api("/api/service/consultations");
-    content.innerHTML = `<div class="page-head"><div><h1>咨询分流</h1><p class="muted">核对诉求、优先级和建议动作后确认分流</p></div><button id="newConsult" class="btn primary">登记咨询</button></div><div class="queue-list">${items.length ? items.map(item => `<article class="card card-pad queue-card"><div class="section-title"><div><strong>${esc(item.claim_event_id)}</strong><p class="muted">${esc(item.customer_display_name || "未关联客户")} · ${esc(label(item.channel))} · ${esc(formatTime(item.session_time))}</p></div><div>${status(item.severity)} ${status(item.review_status)}</div></div><div class="queue-body"><div><span class="muted">诉求类型</span><p><strong>${esc(label(item.primary_intent))}</strong></p></div><div><span class="muted">脱敏咨询摘要</span><p>${esc(item.deidentified_text)}</p></div><div><span class="muted">建议动作</span><p>${esc(item.recommended_action)}</p></div></div>${item.review_status === "PENDING" ? `<button class="btn primary route-consult" data-id="${esc(item.analysis_id)}">确认分流</button>` : ""}</article>`).join("") : '<section class="card"><div class="empty">当前没有咨询记录</div></section>'}</div>`;
+    content.innerHTML = `<div class="page-head"><div><h1>咨询分流</h1><p class="muted">医疗问题进入医疗待办，理赔问题进入理赔待办，服务问题由当前客服继续处理</p></div><button id="newConsult" class="btn primary">登记咨询</button></div><div class="queue-list">${items.length ? items.map(item => `<article class="card card-pad queue-card"><div class="section-title"><div><strong>${esc(item.claim_event_id)}</strong><p class="muted">${esc(item.customer_display_name || "未关联客户")} · ${esc(label(item.channel))} · ${esc(formatTime(item.session_time))}</p></div><div>${status(item.severity)} ${status(item.review_status)}</div></div><div class="queue-body"><div><span class="muted">诉求类型</span><p><strong>${esc(label(item.primary_intent))}</strong></p></div><div><span class="muted">脱敏咨询摘要</span><p>${esc(item.deidentified_text)}</p></div><div><span class="muted">建议动作</span><p>${esc(item.recommended_action)}</p></div></div>${item.review_status === "PENDING" ? `<div class="form-grid route-controls"><div class="form-field"><label>分流目标</label><select class="input route-role"><option value="">请选择目标角色</option><option value="CLAIM">理赔人员</option><option value="MEDICAL">医疗人员</option><option value="SERVICE">客服本人继续处理</option></select></div><div class="form-field"><label>问题分类</label><select class="input route-category" disabled><option value="">请先选择目标角色</option></select></div></div><div class="form-field"><label>分流说明</label><textarea class="input textarea route-note" maxlength="4000" placeholder="写明已核实内容和目标人员下一步要做的事"></textarea></div><button class="btn primary route-consult" data-id="${esc(item.analysis_id)}" data-priority="${esc(String(item.severity || "medium").toUpperCase())}">确认分流</button>` : `<p class="muted">处理去向：${esc(label(item.route_target_role))}${item.route_note ? ` · ${esc(item.route_note)}` : ""}${item.routed_at ? ` · ${esc(formatTime(item.routed_at))}` : ""}</p>`}</article>`).join("") : '<section class="card"><div class="empty">当前没有咨询记录</div></section>'}</div>`;
     document.getElementById("newConsult").onclick = () => navigate("consult");
-    document.querySelectorAll(".route-consult").forEach(button => { button.onclick = async () => { button.disabled = true; try { await api(`/api/service/consultations/${encodeURIComponent(button.dataset.id)}/route`, { method: "POST" }); toast("咨询已完成分流"); await routing(); } catch (error) { toast(error.message); button.disabled = false; } }; });
+    document.querySelectorAll(".route-role").forEach(select => { select.onchange = () => { const category = select.closest(".queue-card").querySelector(".route-category"); const values = routeCategories[select.value] || []; category.disabled = !values.length; category.innerHTML = values.length ? `<option value="">请选择问题分类</option>${values.map(value => `<option value="${value}">${esc(label(value))}</option>`).join("")}` : '<option value="">请先选择目标角色</option>'; }; });
+    document.querySelectorAll(".route-consult").forEach(button => { button.onclick = async () => { const card = button.closest(".queue-card"); const targetRole = card.querySelector(".route-role").value; const category = card.querySelector(".route-category").value; const note = card.querySelector(".route-note").value.trim(); if (!targetRole || !category || !note) { toast("请完整选择分流目标、问题分类并填写分流说明"); return; } button.disabled = true; try { await api(`/api/service/consultations/${encodeURIComponent(button.dataset.id)}/route`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_role: targetRole, category, priority: button.dataset.priority, note }) }); toast(targetRole === "SERVICE" ? "已转为客服本人继续处理" : "已进入目标人员待办"); await routing(); } catch (error) { toast(error.message); button.disabled = false; } }; });
   }
 
   async function followups() {

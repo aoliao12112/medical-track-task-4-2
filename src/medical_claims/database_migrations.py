@@ -446,12 +446,51 @@ def _migration_005_batch_persistence(db: sqlite3.Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_batch_items_status ON batch_items(batch_id, status)")
 
 
+def _migration_006_case_task_routing(db: sqlite3.Connection) -> None:
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS case_tasks (
+            task_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL REFERENCES cases(case_id),
+            source_type TEXT NOT NULL CHECK(source_type IN
+                ('SERVICE_CONSULTATION','CUSTOMER_FEEDBACK','MANUAL_HANDOFF')),
+            source_id TEXT NOT NULL,
+            target_role TEXT NOT NULL CHECK(target_role IN ('CLAIM','MEDICAL','SERVICE')),
+            assignee_user_id TEXT REFERENCES users(user_id),
+            category TEXT NOT NULL CHECK(category IN
+                ('claim_progress','claim_material','coverage_rule','medical_cost','claim_cost',
+                 'recovery_question','medication_question','recommendation_question',
+                 'value_added_service','human_service_request','other')),
+            priority TEXT NOT NULL CHECK(priority IN ('LOW','MEDIUM','HIGH','URGENT')),
+            status TEXT NOT NULL CHECK(status IN ('OPEN','PROCESSING','RESOLVED')),
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL REFERENCES users(user_id),
+            created_at TEXT NOT NULL,
+            claimed_at TEXT,
+            resolved_at TEXT,
+            resolution TEXT,
+            UNIQUE(source_type, source_id, target_role)
+        )"""
+    )
+    _add_column(db, "service_analysis_results", "route_target_role TEXT")
+    _add_column(db, "service_analysis_results", "route_note TEXT NOT NULL DEFAULT ''")
+    _add_column(db, "service_analysis_results", "routed_at TEXT")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_tasks_assignee_status "
+        "ON case_tasks(assignee_user_id, status, created_at)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_tasks_case_role_status "
+        "ON case_tasks(case_id, target_role, status)"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "legacy_competition_core", "legacy-core-v1", _migration_001_legacy_core),
     Migration(2, "identity_permissions_and_case_scope", "identity-scope-v1", _migration_002_identity_and_case_scope),
     Migration(3, "quality_profiles_and_recommendation_persistence", "quality-recommendation-persistence-v2", _migration_003_recommendation_persistence),
     Migration(4, "service_sessions_followup_and_audit", "service-audit-v1", _migration_004_service_and_audit),
     Migration(5, "batch_job_persistence", "batch-persistence-v1", _migration_005_batch_persistence),
+    Migration(6, "case_task_routing", "case-task-routing-v1", _migration_006_case_task_routing),
 )
 
 CURRENT_SCHEMA_VERSION = MIGRATIONS[-1].version

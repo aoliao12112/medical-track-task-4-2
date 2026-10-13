@@ -56,7 +56,14 @@ const context = {
   window: { prompt() { return null; } }, setTimeout(fn) { fn(); }, clearTimeout() {}, console,
 };
 vm.createContext(context);
-vm.runInContext(fs.readFileSync("web/dist/service.js", "utf8"), context);
+const serviceSource = fs.readFileSync("web/dist/service.js", "utf8");
+vm.runInContext(serviceSource, context);
+for (const required of [
+  "医疗问题进入医疗待办", "客服本人继续处理", "route_target_role",
+  "target_role: targetRole", "请完整选择分流目标", "SERVICE_HANDLING",
+]) {
+  assert.ok(serviceSource.includes(required), `service routing UI missing: ${required}`);
+}
 
 async function flush() {
   for (let index = 0; index < 4; index += 1) {

@@ -78,7 +78,7 @@ def test_mobile_preview_is_ephemeral_and_hides_real_case_id(tmp_path):
         tables = {row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )}
-    assert len(tables) == 28
+    assert len(tables) == 29
     stored_hash = hashlib.sha256(created["token"].encode()).hexdigest()
     stored_json = json.dumps(CaseStorage._preview_cache[stored_hash], ensure_ascii=False)
     assert created["token"] not in stored_json

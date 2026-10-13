@@ -192,7 +192,7 @@ def test_customer_feedback_persists_owner_and_creates_service_follow_up(tmp_path
 
 
 def test_service_consultation_routing_and_follow_up_are_scoped(tmp_path, monkeypatch):
-    _, case_a, case_b, delivery_a, _ = _setup(tmp_path, monkeypatch)
+    storage, case_a, case_b, delivery_a, _ = _setup(tmp_path, monkeypatch)
     customer = TestClient(app)
     _login(customer, "customer-a")
     assert customer.post(f"/api/customer/deliveries/{delivery_a}/feedback", json={
@@ -224,9 +224,24 @@ def test_service_consultation_routing_and_follow_up_are_scoped(tmp_path, monkeyp
         "/api/service/consultations", json={**request, "deidentification_confirmed": False},
     ).status_code == 400
     assert client.post("/api/service/consultations", json={**request, "case_id": case_b.case_id}).status_code == 404
-    routed = client.post(f"/api/service/consultations/{created.json()['analysis_id']}/route")
+    route_request = {
+        "target_role": "CLAIM", "category": "claim_progress", "priority": "HIGH",
+        "note": "请理赔负责人核实当前节点并回复客服。",
+    }
+    route_url = f"/api/service/consultations/{created.json()['analysis_id']}/route"
+    routed = client.post(route_url, json=route_request)
     assert routed.status_code == 200
     assert routed.json()["review_status"] == "ROUTED"
+    assert routed.json()["route_target_role"] == "CLAIM"
+
+    claim = TestClient(app)
+    _login(claim, "claim-owner")
+    routed_tasks = [item for item in claim.get("/api/claim/tasks").json() if item.get("task_id")]
+    assert len(routed_tasks) == 1
+    assert routed_tasks[0]["category"] == "claim_progress"
+    assert client.post(route_url, json=route_request).status_code == 200
+    with storage._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM case_tasks").fetchone()[0] == 1
 
     tasks = client.get("/api/service/follow-ups").json()
     assert len(tasks) == 1
@@ -242,6 +257,87 @@ def test_service_consultation_routing_and_follow_up_are_scoped(tmp_path, monkeyp
     )
     assert resolved.status_code == 200, resolved.text
     assert resolved.json()["status"] == "RESOLVED"
+
+
+def test_service_routes_medical_to_assignee_and_keeps_service_work_local(tmp_path, monkeypatch):
+    storage, case_a, _, _, _ = _setup(tmp_path, monkeypatch)
+    medical_id = _user(storage, "medical-a", "MEDICAL")
+    storage.assign_case_participant(case_a.case_id, medical_id, "MEDICAL_REVIEWER")
+    service = TestClient(app)
+    _login(service, "service-a")
+    base = {
+        "case_id": case_a.case_id,
+        "channel": "ONLINE",
+        "priority": "medium",
+        "consent_confirmed": True,
+        "deidentification_confirmed": True,
+    }
+    medical_consult = service.post("/api/service/consultations", json={
+        **base, "deidentified_text": "客户询问出院后的用药注意事项。",
+        "category": "medication_question",
+    }).json()
+    medical_route = service.post(
+        f"/api/service/consultations/{medical_consult['analysis_id']}/route",
+        json={
+            "target_role": "MEDICAL", "category": "medication_question",
+            "priority": "MEDIUM", "note": "请医疗复核人员结合出院材料核对用药问题。",
+        },
+    )
+    assert medical_route.status_code == 200, medical_route.text
+    assert medical_route.json()["review_status"] == "ROUTED"
+
+    medical = TestClient(app)
+    _login(medical, "medical-a")
+    tasks = medical.get("/api/medical/tasks")
+    assert tasks.status_code == 200, tasks.text
+    assert [(item["case_id"], item["category"]) for item in tasks.json()] == [
+        (case_a.case_id, "medication_question"),
+    ]
+
+    local_consult = service.post("/api/service/consultations", json={
+        **base, "deidentified_text": "客户希望客服说明增值服务预约方式。",
+        "category": "value_added_service",
+    }).json()
+    local_route = service.post(
+        f"/api/service/consultations/{local_consult['analysis_id']}/route",
+        json={
+            "target_role": "SERVICE", "category": "value_added_service",
+            "priority": "LOW", "note": "由当前客服继续说明预约方式。",
+        },
+    )
+    assert local_route.status_code == 200, local_route.text
+    assert local_route.json()["review_status"] == "SERVICE_HANDLING"
+    assert local_route.json()["route_target_role"] == "SERVICE"
+    with storage._connect() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM case_tasks WHERE source_id=?", (local_consult["analysis_id"],),
+        ).fetchone()[0] == 0
+
+
+def test_medical_route_without_assignee_stays_pending(tmp_path, monkeypatch):
+    storage, case_a, _, _, _ = _setup(tmp_path, monkeypatch)
+    service = TestClient(app)
+    _login(service, "service-a")
+    created = service.post("/api/service/consultations", json={
+        "case_id": case_a.case_id, "channel": "WECHAT",
+        "deidentified_text": "客户询问康复训练安排。", "category": "recovery_question",
+        "priority": "high", "consent_confirmed": True,
+        "deidentification_confirmed": True,
+    }).json()
+    routed = service.post(
+        f"/api/service/consultations/{created['analysis_id']}/route",
+        json={
+            "target_role": "MEDICAL", "category": "recovery_question",
+            "priority": "HIGH", "note": "请医疗人员核对康复安排。",
+        },
+    )
+    assert routed.status_code == 409
+    with storage._connect() as db:
+        row = db.execute(
+            "SELECT review_status, route_target_role FROM service_analysis_results WHERE analysis_id=?",
+            (created["analysis_id"],),
+        ).fetchone()
+    assert tuple(row) == ("PENDING", None)
 
 
 def test_service_follow_up_hides_phone_without_contact_consent(tmp_path, monkeypatch):

@@ -454,7 +454,46 @@ class CaseStorage:
             if reasons:
                 tasks.append({"case_id": item["case_id"], "claim_event_id": item["claim_event_id"],
                               "updated_at": item["updated_at"], "reasons": reasons})
+        for task in self.list_case_tasks(user_id, "CLAIM"):
+            tasks.append({
+                "task_id": task["task_id"],
+                "case_id": task["case_id"],
+                "claim_event_id": task["claim_event_id"],
+                "updated_at": task["created_at"],
+                "reasons": [f"客服转交：{task['note'] or task['category']}"],
+                "source_type": task["source_type"],
+                "category": task["category"],
+                "priority": task["priority"],
+            })
         return tasks
+
+    def list_case_tasks(self, user_id, target_role):
+        if target_role not in {"CLAIM", "MEDICAL"}:
+            raise WorkflowConflict("当前角色没有跨角色待办列表")
+        participant_role = "CLAIM_OWNER" if target_role == "CLAIM" else "MEDICAL_REVIEWER"
+        sql = """
+            SELECT t.*, c.claim_event_id, s.deidentified_text AS source_summary
+            FROM case_tasks t
+            JOIN cases c ON c.case_id=t.case_id
+            JOIN case_participants cp ON cp.case_id=t.case_id
+                AND cp.user_id=t.assignee_user_id AND cp.case_role=? AND cp.status='ACTIVE'
+            JOIN users u ON u.user_id=t.assignee_user_id AND u.status='ACTIVE'
+            JOIN roles r ON r.role_id=u.role_id AND r.role_code=?
+            LEFT JOIN service_analysis_results a
+                ON t.source_type='SERVICE_CONSULTATION' AND a.analysis_id=t.source_id
+            LEFT JOIN service_sessions s ON s.session_id_hash=a.session_id_hash
+            WHERE t.assignee_user_id=? AND t.target_role=?
+            ORDER BY CASE t.priority WHEN 'URGENT' THEN 0 WHEN 'HIGH' THEN 1
+                          WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+                     t.created_at DESC
+        """
+        with self._connect() as db:
+            items = [dict(row) for row in db.execute(
+                sql, (participant_role, target_role, user_id, target_role),
+            )]
+        for item in items:
+            item["schema_version"] = "case-task-v1"
+        return items
 
     def trigger_care(self, user_id, case_id):
         if not self.user_can_access_case(user_id, case_id, "CARE_TRIGGER"):
@@ -3193,7 +3232,8 @@ class CaseStorage:
         sql = f"""
             SELECT a.analysis_id, l.case_id, c.claim_event_id, s.channel, s.session_time,
                    s.deidentified_text, a.primary_intent, a.severity, a.severity_score,
-                   a.recommended_action, a.review_status, a.created_at,
+                   a.recommended_action, a.review_status, a.route_target_role,
+                   a.route_note, a.routed_at, a.created_at,
                    customer.display_name AS customer_display_name
             FROM service_analysis_results a
             JOIN service_sessions s ON s.session_id_hash=a.session_id_hash
@@ -3209,13 +3249,88 @@ class CaseStorage:
                 row["customer_display_name"] = self._mask_customer_label(row["customer_display_name"])
             return rows
 
-    def route_service_consultation(self, user_id, analysis_id):
+    def route_service_consultation(
+        self, user_id, analysis_id, *, target_role, category, priority="MEDIUM", note="",
+    ):
+        from .contracts import CaseTaskV1
+
         item = self.get_service_consultation(user_id, analysis_id)
+        allowed_categories = {
+            "CLAIM": {"claim_progress", "claim_material", "coverage_rule", "claim_cost"},
+            "MEDICAL": {
+                "medical_cost", "recovery_question", "medication_question",
+                "recommendation_question",
+            },
+            "SERVICE": {"value_added_service", "human_service_request", "other"},
+        }
+        if target_role not in allowed_categories:
+            raise WorkflowConflict("不支持的分流目标")
+        if category not in allowed_categories[target_role]:
+            raise WorkflowConflict("诉求类型与分流目标不匹配")
+        if priority not in {"LOW", "MEDIUM", "HIGH", "URGENT"}:
+            raise WorkflowConflict("不支持的任务优先级")
+        note = note.strip()
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT review_status, route_target_role FROM service_analysis_results "
+                "WHERE analysis_id=?", (analysis_id,),
+            ).fetchone()
+            if current is None:
+                raise WorkflowItemNotFound("咨询记录不存在或当前账号无权访问")
+            if current["review_status"] != "PENDING":
+                if current["route_target_role"] == target_role:
+                    return item
+                raise WorkflowConflict("该咨询已经完成分流，不能重复改派")
+
+            assignee_user_id = None
+            review_status = "SERVICE_HANDLING"
+            if target_role in {"CLAIM", "MEDICAL"}:
+                participant_role = "CLAIM_OWNER" if target_role == "CLAIM" else "MEDICAL_REVIEWER"
+                assignee = db.execute(
+                    "SELECT u.user_id FROM case_participants cp "
+                    "JOIN users u ON u.user_id=cp.user_id "
+                    "JOIN roles r ON r.role_id=u.role_id "
+                    "WHERE cp.case_id=? AND cp.case_role=? AND cp.status='ACTIVE' "
+                    "AND u.status='ACTIVE' AND r.role_code=? "
+                    "ORDER BY cp.assigned_at DESC, u.user_id LIMIT 1",
+                    (item["case_id"], participant_role, target_role),
+                ).fetchone()
+                if assignee is None:
+                    role_name = "理赔负责人" if target_role == "CLAIM" else "医疗复核人员"
+                    raise WorkflowConflict(f"案件尚未分配有效的{role_name}，请先完成角色分配")
+                assignee_user_id = assignee["user_id"]
+                task = CaseTaskV1(
+                    task_id=str(uuid4()),
+                    case_id=item["case_id"],
+                    source_type="SERVICE_CONSULTATION",
+                    source_id=analysis_id,
+                    target_role=target_role,
+                    assignee_user_id=assignee_user_id,
+                    category=category,
+                    priority=priority,
+                    status="OPEN",
+                    note=note,
+                    created_by=user_id,
+                    created_at=now,
+                ).model_dump(mode="json")
+                db.execute(
+                    "INSERT INTO case_tasks(task_id, case_id, source_type, source_id, target_role, "
+                    "assignee_user_id, category, priority, status, note, created_by, created_at, "
+                    "claimed_at, resolved_at, resolution) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    tuple(task[key] for key in (
+                        "task_id", "case_id", "source_type", "source_id", "target_role",
+                        "assignee_user_id", "category", "priority", "status", "note",
+                        "created_by", "created_at", "claimed_at", "resolved_at", "resolution",
+                    )),
+                )
+                review_status = "ROUTED"
             db.execute(
-                "UPDATE service_analysis_results SET review_status='ROUTED', reviewer_user_id=? "
-                "WHERE analysis_id=?", (user_id, analysis_id),
+                "UPDATE service_analysis_results SET review_status=?, reviewer_user_id=?, "
+                "route_target_role=?, route_note=?, routed_at=? WHERE analysis_id=?",
+                (review_status, user_id, target_role, note, now, analysis_id),
             )
             db.execute(
                 "UPDATE case_service_links SET reviewed=1, reviewer_user_id=? "

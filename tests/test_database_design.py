@@ -31,8 +31,8 @@ def test_fresh_database_has_versioned_complete_schema(tmp_path):
     path = tmp_path / "competition.db"
     storage = CaseStorage(path)
     info = storage.schema_info()
-    assert info["current_version"] == CURRENT_SCHEMA_VERSION == 5
-    assert [item["version"] for item in info["applied_migrations"]] == [1, 2, 3, 4, 5]
+    assert info["current_version"] == CURRENT_SCHEMA_VERSION == 6
+    assert [item["version"] for item in info["applied_migrations"]] == [1, 2, 3, 4, 5, 6]
     expected = {
         "schema_migrations", "users", "roles", "permissions", "role_permissions",
         "case_participants", "cases", "case_results", "case_profile_contexts",
@@ -41,7 +41,7 @@ def test_fresh_database_has_versioned_complete_schema(tmp_path):
         "recommendation_items", "recommendation_scores", "recommendation_evidence",
         "reviews", "deliveries", "feedback", "follow_up_tasks", "service_sessions",
         "service_analysis_results", "case_service_links", "system_logs", "batch_jobs",
-        "batch_items",
+        "batch_items", "case_tasks",
     }
     assert _tables(path) == expected
     assert {row["role_code"] for row in _query(path, "SELECT role_code FROM roles")} == {

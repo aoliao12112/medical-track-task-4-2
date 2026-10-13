@@ -10,7 +10,7 @@ function node(id = "") {
   });
   return nodes.get(id);
 }
-const navs = ["home", "pending", "cases", "profile"].map((view) => {
+const navs = ["home", "tasks", "pending", "cases", "profile"].map((view) => {
   const item = node("nav-" + view); item.dataset.view = view; return item;
 });
 const requests = [];
@@ -33,6 +33,11 @@ async function fetchMock(path, options = {}) {
     pending_review: 0, new_care_cases: 0, needs_confirmation: 0,
     completed_reviews: 0, recent_cases: [],
   });
+  if (path === "/api/medical/tasks") return response([{
+    task_id: "TASK-MED-1", case_id: "CASE-1", claim_event_id: "EVENT-1",
+    category: "medication_question", priority: "HIGH", status: "OPEN",
+    note: "请结合出院材料核对用药问题。", created_at: "2026-10-13T08:00:00Z",
+  }]);
   if (path === "/api/auth/change-password") return response({ changed: true, message: "密码已修改" });
   if (path === "/api/auth/logout") return response({ logged_out: true });
   throw new Error("Unexpected fetch: " + path);
@@ -135,6 +140,12 @@ async function flush() { await new Promise((resolve) => setImmediate(resolve)); 
   await flush();
   assert.equal(node("userName").textContent, "医疗复核员");
   assert.match(node("content").innerHTML, /最近处理案件/);
+
+  navs.find((item) => item.dataset.view === "tasks").onclick();
+  await flush();
+  assert.match(node("content").innerHTML, /客服转交的医疗咨询/);
+  assert.match(node("content").innerHTML, /请结合出院材料核对用药问题/);
+  assert.ok(requests.some((item) => item.path === "/api/medical/tasks"));
 
   navs.find((item) => item.dataset.view === "profile").onclick();
   await flush();

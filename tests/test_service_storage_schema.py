@@ -23,7 +23,7 @@ class ServiceStorageSchemaTest(unittest.TestCase):
         db.execute("PRAGMA foreign_keys = ON")
         return db
 
-    def test_fresh_database_contains_authoritative_twenty_eight_table_schema(self):
+    def test_fresh_database_contains_authoritative_twenty_nine_table_schema(self):
         CaseStorage(self.db_path)
         with closing(self.connect()) as db:
             tables = {
@@ -45,13 +45,14 @@ class ServiceStorageSchemaTest(unittest.TestCase):
                     "recommendation_evidence", "reviews", "deliveries", "feedback",
                     "follow_up_tasks", "service_sessions", "service_analysis_results",
                     "case_service_links", "system_logs", "batch_jobs", "batch_items",
+                    "case_tasks",
                 },
             )
             versions = [row[0] for row in db.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )]
-            self.assertEqual(versions, [1, 2, 3, 4, 5])
-            self.assertEqual(CURRENT_SCHEMA_VERSION, 5)
+            self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
+            self.assertEqual(CURRENT_SCHEMA_VERSION, 6)
 
     def test_fixed_roles_and_password_hash_column_match_runtime_auth(self):
         CaseStorage(self.db_path)
@@ -109,14 +110,18 @@ class ServiceStorageSchemaTest(unittest.TestCase):
                 "service-intent-v1", "pending", None, now,
             )
             db.execute(
-                "INSERT INTO service_analysis_results VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO service_analysis_results(analysis_id, session_id_hash, primary_intent, "
+                "secondary_intents_json, has_friction, friction_types_json, severity, severity_score, "
+                "confidence, evidence_json, recommended_action, engine_version, review_status, "
+                "reviewer_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 analysis,
             )
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute(
-                    "INSERT INTO service_analysis_results VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO service_analysis_results(analysis_id, session_id_hash, primary_intent, "
+                    "secondary_intents_json, has_friction, friction_types_json, severity, severity_score, "
+                    "confidence, evidence_json, recommended_action, engine_version, review_status, "
+                    "reviewer_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     ("analysis-invalid", "missing-session", "其他", '[]', 0, '[]',
                      "low", 10, 0.5, '[]', None, "v1", "pending", None, now),
                 )
