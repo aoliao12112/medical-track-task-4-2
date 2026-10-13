@@ -18,7 +18,7 @@
     REVIEW_REQUIRED: "待医疗复核", APPROVED: "已通过", RETURNED: "退回修改",
     NEEDS_CONFIRMATION: "证据不足", PENDING: "待复核", REJECTED: "已退回修改",
     CHANGES_REQUESTED: "退回修改", EVIDENCE_INSUFFICIENT: "证据不足",
-    BLOCKED: "禁止发布", DELIVERY_READY: "等待发送", PUBLISHED: "已正式发布", DELIVERED_MOCK: "已发送",
+    BLOCKED: "禁止发布", DELIVERY_READY: "等待发送", FINAL_APPROVED: "已批准", PUBLISHED: "已正式发布", DELIVERED_MOCK: "已发送",
     VERIFIED: "已核验", PARTIALLY_VERIFIED: "部分核验",
     PENDING_VERIFICATION: "待核验", CONTRADICTED: "存在矛盾",
     NOT_GENERATED: "未生成", READY: "可生成", GENERATING: "生成中",
@@ -49,8 +49,8 @@
   function label(value) { return labels[value] || (value == null || value === "" ? "—" : String(value)); }
   function tag(value) {
     const danger = ["BLOCKED", "CONTRADICTED", "REJECTED", "RETURNED", "critical"].includes(value);
-    const warning = ["PENDING", "REVIEW_REQUIRED", "NEEDS_CONFIRMATION", "PARTIALLY_VERIFIED", "PENDING_VERIFICATION", "high"].includes(value);
-    const success = ["APPROVED", "VERIFIED", "CARE_READY", "extracted", "OBSERVED"].includes(value);
+    const warning = ["PENDING", "REVIEW_REQUIRED", "READY_FOR_FINAL_REVIEW", "NEEDS_CONFIRMATION", "PARTIALLY_VERIFIED", "PENDING_VERIFICATION", "high"].includes(value);
+    const success = ["APPROVED", "FINAL_APPROVED", "PUBLISHED", "VERIFIED", "CARE_READY", "extracted", "OBSERVED"].includes(value);
     return `<span class="tag ${danger ? "danger" : warning ? "warning" : success ? "success" : ""}">${esc(label(value))}</span>`;
   }
   function formatTime(value) { if (!value) return "—"; const d = new Date(value); return Number.isNaN(d.getTime()) ? esc(value) : d.toLocaleString("zh-CN", {hour12:false}); }
@@ -70,7 +70,7 @@
     return `<div class="table-wrap"><table class="data-table"><thead><tr><th>案件编号</th><th>客户</th><th>主诊断</th><th>分析准备</th><th>待确认项</th><th>复核状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${items.map(item=>`<tr>
       <td>${esc(item.case_id)}</td><td>${esc(item.customer_display_name||"未关联客户")}</td><td>${esc(item.primary_diagnosis||"尚未提取")}</td>
       <td>${item.analysis_ready.care?tag("CARE_READY"):item.analysis_ready.pain?tag("PAIN_READY"):tag(item.care_status)}</td>
-      <td>${item.pending_confirmation_count?`${esc(item.pending_confirmation_count)} 项`:"0 项"}</td><td>${tag(item.review_status)}</td>
+      <td>${item.pending_confirmation_count?`${esc(item.pending_confirmation_count)} 项`:"0 项"}</td><td>${tag(item.medical_review_stage)}</td>
       <td>${formatTime(item.updated_at)}</td><td><button class="link-btn open-case" data-id="${esc(item.case_id)}">查看</button></td></tr>`).join("")}</tbody></table></div>`;
   }
   function bindCaseLinks(){document.querySelectorAll(".open-case").forEach(b=>b.onclick=()=>openCase(b.dataset.id));}
@@ -103,7 +103,7 @@
     topTitle.textContent="医疗案件详情";
     const tabs=[["overview","案件概览"],["materials","病例材料"],["structured","结构化病例"],["pain","痛点分析"],["care","温度指引"],["quality","本次就医品质评价"],["recommendation","就医推荐"],["review","医疗复核"]];
     content.innerHTML=`<section class="card case-header"><div class="case-header-main"><div><button class="link-btn" id="backCases">← 返回我的案件</button><h1>${esc(data.case_id)}</h1>
-      <div class="case-meta"><span>客户：${esc(data.customer_display_name||"未关联客户")}</span>${tag(data.care_status)}${tag(data.review_status)}</div></div>
+      <div class="case-meta"><span>客户：${esc(data.customer_display_name||"未关联客户")}</span>${tag(data.care_status)}${tag(data.medical_review_stage)}</div></div>
       <div class="case-review-summary"><span class="muted">主诊断</span><p><strong>${esc(data.primary_diagnosis||"尚未确认")}</strong></p><button class="btn secondary" id="openPendingFields">待确认项 ${esc((data.field_review_summary||{}).pending||0)}</button></div></div>
       <div class="analysis-toolbar"><div class="form-field compact"><label for="recommendationCity">当前推荐城市</label><input id="recommendationCity" class="input" maxlength="100" placeholder="生成就医推荐时填写" value="${esc((data.recommendation||{}).patient_city||"")}"></div><button class="btn primary" id="prepareAnalysis">准备医疗分析结果</button><span class="muted">普通待确认项不会阻止无关模块生成</span></div></section>
       <section class="card"><div class="tabs">${tabs.map(([id,name])=>`<button class="tab ${activeTab===id?"active":""}" data-tab="${id}">${name}</button>`).join("")}</div><div id="tabPanel" class="tab-panel"></div></section>`;
@@ -287,7 +287,7 @@
   function renderReview(data){
     const gate=data.review_gate||{};const finalGate=data.final_gate||{};const matrix=data.final_review_matrix||{modules:[],blockers:[],can_final_approve:false};const ready=finalGate.decision==="READY_FOR_FINAL_REVIEW"&&matrix.can_final_approve&&gate.decision!=="BLOCKED";
     return `<section class="medical-section"><div class="section-title"><div><h3>发布前模块状态</h3><p class="muted">每个客户可见模块必须完成当前版本复核。</p></div>${tag(ready?"APPROVED":"REVIEW_REQUIRED")}</div><div class="review-matrix">${matrix.modules.map(item=>`<article class="medical-item"><div><strong>${esc(item.label)}</strong><p class="muted">生成：${esc(label(item.generation_status))} · 复核：${esc(label(item.review_status))}</p></div>${item.review_status!=="APPROVED"||item.generation_status==="STALE"?`<button class="btn secondary return-module" data-tab="${esc(item.tab)}">返回该模块</button>`:tag("APPROVED")}</article>`).join("")}</div></section>
-      <div class="detail-grid">${detailItem("待确认结构化字段",data.pending_confirmation_count+" 项")}${detailItem("当前复核状态",tag(data.review_status),true)}</div>
+      <div class="detail-grid final-review-summary">${detailItem("待确认结构化字段",data.pending_confirmation_count+" 项")}${detailItem("当前复核状态",tag(data.medical_review_stage),true)}</div>
       ${((data.field_review_summary||{}).pending||0)||((data.field_review_summary||{}).unresolved||0)?`<div class="notice warning" style="margin-top:20px">当前仍有 ${(data.field_review_summary||{}).pending||0} 个结构化字段待处理、${(data.field_review_summary||{}).unresolved||0} 个字段暂无法确认。提交案件级复核前请结合风险判断。</div>`:""}
       ${(data.field_review_summary||{}).corrected?'<div class="notice warning" style="margin-top:12px">字段人工修正已保存；现有痛点、关怀或推荐可能基于修正前结果。</div>':""}
       ${matrix.blockers.length?`<div class="notice warning" style="margin-top:20px"><strong>发布前仍需处理</strong><br>${matrix.blockers.map(esc).join("；")}</div>`:""}
@@ -321,7 +321,7 @@
   function bindStructured(data){document.querySelectorAll(".source-action").forEach(button=>button.onclick=()=>openSource(data,button.dataset.path));document.querySelectorAll(".field-action").forEach(button=>button.onclick=()=>openFieldReview(data,button));}
   function renderTab(data){
     const panel=document.getElementById("tabPanel");
-    if(activeTab==="overview")panel.innerHTML=`<div class="detail-grid">${detailItem("案件编号",data.case_id)}${detailItem("客户脱敏信息",data.customer_display_name||"未关联客户")}${detailItem("理赔事件编号",data.claim_event_id)}${detailItem("入院时间",data.admission_date||"未提取")}${detailItem("出院时间",data.discharge_date||"未提取")}${detailItem("主诊断",data.primary_diagnosis||"尚未确认")}${detailItem("材料准备状态",tag(data.structured_result?"APPROVED":"PENDING"),true)}${detailItem("医护关怀状态",tag(data.care_status),true)}${detailItem("当前复核状态",tag(data.review_status),true)}${detailItem("最近更新时间",formatTime(data.updated_at))}</div>`;
+    if(activeTab==="overview")panel.innerHTML=`<div class="detail-grid">${detailItem("案件编号",data.case_id)}${detailItem("客户脱敏信息",data.customer_display_name||"未关联客户")}${detailItem("理赔事件编号",data.claim_event_id)}${detailItem("入院时间",data.admission_date||"未提取")}${detailItem("出院时间",data.discharge_date||"未提取")}${detailItem("主诊断",data.primary_diagnosis||"尚未确认")}${detailItem("材料准备状态",tag(data.structured_result?"APPROVED":"PENDING"),true)}${detailItem("医护关怀状态",tag(data.care_status),true)}${detailItem("当前复核状态",tag(data.medical_review_stage),true)}${detailItem("最近更新时间",formatTime(data.updated_at))}</div>`;
     if(activeTab==="materials")panel.innerHTML=data.ocr_documents.length?`<div class="notice warning">页面展示的是上传方已确认完成脱敏的材料版本；系统没有对原图执行二次视觉脱敏。</div>${data.ocr_documents.map(d=>`<article class="medical-item source-document"><div class="section-title"><strong>${esc(d.document_id)} · 第 ${esc(d.page||"—")} 页</strong>${tag(d.preview_available?"AVAILABLE":"UNAVAILABLE")}</div>${d.preview_available?`<img class="document-preview" src="/api/medical/cases/${encodeURIComponent(data.case_id)}/documents/${encodeURIComponent(d.resource_id)}" alt="${esc(d.document_id)} 原始材料页面">`:'<div class="notice warning">该案件由旧流程处理，未保留可访问的原始页面。以下内容是已保存的 OCR 文字，不代表视觉脱敏文件。</div>'}<details class="evidence-details"><summary>查看 OCR 文字</summary><pre>${esc(d.full_text||"未识别到文字")}</pre></details></article>`).join("")}`:'<div class="empty">当前没有已保存的 OCR 材料</div>';
     if(activeTab==="structured"){panel.innerHTML=renderStructured(data);bindStructured(data);}
     if(activeTab==="pain")panel.innerHTML=data.pain_result?renderPain(data):modulePanel("pain",data)+'<div class="empty">痛点分析尚未生成</div>';

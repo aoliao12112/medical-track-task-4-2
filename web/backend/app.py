@@ -830,7 +830,11 @@ async def claim_process_documents(
 @app.get("/api/medical/dashboard")
 def medical_dashboard(identity: dict[str, Any] = Depends(current_medical_user)):
     require_permission(identity, "MEDICAL_CASE_VIEW")
-    return get_case_storage().medical_dashboard(identity["user_id"])
+    storage = get_case_storage()
+    result = storage.medical_dashboard(identity["user_id"])
+    for item in result["recent_cases"]:
+        _attach_medical_review_stage(storage, identity["user_id"], item)
+    return result
 
 
 @app.get("/api/medical/tasks")
@@ -864,7 +868,11 @@ def medical_cases(
     identity: dict[str, Any] = Depends(current_medical_user),
 ):
     require_permission(identity, "MEDICAL_CASE_VIEW")
-    return get_case_storage().list_medical_cases(identity["user_id"], pending_only=pending_only)
+    storage = get_case_storage()
+    items = storage.list_medical_cases(identity["user_id"], pending_only=pending_only)
+    for item in items:
+        _attach_medical_review_stage(storage, identity["user_id"], item)
+    return items
 
 
 @app.get("/api/medical/cases/{case_id}")
@@ -893,6 +901,7 @@ def medical_case_detail(case_id: str, identity: dict[str, Any] = Depends(current
                                  "review_targets": [], "content_fingerprint": None}
     detail["final_gate"] = storage.medical_final_gate(detail).model_dump(mode="json")
     detail["final_review_matrix"] = _medical_review_matrix(detail)
+    detail["medical_review_stage"] = _medical_review_stage(detail)
     return detail
 
 
@@ -1195,6 +1204,32 @@ def _medical_review_matrix(detail: dict[str, Any]) -> dict[str, Any]:
         elif row["review_status"] != "APPROVED":
             blockers.append(f"{row['label']}尚未通过医疗复核")
     return {"modules": rows, "can_final_approve": not blockers, "blockers": blockers}
+
+
+def _medical_review_stage(detail: dict[str, Any]) -> str:
+    """Derive the case-level display stage without changing persisted review state."""
+    care_status = detail.get("care_status")
+    if care_status in {"PUBLISHED", "FEEDBACK_RECEIVED", "FOLLOWUP_PENDING", "RESOLVED"}:
+        return "PUBLISHED"
+    if detail.get("review_status") == "APPROVED" or care_status in {"APPROVED", "DELIVERED_MOCK"}:
+        return "FINAL_APPROVED"
+    if detail.get("review_status") == "RETURNED" or care_status == "REJECTED":
+        return "RETURNED"
+    final_gate = detail.get("final_gate") or {}
+    matrix = detail.get("final_review_matrix") or {}
+    if final_gate.get("decision") == "READY_FOR_FINAL_REVIEW" and matrix.get("can_final_approve") is True:
+        return "READY_FOR_FINAL_REVIEW"
+    return "PENDING"
+
+
+def _attach_medical_review_stage(
+    storage: CaseStorage, user_id: str, summary: dict[str, Any],
+) -> None:
+    """Attach the same authoritative display stage used by the detail endpoint."""
+    detail = storage.get_medical_case_detail(user_id, summary["case_id"])
+    detail["final_gate"] = storage.medical_final_gate(detail).model_dump(mode="json")
+    detail["final_review_matrix"] = _medical_review_matrix(detail)
+    summary["medical_review_stage"] = _medical_review_stage(detail)
 
 
 @app.post("/api/medical/cases/{case_id}/module-reviews", status_code=201)

@@ -405,11 +405,22 @@ def test_medical_review_is_validated_and_bound_to_logged_in_reviewer(tmp_path, m
     assert medical.post(f"/api/medical/cases/{case_id}/review", json={
         "decision": "RETURNED", "comment": "",
     }).status_code == 422
+    pending = medical.get(f"/api/medical/cases/{case_id}").json()
+    assert pending["review_status"] == "PENDING"
+    assert pending["medical_review_stage"] == "PENDING"
     for module in ("pain", "care"):
         module_review = medical.post(f"/api/medical/cases/{case_id}/module-reviews", json={
             "module": module, "decision": "APPROVED", "comment": "",
         })
         assert module_review.status_code == 201, module_review.text
+    ready = medical.get(f"/api/medical/cases/{case_id}").json()
+    assert ready["review_status"] == "PENDING"
+    assert ready["final_gate"]["decision"] == "READY_FOR_FINAL_REVIEW"
+    assert ready["final_review_matrix"]["can_final_approve"] is True
+    assert ready["medical_review_stage"] == "READY_FOR_FINAL_REVIEW"
+    listed = next(item for item in medical.get("/api/medical/cases").json()
+                  if item["case_id"] == case_id)
+    assert listed["medical_review_stage"] == ready["medical_review_stage"]
     approved = medical.post(f"/api/medical/cases/{case_id}/review", json={
         "decision": "APPROVED", "comment": "结构化、痛点和指引已核对。",
     })
@@ -417,11 +428,17 @@ def test_medical_review_is_validated_and_bound_to_logged_in_reviewer(tmp_path, m
     assert approved.json()["review_status"] == "APPROVED"
     assert approved.json()["publication"]["status"] == "PUBLISHED"
     assert approved.json()["publication"]["channel"] == "customer_portal"
+    published = medical.get(f"/api/medical/cases/{case_id}").json()
+    assert published["review_status"] == "APPROVED"
+    assert published["medical_review_stage"] == "PUBLISHED"
+    published_listed = next(item for item in medical.get("/api/medical/cases").json()
+                            if item["case_id"] == case_id)
+    assert published_listed["medical_review_stage"] == "PUBLISHED"
     customer_portal = TestClient(app)
     login(customer_portal, "customer-review")
-    published = customer_portal.get(f"/api/customer/cases/{case_id}")
-    assert published.status_code == 200, published.text
-    assert published.json()["delivery"]["status"] == "PUBLISHED"
+    customer_published = customer_portal.get(f"/api/customer/cases/{case_id}")
+    assert customer_published.status_code == 200, customer_published.text
+    assert customer_published.json()["delivery"]["status"] == "PUBLISHED"
     with storage._connect() as db:
         row = db.execute(
             "SELECT reviewer_user_id, comment FROM reviews "
@@ -437,7 +454,9 @@ def test_medical_review_is_validated_and_bound_to_logged_in_reviewer(tmp_path, m
         ClaimCase.model_validate(saved["structured_result"]),
         PainPointReport.model_validate(saved["pain_result"]),
     )
-    assert medical.get(f"/api/medical/cases/{case_id}").json()["review_status"] == "PENDING"
+    refreshed = medical.get(f"/api/medical/cases/{case_id}").json()
+    assert refreshed["review_status"] == "PENDING"
+    assert refreshed["medical_review_stage"] == "READY_FOR_FINAL_REVIEW"
     customer = TestClient(app)
     login(customer, "customer-review")
     assert customer.get(f"/api/medical/cases/{case_id}").status_code == 403

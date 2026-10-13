@@ -52,7 +52,7 @@ const context = {
 };
 vm.createContext(context);
 const source = fs.readFileSync("web/dist/medical.js", "utf8");
-const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain,renderQuality,renderReview};})();");
+const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={caseRows,evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain,renderQuality,renderReview};})();");
 vm.runInContext(testableSource, context);
 for (const required of [
   "/field-reviews", "确认无误", "修改并确认", "无法确认", "preview_available",
@@ -73,6 +73,19 @@ assert.ok(!source.includes("data.pending_confirmation_count?'<div"),
   "module field warning must not use the mixed medical attention count");
 assert.ok(!source.includes('<select class="input care-evidence" multiple'),
   "care evidence must not render the full multi-select by default");
+assert.ok((source.match(/medical_review_stage/g) || []).length >= 4,
+  "case list, header, overview and final review must share the backend display stage");
+assert.ok(!source.includes("tag(item.review_status)"),
+  "case list must not render the coarse persisted review status");
+
+const readyRows = context.__medicalDisplayTest.caseRows([{
+  case_id:"CASE-READY",customer_display_name:"测*员",primary_diagnosis:"肺炎",
+  analysis_ready:{care:true,pain:true},pending_confirmation_count:0,
+  care_status:"CARE_READY",review_status:"PENDING",
+  medical_review_stage:"READY_FOR_FINAL_REVIEW",updated_at:"2026-10-14T08:00:00Z",
+}]);
+assert.match(readyRows,/可进行最终审核/);
+assert.doesNotMatch(readyRows,/>待复核</);
 const customerSource = fs.readFileSync("web/dist/customer.js", "utf8");
 assert.ok(!customerSource.includes("evidence_fields"),
   "CUSTOMER portal must not expose care evidence_fields");
@@ -166,9 +179,13 @@ const reviewHtml = context.__medicalDisplayTest.renderReview({
   final_gate:{decision:"NOT_READY",reasons:["客户可见模块尚未全部通过"]},
   final_review_matrix:{modules:[],blockers:[],can_final_approve:false},
   pending_confirmation_count:0,field_review_summary:{pending:0,unresolved:0},reviews:[],
+  medical_review_stage:"READY_FOR_FINAL_REVIEW",
 });
 assert.doesNotMatch(reviewHtml,/内容安全门禁|safety_checks|pending-hospital|confidence=0\.049/);
 assert.match(reviewHtml,/最终医疗门禁/);
+assert.match(reviewHtml,/当前复核状态/);
+assert.match(reviewHtml,/可进行最终审核/);
+assert.match(reviewHtml,/final-review-summary/);
 assert.doesNotMatch(source,/发送到客户站内收件箱（比赛演示）|比赛演示将结果写入客户站内收件箱/);
 
 const recommendationReview = context.__medicalDisplayTest.modulePanel("recommendation", {
