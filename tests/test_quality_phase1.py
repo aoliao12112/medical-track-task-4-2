@@ -602,6 +602,20 @@ def test_quality_llm_contract_requires_exact_six_dimensions_and_valid_scores():
         QualityDimensionResult.model_validate({**base, "dimension": "unknown_dimension"})
 
 
+def test_quality_llm_contract_distinguishes_reviewable_score_from_not_scored():
+    base = quality_dimensions({QualityDimensionKey.RISK_MANAGEMENT: 78})[3].model_dump(mode="json")
+    reviewable = QualityDimensionResult.model_validate({
+        **base,
+        "status": "NEEDS_REVIEW",
+        "limitations": ["最终风险响应结论需医生确认"],
+    })
+    assert reviewable.score == 78
+    with pytest.raises(ValueError, match="必须提供 score"):
+        QualityDimensionResult.model_validate({**base, "status": "NEEDS_REVIEW", "score": None})
+    with pytest.raises(ValueError, match="NOT_SCORED"):
+        QualityDimensionResult.model_validate({**base, "status": "NOT_SCORED"})
+
+
 def test_quality_overall_renormalizes_only_scored_dimensions_and_requires_60_percent():
     case = ClaimCase(case_id="QUALITY-SCORE-1")
     fallback = evaluate_current_treatment(case, "test")
@@ -623,6 +637,30 @@ def test_quality_overall_renormalizes_only_scored_dimensions_and_requires_60_per
     )
     assert sparse.scored_weight_coverage == 0.25
     assert sparse.overall_score is None
+
+
+def test_reviewable_dimension_score_contributes_to_deterministic_coverage():
+    case = ClaimCase(case_id="QUALITY-REVIEWABLE-1")
+    fallback = evaluate_current_treatment(case, "test")
+    dimensions = quality_dimensions({
+        QualityDimensionKey.DIAGNOSIS_TREATMENT_CONSISTENCY: 80,
+        QualityDimensionKey.RECORD_COMPLETENESS: 90,
+    })
+    risk = next(item for item in dimensions
+                if item.dimension == QualityDimensionKey.RISK_MANAGEMENT)
+    risk.status = QualityDimensionStatus.NEEDS_REVIEW
+    risk.score = 70
+    risk.level = "一般"
+    risk.reason = "已有风险响应记录，但最终判断需医生确认"
+    risk.evidence = ["危险信号及复诊安排"]
+    risk.limitations = ["缺少完整随访结果"]
+    evaluated = merge_llm_quality_evaluation(
+        fallback, LLMQualityEvaluation(dimensions=dimensions),
+    )
+    assert evaluated.risk_management.status == AssessmentStatus.NEEDS_REVIEW
+    assert evaluated.risk_management.score == 70
+    assert evaluated.scored_weight_coverage == 0.50
+    assert evaluated.overall_score is None
 
 
 def test_quality_context_is_filtered_and_deidentified():

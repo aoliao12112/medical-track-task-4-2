@@ -85,7 +85,10 @@ def apply_quality_summary(evaluation: CurrentTreatmentEvaluation) -> CurrentTrea
     coverage = 0.0
     for dimension, weight in QUALITY_DIMENSION_WEIGHTS.items():
         assessment = getattr(evaluation, QUALITY_DIMENSION_ATTRIBUTES[dimension])
-        if assessment.status == AssessmentStatus.EVALUATED and assessment.score is not None:
+        # A reviewable score is still an evidence-backed dimension score.  Its
+        # status remains NEEDS_REVIEW, while deterministic backend aggregation
+        # may include it once the scored-weight threshold is reached.
+        if assessment.score is not None:
             coverage += weight
             weighted += assessment.score * weight
     overall = round(weighted / coverage, 2) if coverage >= 0.60 else None

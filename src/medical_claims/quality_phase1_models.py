@@ -47,10 +47,11 @@ class QualityDimensionResult(StrictModel):
 
     @model_validator(mode="after")
     def validate_score_status(self) -> "QualityDimensionResult":
-        if self.status == QualityDimensionStatus.SCORED and self.score is None:
-            raise ValueError("SCORED 维度必须提供 score")
-        if self.status != QualityDimensionStatus.SCORED and self.score is not None:
-            raise ValueError("未评分或待复核维度不得提供 score")
+        if self.status in {QualityDimensionStatus.SCORED, QualityDimensionStatus.NEEDS_REVIEW}:
+            if self.score is None:
+                raise ValueError("已评分或待复核维度必须提供 score")
+        elif self.score is not None:
+            raise ValueError("NOT_SCORED 维度不得提供 score")
         return self
 
 
@@ -196,8 +197,9 @@ class DimensionAssessment(StrictModel):
     def validate_evaluated_score(self) -> "DimensionAssessment":
         if self.status == AssessmentStatus.EVALUATED and self.score is None:
             raise ValueError("evaluated 评价必须有 score")
-        if self.status != AssessmentStatus.EVALUATED and self.score is not None:
-            raise ValueError("非 evaluated 评价不得伪造 score")
+        if self.status in {AssessmentStatus.INSUFFICIENT_EVIDENCE, AssessmentStatus.NOT_APPLICABLE}:
+            if self.score is not None:
+                raise ValueError("证据不足或不适用的评价不得伪造 score")
         return self
 
 
