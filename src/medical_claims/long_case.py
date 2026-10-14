@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import Counter
 from datetime import date, datetime
 from decimal import Decimal
@@ -103,6 +104,15 @@ def _normalized_text(value: Any) -> str:
     return re.sub(r"[\s，,。；;：:（）()\[\]【】]+", "", str(value)).lower()
 
 
+def _examination_result_identity(value: Any) -> str:
+    """Normalize layout differences without erasing medically meaningful case."""
+
+    if value is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", str(value))
+    return re.sub(r"[\s，,。；;：:（）()\[\]【】]+", "", normalized)
+
+
 def _value_identity(field: FieldValue[Any]) -> str:
     value = field.normalized_value if field.normalized_value is not None else field.value
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
@@ -152,10 +162,15 @@ def merge_field_values(
         chosen_identity = _value_identity(chosen)
         chosen.evidence = _merge_evidence(valued, chosen_identity)
         identities = {_value_identity(field) for field in valued}
-        if field_path.endswith((".name", ".category")) and all(
+        if field_path.endswith((".name", ".category", ".item_name")) and all(
             isinstance(field.value, str) for field in valued
         ):
-            semantic_identities = {_normalized_text(field.value) for field in valued}
+            normalize_identity = (
+                _examination_result_identity
+                if field_path.endswith(".item_name")
+                else _normalized_text
+            )
+            semantic_identities = {normalize_identity(field.value) for field in valued}
             if len(semantic_identities) == 1:
                 identities = {chosen_identity}
         if len(identities) > 1:
@@ -298,7 +313,7 @@ def _merge_examination_results(
     groups: dict[str, list[ExaminationResult]] = {}
     for examination in examinations:
         for result in examination.results:
-            groups.setdefault(_normalized_text(result.item_name.value), []).append(result)
+            groups.setdefault(_examination_result_identity(result.item_name.value), []).append(result)
     merged: list[ExaminationResult] = []
     for items in groups.values():
         abnormal_values = [item.abnormal_flag for item in items if item.abnormal_flag.value != "unknown"]

@@ -17,6 +17,8 @@ from medical_claims.models import (
     EncounterType,
     Evidence,
     EventType,
+    Examination,
+    ExaminationResult,
     FieldStatus,
     FieldValue,
     FlagSeverity,
@@ -39,6 +41,79 @@ def extracted(value, document_id: str, page: int, confidence: float = 0.95):
 
 
 class LongCaseTest(unittest.TestCase):
+    def test_examination_result_merge_preserves_meaningful_case(self) -> None:
+        def result(name: str, value: str = "阳性") -> ExaminationResult:
+            evidence = Evidence(
+                document_id="lab.jpg", page=1, text=f"{name}{value}",
+            )
+            return ExaminationResult(
+                item_name=FieldValue(
+                    value=name, normalized_value=name, confidence=.95,
+                    status=FieldStatus.EXTRACTED, evidence=[evidence],
+                ),
+                value=FieldValue(
+                    value=value, normalized_value=value, confidence=.95,
+                    status=FieldStatus.EXTRACTED, evidence=[evidence],
+                ),
+            )
+
+        partial = ClaimCase(
+            case_id="rh-case",
+            examinations=[Examination(
+                examination_id="exam-1",
+                name=extracted("临检", "lab.jpg", 1),
+                results=[result("RH(C)"), result("RH(c)"), result("RH(E)"), result("RH(e)")],
+            )],
+        )
+        merged = merge_claim_cases(
+            "rh-case", [partial],
+            [{"document_id": "lab.jpg", "page": 1,
+              "full_text": "RH(C)阳性 RH(c)阳性 RH(E)阳性 RH(e)阳性", "blocks": []}],
+            chunk_count=1,
+        )
+
+        self.assertEqual(
+            [item.item_name.value for item in merged.examinations[0].results],
+            ["RH(C)", "RH(c)", "RH(E)", "RH(e)"],
+        )
+        self.assertTrue(all(item.value.value == "阳性" for item in merged.examinations[0].results))
+        self.assertTrue(all(item.item_name.status == FieldStatus.EXTRACTED
+                            for item in merged.examinations[0].results))
+
+    def test_examination_result_merge_allows_layout_and_fullwidth_differences(self) -> None:
+        def examination(document_id: str, item_name: str) -> Examination:
+            evidence = Evidence(document_id=document_id, page=1, text=f"{item_name}阳性")
+            return Examination(
+                examination_id=document_id,
+                name=extracted("临检", document_id, 1),
+                results=[ExaminationResult(
+                    item_name=FieldValue(
+                        value=item_name, normalized_value=item_name, confidence=.95,
+                        status=FieldStatus.EXTRACTED, evidence=[evidence],
+                    ),
+                    value=FieldValue(
+                        value="阳性", normalized_value="阳性", confidence=.95,
+                        status=FieldStatus.EXTRACTED, evidence=[evidence],
+                    ),
+                )],
+            )
+
+        first = ClaimCase(case_id="layout-case", examinations=[examination("a.jpg", "ＲＨ（Ｄ）表型")])
+        second = ClaimCase(case_id="layout-case", examinations=[examination("b.jpg", "RH ( D ) 表型")])
+        documents = [
+            {"document_id": "a.jpg", "page": 1, "full_text": "ＲＨ（Ｄ）表型阳性", "blocks": []},
+            {"document_id": "b.jpg", "page": 1, "full_text": "RH ( D ) 表型阳性", "blocks": []},
+        ]
+        merged = merge_claim_cases("layout-case", [first, second], documents, chunk_count=2)
+
+        self.assertEqual(len(merged.examinations[0].results), 1)
+        self.assertEqual(merged.examinations[0].results[0].item_name.status, FieldStatus.EXTRACTED)
+        self.assertFalse(any(
+            flag.code == "LONG_CASE_FIELD_CONFLICT"
+            and flag.field_path == "examinations[].results[].item_name"
+            for flag in merged.quality_flags
+        ))
+
     def test_discharge_summary_enrichment_preserves_high_value_events(self) -> None:
         case = ClaimCase(case_id="discharge-events", encounter_type=EncounterType.INPATIENT)
         case.hospitalization.admission_date = extracted(date(2025, 10, 27), "discharge-1.jpg", 1)

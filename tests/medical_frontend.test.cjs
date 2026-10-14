@@ -52,7 +52,7 @@ const context = {
 };
 vm.createContext(context);
 const source = fs.readFileSync("web/dist/medical.js", "utf8");
-const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={caseRows,evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain,renderQuality,renderReview};})();");
+const testableSource = source.replace(/\}\)\(\);\s*$/, "globalThis.__medicalDisplayTest={caseRows,evidenceSelect,aggregateRecommendationItems,modulePanel,renderPain,renderQuality,renderReview,pendingFieldList,examinationResultContext};})();");
 vm.runInContext(testableSource, context);
 for (const required of [
   "/field-reviews", "确认无误", "修改并确认", "无法确认", "preview_available",
@@ -77,6 +77,25 @@ assert.ok((source.match(/medical_review_stage/g) || []).length >= 4,
   "case list, header, overview and final review must share the backend display stage");
 assert.ok(!source.includes("tag(item.review_status)"),
   "case list must not render the coarse persisted review status");
+
+const examinationReviewData = {
+  pending_field_reviews:[{
+    field_path:"examinations[0].results[0].item_name",field_label:"检查1 · 项目名",
+    model_value:"凝血酶时间",reason:"字段状态需要人工确认",confidence:.95,
+  }],
+  structured_result:{examinations:[{results:[{
+    item_name:{value:"凝血酶时间"},value:{value:"17.3"},unit:{value:"sec"},
+    reference_range:{value:"14-21"},abnormal_flag:"normal",
+  }]}]},
+};
+const examinationContext = context.__medicalDisplayTest.examinationResultContext(
+  examinationReviewData,"examinations[0].results[0].item_name",
+);
+assert.match(examinationContext,/检查项目：<\/strong>凝血酶时间/);
+assert.match(examinationContext,/当前结果：<\/strong>17\.3 sec/);
+assert.match(examinationContext,/参考范围：<\/strong>14-21/);
+const pendingExaminationHtml = context.__medicalDisplayTest.pendingFieldList(examinationReviewData);
+assert.match(pendingExaminationHtml,/当前结果：<\/strong>17\.3 sec/);
 
 const readyRows = context.__medicalDisplayTest.caseRows([{
   case_id:"CASE-READY",customer_display_name:"测*员",primary_diagnosis:"肺炎",

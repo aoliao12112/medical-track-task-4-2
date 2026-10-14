@@ -6,6 +6,9 @@ from .models import FieldValue, FieldStatus, QualityFlag, FlagSeverity
 
 def normalize_evidence_text(text):
     text = unicodedata.normalize("NFKC", str(text)).casefold()
+    # OCR commonly inserts a layout space after a decimal separator.  Removing
+    # only that space preserves the distinction between 1.2 and 12.
+    text = re.sub(r"(?<=\d)[.,]\s+(?=\d)", ".", text)
     # OCR engines disagree on whitespace and punctuation (including full-width
     # forms).  Preserve punctuation that changes numeric/clinical meaning:
     # decimals, ranges, routes/units and symbols such as antibody positivity.
@@ -20,7 +23,7 @@ def normalize_evidence_text(text):
             normalized.append(".")
         elif char in dash_chars:
             normalized.append("-")
-        elif char == "/" or not unicodedata.category(char).startswith("P"):
+        elif char in {"/", "%"} or not unicodedata.category(char).startswith("P"):
             normalized.append(char)
     return re.sub(r"-+", "-", "".join(normalized))
 
@@ -105,9 +108,18 @@ def _has_local_entity_binding(page, snippet, owner, peer_owners=(), required_val
     peers = tuple(peer for peer in peer_owners if peer and peer != owner)
 
     def supported(region, composed=False):
+        explicit_binding = (
+            owner in snippet
+            and (not required_value or required_value in snippet)
+            and not any(peer in snippet for peer in peers)
+        )
         return (((allow_composed and composed) or snippet in region) and owner in region
                 and (not required_value or required_value in region)
-                and not any(peer in region for peer in peers))
+                # A short evidence excerpt that explicitly contains the owner
+                # (and required value, when applicable) proves the binding by
+                # itself. Nearby entities must only veto inferred/composed
+                # spatial bindings.
+                and (explicit_binding or not any(peer in region for peer in peers)))
 
     # A short model-provided excerpt may already span several OCR blocks.
     # Capping its size prevents a full page from becoming universal evidence.

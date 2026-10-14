@@ -28,21 +28,62 @@ UNSAFE_PATTERNS = {
     "UNSUPPORTED_CERTAINTY": re.compile(r"(?:确定|肯定|已经)(?:痊愈|治愈|恶性|良性)"),
 }
 
-MEDICATION_ACTION = r"(?:停药|换药|减量|加量|调整剂量|停止服用(?:这个药)?|(?:这个药)?(?:可以)?直接停掉|换成另一种药|(?:自行)?(?:增加|减少)(?:一倍|一半)?剂量|把剂量(?:增加|减少)一(?:倍|半))"
+AMBIGUOUS_AMOUNT_ACTION = r"(?:加量|减量|增加|减少|调整)"
+MEDICATION_CONTEXT = re.compile(
+    r"(?:某药|这个药|药物|用药|服用|剂量|mg|毫克|片|粒|每日|每天|每次)",
+    re.IGNORECASE,
+)
+STRONG_MEDICATION_ACTION = (
+    r"(?:停药|换药|调整剂量|停止服用(?:这个药)?|"
+    r"(?:这个药)?(?:可以)?直接停掉|换成另一种药|把这个药换掉|"
+    r"更换药物|更换用药方案|改用[^，,。；;！？!?\n]{0,12}药物|"
+    r"(?:将|把)[^，,。；;！？!?\n]{1,20}换成[^，,。；;！？!?\n]{1,20}|加用|"
+    r"改变(?:用药)?频次|改变(?:用药)?疗程|"
+    r"(?:将|把)?[^，,。；;！？!?\n]{0,20}(?:改为|调整为)(?:每日|每天|每次)"
+    r"[^，,。；;！？!?\n]{0,10}次|"
+    r"增减剂量|(?:自行)?(?:增加|减少)(?:一倍|一半)?剂量|把剂量(?:增加|减少)一(?:倍|半))"
+)
+MEDICATION_ACTION = rf"(?:{STRONG_MEDICATION_ACTION}|{AMBIGUOUS_AMOUNT_ACTION})"
 PROTECTIVE_MEDICATION = re.compile(
-    r"(?:不要|请勿|切勿|不得|不可|不能|禁止)(?:据此)?(?:自行|擅自|自己|随意|直接)?"
+    r"(?:不要(?:因为[^，,。；;！？!?\n]{0,20}就)?|请勿|切勿|不得|不可|不能|禁止)"
+    r"(?:据此)?(?:自行|擅自|自己|随意|直接)?"
     + MEDICATION_ACTION + r"(?:(?:、|或|和|及)(?:自行|擅自)?" + MEDICATION_ACTION + r")*"
 )
-MEDICATION_INSTRUCTION = re.compile(MEDICATION_ACTION)
+MEDICATION_INSTRUCTION = re.compile(STRONG_MEDICATION_ACTION)
+AMBIGUOUS_AMOUNT_INSTRUCTION = re.compile(AMBIGUOUS_AMOUNT_ACTION)
 NO_PHYSICIAN = re.compile(r"(?:不需要咨询医生|不用问医生|无需咨询医生)")
+WOUND_CARE_CONTEXT = re.compile(
+    r"(?:伤口|切口|创口|敷料|纱布|换药室|换药护理|拆线|术后|门诊|定期|局部)"
+)
+
+
+def _remove_wound_care_change_terms(clause: str) -> str:
+    """Remove only wound-care uses of 换药; keep other medication actions in the clause."""
+
+    def replace(match: re.Match[str]) -> str:
+        context = clause[max(0, match.start() - 10):min(len(clause), match.end() + 10)]
+        wound_care_detail = re.search(r"换药(?:频率|方式|安排|时间)", context)
+        return "" if WOUND_CARE_CONTEXT.search(context) or wound_care_detail else match.group(0)
+
+    clause = re.sub(r"换药", replace, clause)
+    return re.sub(r"(?:敷料更换|更换敷料)", "", clause)
 
 def unsafe_medication_instruction(text: str) -> bool:
     # Remove only tightly bound prohibitions, not an entire sentence containing
     # a safe disclaimer. An unsafe instruction elsewhere remains detectable.
     text = re.sub(r"(?:如需|如果需要)(?:调整用药|调整剂量|停药|换药)[，,]?\s*请(?:先)?咨询医生", "", text)
     for clause in re.split(r"[。；;，,！？!?\n]|但是|但|然而", text):
-        remainder = PROTECTIVE_MEDICATION.sub("", clause)
-        if MEDICATION_INSTRUCTION.search(remainder) or NO_PHYSICIAN.search(remainder):
+        remainder = _remove_wound_care_change_terms(clause)
+        remainder = PROTECTIVE_MEDICATION.sub("", remainder)
+        ambiguous_medication_change = bool(
+            AMBIGUOUS_AMOUNT_INSTRUCTION.search(remainder)
+            and MEDICATION_CONTEXT.search(remainder)
+        )
+        if (
+            MEDICATION_INSTRUCTION.search(remainder)
+            or ambiguous_medication_change
+            or NO_PHYSICIAN.search(remainder)
+        ):
             return True
     return False
 

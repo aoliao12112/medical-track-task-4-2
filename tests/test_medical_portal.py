@@ -196,7 +196,7 @@ from medical_claims.care_models import (
 )
 from medical_claims.models import (
     Certainty, ClaimCase, Costs, Diagnosis, DiagnosisType, Evidence, FieldStatus, FieldValue,
-    Medication, Procedure,
+    Examination, ExaminationResult, Medication, Procedure, QualityFlag, FlagSeverity,
 )
 from medical_claims.pain_engine import analyze_pain_points
 from medical_claims.pain_models import PainPointReport
@@ -547,6 +547,55 @@ def test_field_reviews_persist_original_and_effective_values(tmp_path, monkeypat
     assert after["structured_effective_result"]["diagnoses"][0]["name"]["value"] == "社区获得性肺炎"
     assert after["field_reviews"][0]["model_value"] == "肺炎"
     assert after["field_reviews"][0]["reviewer_user_id"] == medical_id
+
+
+def test_examination_wildcard_flag_does_not_promote_extracted_item_names():
+    evidence = Evidence(document_id="lab.jpg", page=1, text="凝血酶时间17.3sec")
+    extracted_name = FieldValue(
+        value="凝血酶时间", normalized_value="凝血酶时间", confidence=.95,
+        status=FieldStatus.EXTRACTED, evidence=[evidence],
+    )
+    review_name = FieldValue(
+        value="RH(E)", normalized_value="RH(E)", confidence=.95,
+        status=FieldStatus.REVIEW_REQUIRED, evidence=[evidence],
+    )
+    case = ClaimCase(
+        case_id="wildcard-review",
+        examinations=[Examination(
+            examination_id="exam-1",
+            name=FieldValue(
+                value="临检", status=FieldStatus.EXTRACTED, confidence=.95,
+                evidence=[evidence],
+            ),
+            results=[
+                ExaminationResult(
+                    item_name=extracted_name,
+                    value=FieldValue(
+                        value="17.3", status=FieldStatus.EXTRACTED, confidence=.95,
+                        evidence=[evidence],
+                    ),
+                ),
+                ExaminationResult(
+                    item_name=review_name,
+                    value=FieldValue(
+                        value="阳性", status=FieldStatus.EXTRACTED, confidence=.95,
+                        evidence=[evidence],
+                    ),
+                ),
+            ],
+        )],
+        quality_flags=[QualityFlag(
+            code="LONG_CASE_FIELD_CONFLICT", severity=FlagSeverity.WARNING,
+            message="检查项目名需要复核",
+            field_path="examinations[].results[].item_name",
+        )],
+    )
+
+    candidates = CaseStorage._field_review_candidates(case.model_dump(mode="json"))
+    assert [item["field_path"] for item in candidates] == [
+        "examinations[0].results[1].item_name",
+    ]
+    assert "检查项目名需要复核" in candidates[0]["reason"]
 
 
 def test_confirm_unresolved_and_stale_field_review_rules(tmp_path, monkeypatch):

@@ -718,11 +718,27 @@ class CaseStorage:
                     relevant = [flag for flag in flags if flag_matches(path, flag.get("field_path"))]
                     confidence = value.get("confidence")
                     reasons = []
-                    if value.get("status") in {"review_required", "conflict"}:
+                    status_requires_review = value.get("status") in {"review_required", "conflict"}
+                    if status_requires_review:
                         reasons.append("字段状态需要人工确认")
                     if confidence is not None and float(confidence) < .8:
                         reasons.append("字段可信度低于 80%")
-                    reasons.extend(flag.get("message") for flag in relevant if flag.get("message"))
+                    explanatory_flags = relevant
+                    if (
+                        path.startswith("examinations[")
+                        and path.endswith(".item_name")
+                        and not status_requires_review
+                    ):
+                        # A list-level merge flag cannot identify which concrete result
+                        # needs review.  Keep it as context for fields already marked for
+                        # review, but never promote every extracted item_name by wildcard.
+                        explanatory_flags = [
+                            flag for flag in relevant
+                            if "[]" not in str(flag.get("field_path") or "")
+                        ]
+                    reasons.extend(
+                        flag.get("message") for flag in explanatory_flags if flag.get("message")
+                    )
                     if reasons:
                         candidates.append({
                             "field_path": path, "field_label": cls._field_label(path),
