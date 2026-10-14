@@ -6,8 +6,10 @@ from unittest.mock import patch
 import pytest
 from medical_claims.evaluation import evaluate
 from medical_claims.care_engine import unsafe_medication_instruction, validate_care_guide
-from medical_claims.models import ClaimCase, Diagnosis, Medication, Procedure, Evidence, FieldValue, FieldStatus
-from medical_claims.evidence_grounding import apply_evidence_grounding, build_ocr_evidence_registry
+from medical_claims.models import (ClaimCase, Diagnosis, Medication, Procedure, Examination,
+                                   ExaminationResult, Evidence, FieldValue, FieldStatus)
+from medical_claims.evidence_grounding import (apply_evidence_grounding, build_ocr_evidence_registry,
+                                               normalize_evidence_text)
 from web.backend import app as backend
 
 def f(value):
@@ -222,6 +224,58 @@ def test_diagnosis_name_and_attribute_bind_across_continuous_ocr_blocks():
     apply_evidence_grounding(case, ocr_page("出院诊断：肺炎", "疾病编码：J18.9"))
     assert case.diagnoses[0].code.status == FieldStatus.EXTRACTED
     assert not case.quality_flags
+
+
+def test_normalization_ignores_unicode_width_whitespace_and_punctuation_but_keeps_symbols():
+    assert normalize_evidence_text(" ＡＢＣ（阳性）：1，234。 ") == "abc阳性1.234"
+    assert normalize_evidence_text("抗体 +") == "抗体+"
+    assert normalize_evidence_text("1—2 mg/次") == "1-2mg/次"
+    assert normalize_evidence_text("1.2mg") != normalize_evidence_text("12mg")
+
+
+def laboratory_case(value="1.27"):
+    return ClaimCase(case_id="A", examinations=[Examination(
+        examination_id="lab", name=ev_field("血常规", "申请项目：血常规"),
+        results=[ExaminationResult(
+            item_name=ev_field("淋巴细胞绝对值", f"淋巴细胞绝对值 {value}"),
+            value=ev_field(value, f"淋巴细胞绝对值 {value}"),
+        )],
+    )])
+
+
+def laboratory_table_page(value="1,27", value_page=1):
+    return [{
+        "document_id": "page", "page": value_page,
+        # Column-oriented OCR text deliberately prevents substring matching.
+        "full_text": f"申请项目：血常规\n淋巴细胞绝对值\nLYMPH#\n{value}\n10~9/L",
+        "blocks": [
+            {"text": "申请项目：血常规", "bbox": [0, 0, 180, 20]},
+            {"text": "淋巴细胞绝对值", "bbox": [0, 100, 180, 122]},
+            {"text": "LYMPH#", "bbox": [220, 100, 300, 122]},
+            {"text": value, "bbox": [360, 99, 420, 121]},
+            {"text": "10~9/L", "bbox": [500, 98, 580, 120]},
+        ],
+    }]
+
+
+def test_laboratory_label_and_value_bind_in_same_visual_ocr_row():
+    case = laboratory_case()
+    apply_evidence_grounding(case, laboratory_table_page())
+    result = case.examinations[0].results[0]
+    assert result.item_name.status == FieldStatus.EXTRACTED
+    assert result.value.status == FieldStatus.EXTRACTED
+    assert not case.quality_flags
+
+
+def test_laboratory_value_cannot_bind_from_another_visual_row():
+    case = laboratory_case()
+    docs = laboratory_table_page()
+    docs[0]["blocks"][2]["bbox"] = [220, 180, 300, 202]
+    docs[0]["blocks"][3]["bbox"] = [360, 180, 420, 202]
+    docs[0]["blocks"][4]["bbox"] = [500, 180, 580, 202]
+    apply_evidence_grounding(case, docs)
+    assert case.examinations[0].results[0].value.status == FieldStatus.REVIEW_REQUIRED
+    assert "EVIDENCE_TEXT_NOT_FOUND" in {flag.code for flag in case.quality_flags}
 
 def test_two_medication_names_in_same_region_do_not_bind_dose():
     case = ClaimCase(case_id="A", medications=[
